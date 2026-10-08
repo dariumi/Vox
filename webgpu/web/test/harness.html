@@ -1,0 +1,52 @@
+<!doctype html><meta charset="utf-8"><title>vox.js test harness</title>
+<script src="vox.js"></script>
+<script>
+function readSafetensors(buf) {
+  const dv = new DataView(buf), n = Number(dv.getBigUint64(0, true));
+  const hdr = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 8, n)));
+  const out = {};
+  for (const k of Object.keys(hdr)) {
+    if (k === "__metadata__") continue;
+    const [a, b] = hdr[k].data_offsets;
+    out[k] = new Float32Array(buf.slice(8 + n + a, 8 + n + b));
+  }
+  return out;
+}
+function readWav(buf) {
+  const dv = new DataView(buf);
+  let i = 12, fmt = null, data = null;
+  while (i + 8 <= buf.byteLength) {
+    const id = String.fromCharCode(dv.getUint8(i), dv.getUint8(i + 1), dv.getUint8(i + 2), dv.getUint8(i + 3)), n = dv.getUint32(i + 4, true);
+    if (id === "fmt ") fmt = { tag: dv.getUint16(i + 8, true), ch: dv.getUint16(i + 10, true), sr: dv.getUint32(i + 12, true), bits: dv.getUint16(i + 22, true) };
+    if (id === "data") { data = new DataView(buf, i + 8, n); break; }
+    i += 8 + n + (n & 1);
+  }
+  const cnt = data.byteLength / (fmt.bits / 8), out = new Float32Array(cnt);
+  for (let k = 0; k < cnt; k++) out[k] = fmt.tag === 3 ? data.getFloat32(k * 4, true) : data.getInt16(k * 2, true) / 32768;
+  return { pcm: out, sampleRate: fmt.sr };
+}
+const getBuf = async (u) => (await fetch(u)).arrayBuffer();
+window.log = [];
+window.loadModel = async (url) => { const t = performance.now(); window.model = await Vox.load(url); return { ms: performance.now() - t, info: window.model.info }; };
+window.setRef = async (wav, text) => { const { pcm, sampleRate } = readWav(await getBuf(wav)); window.voice = await window.model.cloneVoice(pcm, text, { sampleRate }); return { frames: window.voice.frames, rms: window.voice.rms, samples: window.voice.samples, mel: Array.from(window.voice.mel.slice(0, 8)) }; };
+window.voiceMel = () => Array.from(window.voice.mel);
+window.runScenario = async (name, p, noiseUrl, expUrl) => {
+  const noises = readSafetensors(await getBuf(noiseUrl));
+  const exp = readSafetensors(await getBuf(expUrl)).wave;
+  const opts = { voice: window.voice, nfe_step: p.nfe, speed: p.speed, cross_fade_duration: p.cross_fade, noise: (i) => noises["noise." + i] };
+  if (p.max_chars) opts.max_chars = p.max_chars;
+  const t = performance.now();
+  const r = await window.model.synthesize(p.gen_text, opts);
+  let d = 0, e = 0, s = 0;
+  const n = Math.min(r.pcm.length, exp.length);
+  for (let i = 0; i < n; i++) { d = Math.max(d, Math.abs(r.pcm[i] - exp[i])); e += (r.pcm[i] - exp[i]) ** 2; s += exp[i] ** 2; }
+  window.lastPcm = r.pcm;
+  return { name, len: r.pcm.length, expLen: exp.length, maxDiff: d, rel: Math.sqrt(e / (s || 1)), ms: performance.now() - t, expMax: exp.reduce((a, b) => Math.max(a, Math.abs(b)), 0), stats: r.stats };
+};
+window.runSeed = async (text, seed, nfe) => {
+  const r = await window.model.synthesize(text, { voice: window.voice, seed, nfe_step: nfe });
+  return { pcm: Array.from(r.pcm), len: r.pcm.length };
+};
+window.noiseCheck = (seed, chunk, n) => Array.from(Vox._internal.f5Noise(seed, chunk, n));
+window.tokCheck = (text) => window.model.f5.tok.symbols(text);
+</script>

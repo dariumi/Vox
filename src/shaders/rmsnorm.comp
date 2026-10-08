@@ -1,0 +1,22 @@
+#version 450
+// y[row] = w * (x[row] * rsqrt(mean(x²) + eps)); один блок на строку.
+layout(local_size_x = 128) in;
+layout(std430, set = 0, binding = 0) readonly buffer WB { float w[]; };
+layout(std430, set = 0, binding = 3) readonly buffer XB { float x[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer YB { float y[]; };
+layout(push_constant) uniform PC { uint n; uint m; uint eps_bits; uint x_off; uint y_off; uint w_off; } pc;
+shared float red[128];
+void main() {
+    const uint row = gl_WorkGroupID.x, t = gl_LocalInvocationID.x;
+    const uint xb = pc.x_off + row * pc.n, yb = pc.y_off + row * pc.n;
+    float ss = 0.0;
+    for (uint k = t; k < pc.n; k += 128u) { float v = x[xb + k]; ss += v * v; }
+    red[t] = ss;
+    barrier();
+    for (uint s = 64u; s > 0u; s >>= 1u) {
+        if (t < s) red[t] += red[t + s];
+        barrier();
+    }
+    const float inv = 1.0 / sqrt(red[0] / float(pc.n) + uintBitsToFloat(pc.eps_bits));
+    for (uint k = t; k < pc.n; k += 128u) y[yb + k] = w[pc.w_off + k] * (x[xb + k] * inv);
+}

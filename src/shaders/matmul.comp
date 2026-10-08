@@ -1,0 +1,178 @@
+#version 450
+// GEMV for m <= 4 input rows: y[i][r] (+)= sum_k W[r][k] * x[i][k] (+ bias[r]).
+// 256 threads = 4 weight rows x 64 threads; each thread walks its row in 16-byte chunks.
+// WTYPE: 0 = f32, 1 = f16, 2 = bf16, 3 = q8 (int8 + one f32 scale per 32 weights),
+//        4 = q4 (one 16-byte chunk = one 32-weight block: byte j = weight j | weight j+16 << 4, value = (nibble - 8) * scale).
+// flags: bit 0 = add bias, bit 1 = accumulate into y, bit 2 = row is 16-byte aligned (cols divisible by 4/8/8/16):
+//        weights are read as uvec4 and x as vec4, every 16-byte chunk is consumed with 1-4 dot() calls
+//        (q8: unpackSnorm4x8 gives 4 weights per instruction; the quantizer never emits -128, so *127 is exact).
+// Reduction: subgroupAdd inside each subgroup, then one shared-memory step over the subgroups of a row.
+#ifndef NO_SUBGROUP  // a second SPIR-V without subgroup ops is built for devices that lack them
+#extension GL_KHR_shader_subgroup_basic : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#endif
+layout(local_size_x = 256) in;
+layout(constant_id = 0) const uint WTYPE = 0u;
+
+layout(std430, set = 0, binding = 0) readonly buffer WB { uvec4 w4[]; };
+layout(std430, set = 0, binding = 1) readonly buffer SB { float sc[]; };
+layout(std430, set = 0, binding = 2) readonly buffer BB { float bias[]; };
+layout(std430, set = 0, binding = 3) readonly buffer XB { vec4 x4[]; };
+layout(std430, set = 0, binding = 4) buffer YB { float y[]; };
+layout(push_constant) uniform PC { uint rows; uint cols; uint m; uint flags; uint x_off; uint y_off; } pc;
+
+const uint TPR = 64u;  // threads per weight row
+shared float red[4][4][TPR];
+
+float xs(uint i) { return x4[i >> 2u][i & 3u]; }
+uint wword(uint wi) { return w4[wi >> 2u][wi & 3u]; }
+
+float getw(uint idx) {
+    if (WTYPE == 0u) {
+        return uintBitsToFloat(wword(idx));
+    } else if (WTYPE == 1u) {
+        vec2 v = unpackHalf2x16(wword(idx >> 1u));
+        return ((idx & 1u) == 0u) ? v.x : v.y;
+    } else if (WTYPE == 2u) {
+        uint word = wword(idx >> 1u);
+        uint h = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+        return uintBitsToFloat(h << 16u);
+    } else if (WTYPE == 3u) {
+        uint word = wword(idx >> 2u);
+        int b = int((word >> ((idx & 3u) * 8u)) & 0xFFu);
+        if (b > 127) b -= 256;
+        return float(b) * sc[idx >> 5u];
+    } else {
+        const uint blk = idx >> 5u, j = idx & 31u;
+        const uint byte_i = blk * 16u + (j & 15u);
+        const uint word = wword(byte_i >> 2u);
+        const uint sh = (byte_i & 3u) * 8u + ((j >= 16u) ? 4u : 0u);
+        return (float((word >> sh) & 15u) - 8.0) * sc[blk];
+    }
+}
+
+// four consecutive weights of one nibble plane: bits [sh, sh+4) of each byte of the word
+vec4 nib4(uint wd, uint sh) {
+    return vec4(float((wd >> sh) & 15u), float((wd >> (sh + 8u)) & 15u), float((wd >> (sh + 16u)) & 15u), float((wd >> (sh + 24u)) & 15u)) - vec4(8.0);
+}
+
+vec4 bf16lo(uint a, uint b) {  // 4 bf16 weights packed in two words (low half first)
+    return vec4(uintBitsToFloat(a << 16u), uintBitsToFloat(a & 0xFFFF0000u), uintBitsToFloat(b << 16u), uintBitsToFloat(b & 0xFFFF0000u));
+}
+
+void main() {
+    const uint lid = gl_LocalInvocationID.x;
+    const uint rl = lid / TPR, t = lid % TPR;
+    const uint r = gl_WorkGroupID.x * 4u + rl;
+    const uint i0 = gl_WorkGroupID.y * 4u;
+    const uint nj = min(4u, pc.m - i0);
+    const bool valid = r < pc.rows;
+    float a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
+    const uint xb = pc.x_off + i0 * pc.cols;
+
+    if (valid) {
+        if ((pc.flags & 4u) != 0u) {
+            const uint EPC = (WTYPE == 0u) ? 4u : ((WTYPE == 3u) ? 16u : ((WTYPE == 4u) ? 32u : 8u));
+            const uint nchunk = pc.cols / EPC, cbase = r * nchunk;
+            const uint xq = xb >> 2u, cq = pc.cols >> 2u;  // x in vec4 units
+            if (WTYPE == 4u) {
+                // q4: one 16-byte chunk = 32 weights; two threads share a chunk (h = 0: low nibbles = weights 0..15, h = 1: high nibbles =
+                // weights 16..31), so rows with 1024 columns (32 chunks) still occupy all 64 threads. unpackUnorm4x8 turns four nibbles
+                // into n/255 in one instruction; 255 is folded into the scale, 8/255 is the zero point.
+                const uint nitems = nchunk * 2u;
+                for (uint it = t; it < nitems; it += TPR) {
+                    const uint c = it >> 1u, sh = (it & 1u) * 4u;
+                    const uvec4 v = w4[cbase + c];
+                    const uint q = xq + c * 8u + (it & 1u) * 4u;
+                    const vec4 z = vec4(8.0 / 255.0);
+                    const vec4 u0 = unpackUnorm4x8((v.x >> sh) & 0x0F0F0F0Fu) - z, u1 = unpackUnorm4x8((v.y >> sh) & 0x0F0F0F0Fu) - z,
+                               u2 = unpackUnorm4x8((v.z >> sh) & 0x0F0F0F0Fu) - z, u3 = unpackUnorm4x8((v.w >> sh) & 0x0F0F0F0Fu) - z;
+                    const float s = sc[r * nchunk + c] * 255.0;
+                    a0 += s * (dot(u0, x4[q]) + dot(u1, x4[q + 1u]) + dot(u2, x4[q + 2u]) + dot(u3, x4[q + 3u]));
+                    if (nj > 1u) { const uint p = q + cq;      a1 += s * (dot(u0, x4[p]) + dot(u1, x4[p + 1u]) + dot(u2, x4[p + 2u]) + dot(u3, x4[p + 3u])); }
+                    if (nj > 2u) { const uint p = q + 2u * cq; a2 += s * (dot(u0, x4[p]) + dot(u1, x4[p + 1u]) + dot(u2, x4[p + 2u]) + dot(u3, x4[p + 3u])); }
+                    if (nj > 3u) { const uint p = q + 3u * cq; a3 += s * (dot(u0, x4[p]) + dot(u1, x4[p + 1u]) + dot(u2, x4[p + 2u]) + dot(u3, x4[p + 3u])); }
+                }
+            } else
+            for (uint c = t; c < nchunk; c += TPR) {
+                const uvec4 v = w4[cbase + c];
+                const uint q = xq + c * (EPC >> 2u);
+                if (WTYPE == 0u) {
+                    const vec4 wv = uintBitsToFloat(v);
+                    a0 += dot(wv, x4[q]);
+                    if (nj > 1u) a1 += dot(wv, x4[q + cq]);
+                    if (nj > 2u) a2 += dot(wv, x4[q + 2u * cq]);
+                    if (nj > 3u) a3 += dot(wv, x4[q + 3u * cq]);
+                } else if (WTYPE == 1u || WTYPE == 2u) {
+                    vec4 h0, h1;
+                    if (WTYPE == 1u) {
+                        h0 = vec4(unpackHalf2x16(v.x), unpackHalf2x16(v.y));
+                        h1 = vec4(unpackHalf2x16(v.z), unpackHalf2x16(v.w));
+                    } else {
+                        h0 = bf16lo(v.x, v.y);
+                        h1 = bf16lo(v.z, v.w);
+                    }
+                    a0 += dot(h0, x4[q]) + dot(h1, x4[q + 1u]);
+                    if (nj > 1u) a1 += dot(h0, x4[q + cq]) + dot(h1, x4[q + cq + 1u]);
+                    if (nj > 2u) a2 += dot(h0, x4[q + 2u * cq]) + dot(h1, x4[q + 2u * cq + 1u]);
+                    if (nj > 3u) a3 += dot(h0, x4[q + 3u * cq]) + dot(h1, x4[q + 3u * cq + 1u]);
+                } else {
+                    const vec4 q0 = unpackSnorm4x8(v.x), q1 = unpackSnorm4x8(v.y), q2 = unpackSnorm4x8(v.z), q3 = unpackSnorm4x8(v.w);
+                    const float s = sc[(r * pc.cols + c * 16u) >> 5u] * 127.0;  // 16 weights lie inside one 32-block
+                    a0 += s * (dot(q0, x4[q]) + dot(q1, x4[q + 1u]) + dot(q2, x4[q + 2u]) + dot(q3, x4[q + 3u]));
+                    if (nj > 1u) { const uint p = q + cq;      a1 += s * (dot(q0, x4[p]) + dot(q1, x4[p + 1u]) + dot(q2, x4[p + 2u]) + dot(q3, x4[p + 3u])); }
+                    if (nj > 2u) { const uint p = q + 2u * cq; a2 += s * (dot(q0, x4[p]) + dot(q1, x4[p + 1u]) + dot(q2, x4[p + 2u]) + dot(q3, x4[p + 3u])); }
+                    if (nj > 3u) { const uint p = q + 3u * cq; a3 += s * (dot(q0, x4[p]) + dot(q1, x4[p + 1u]) + dot(q2, x4[p + 2u]) + dot(q3, x4[p + 3u])); }
+                }
+            }
+        } else {
+            const uint base = r * pc.cols;
+            for (uint k = t; k < pc.cols; k += TPR) {
+                const float wv = getw(base + k);
+                a0 += wv * xs(xb + k);
+                if (nj > 1u) a1 += wv * xs(xb + pc.cols + k);
+                if (nj > 2u) a2 += wv * xs(xb + 2u * pc.cols + k);
+                if (nj > 3u) a3 += wv * xs(xb + 3u * pc.cols + k);
+            }
+        }
+    }
+
+    // reduction over the 64 threads of each row
+#ifndef NO_SUBGROUP
+    const uint sgs = gl_SubgroupSize;
+    if (sgs <= TPR && (TPR % sgs) == 0u) {
+        const float s0 = subgroupAdd(a0), s1 = subgroupAdd(a1), s2 = subgroupAdd(a2), s3 = subgroupAdd(a3);
+        if (subgroupElect()) {
+            const uint k = t / sgs;
+            red[rl][0][k] = s0; red[rl][1][k] = s1; red[rl][2][k] = s2; red[rl][3][k] = s3;
+        }
+        barrier();
+        if (t == 0u && valid) {
+            const uint nsg = TPR / sgs;
+            const float b = ((pc.flags & 1u) != 0u) ? bias[r] : 0.0;
+            for (uint j = 0u; j < nj; ++j) {
+                float v = b;
+                for (uint k = 0u; k < nsg; ++k) v += red[rl][j][k];
+                const uint o = pc.y_off + (i0 + j) * pc.rows + r;
+                y[o] = ((pc.flags & 2u) != 0u) ? y[o] + v : v;
+            }
+        }
+    } else
+#endif
+    {  // no subgroups / unusual subgroup size: plain shared-memory tree
+        red[rl][0][t] = a0; red[rl][1][t] = a1; red[rl][2][t] = a2; red[rl][3][t] = a3;
+        barrier();
+        for (uint s = TPR / 2u; s > 0u; s >>= 1u) {
+            if (t < s) for (uint j = 0u; j < 4u; ++j) red[rl][j][t] += red[rl][j][t + s];
+            barrier();
+        }
+        if (t == 0u && valid) {
+            const float b = ((pc.flags & 1u) != 0u) ? bias[r] : 0.0;
+            for (uint j = 0u; j < nj; ++j) {
+                const uint o = pc.y_off + (i0 + j) * pc.rows + r;
+                const float v = red[rl][j][0] + b;
+                y[o] = ((pc.flags & 2u) != 0u) ? y[o] + v : v;
+            }
+        }
+    }
+}

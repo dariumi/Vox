@@ -1,0 +1,24 @@
+[build-system]
+requires = ["scikit-build-core>=0.9", "nanobind>=2.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "vox-tts"            # рабочее имя пакета; импортируется как `import vox`
+version = "0.10.0"
+description = "vox: native Qwen3-TTS inference engine (C ABI, CLI, Python, Vulkan)"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.22"]
+
+[project.optional-dependencies]
+# эталоны и сверка с оригинальным пайплайном (для работы движка не нужны)
+tools = ["qwen-tts==0.1.1", "transformers==4.57.3", "torch", "librosa", "soundfile"]
+test = ["tokenizers", "regex"]
+
+[tool.scikit-build]
+cmake.version = ">=3.18"
+wheel.packages = ["python/vox"]
+cmake.define = { VOX_PYTHON = "ON", VOX_TESTS = "OFF" }
+build.targets = ["_vox"]
+install.components = []

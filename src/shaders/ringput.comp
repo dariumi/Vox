@@ -1,0 +1,12 @@
+#version 450
+// Copy m rows of kd floats into a ring buffer at slots (pos0 + i) % R.
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 3) readonly buffer SB { float src[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer RB { float ring[]; };
+layout(push_constant) uniform PC { uint m; uint kd; uint pos0; uint R; } pc;
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.m * pc.kd) return;
+    const uint row = i / pc.kd, e = i - row * pc.kd;
+    ring[((pc.pos0 + row) % pc.R) * pc.kd + e] = src[i];
+}

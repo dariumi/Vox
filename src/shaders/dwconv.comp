@@ -1,0 +1,20 @@
+#version 450
+// Causal depthwise conv with streaming history: y[t][c] = b[c] + sum_k w[c][k] * In(t + k)[c], In = [hist (K-1 rows); x].
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 0) readonly buffer PB { float p[]; };
+layout(std430, set = 0, binding = 3) readonly buffer XB { float x[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer YB { float y[]; };
+layout(std430, set = 0, binding = 5) readonly buffer HB { float hist[]; };
+layout(push_constant) uniform PC { uint T; uint C; uint K; uint off_w; uint off_b; } pc;
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.T * pc.C) return;
+    const uint t = i / pc.C, c = i - t * pc.C, ctx = pc.K - 1u;
+    float acc = p[pc.off_b + c];
+    for (uint k = 0u; k < pc.K; ++k) {
+        const uint r = t + k;
+        const float v = (r < ctx) ? hist[r * pc.C + c] : x[(r - ctx) * pc.C + c];
+        acc += p[pc.off_w + c * pc.K + k] * v;
+    }
+    y[i] = acc;
+}

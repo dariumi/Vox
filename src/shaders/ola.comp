@@ -1,0 +1,23 @@
+#version 450
+// Transposed conv (K = 2s, stride s) overlap-add with a streaming tail of tr = K - s rows.
+// tmp = [T][K*co] from the GEMM; output row p collects frames t = p/s and t-1 ("pull", no write races):
+//   v = (p < tr ? tail_old[p] : 0) + tmp[t][k] + tmp[t-1][k+s];  p < T*s → y[p] = v + bias, else tail_new[p - T*s] = v.
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 0) readonly buffer PB { float p[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer NB { float tail_new[]; };
+layout(std430, set = 0, binding = 3) readonly buffer TB { float tmp[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer YB { float y[]; };
+layout(std430, set = 0, binding = 5) readonly buffer OB { float tail_old[]; };
+layout(push_constant) uniform PC { uint T; uint s; uint K; uint co; uint off_b; } pc;
+void main() {
+    const uint tr = pc.K - pc.s;
+    const uint i = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * 65535u * 256u;
+    if (i >= (pc.T * pc.s + tr) * pc.co) return;
+    const uint pos = i / pc.co, o = i - pos * pc.co;
+    const uint t = pos / pc.s, k = pos - t * pc.s;
+    float v = pos < tr ? tail_old[pos * pc.co + o] : 0.0;
+    if (t < pc.T) v += tmp[(t * pc.K + k) * pc.co + o];
+    if (t >= 1u && k + pc.s < pc.K) v += tmp[((t - 1u) * pc.K + k + pc.s) * pc.co + o];
+    if (pos < pc.T * pc.s) y[pos * pc.co + o] = v + p[pc.off_b + o];
+    else tail_new[(pos - pc.T * pc.s) * pc.co + o] = v;
+}

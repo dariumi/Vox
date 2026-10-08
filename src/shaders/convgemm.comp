@@ -1,0 +1,100 @@
+#version 450
+// Implicit-GEMM 1D convolution over time-major activations (codec decoder on GPU):
+//   Y[t][o] = epilogue( sum_{k<K, c<C} W[o][k*C + c] * In(t + k*dil)[c] )
+//   In(r)   = r < ctx ? Hist[r][c] : X[r - ctx][c]      (ctx = (K-1)*dil rows of streaming history)
+// A plain linear layer is K = 1, ctx = 0. Tile 64 (time) x 64 (out channels), 4x4 outputs per thread.
+// flags: 1 = + bias[o % bias_n]; 2 = GELU (erf); 4 = residual Y = Y + gamma[o] * v; 8 = residual with gamma = 1;
+//        16 = clamp to [-1, 1].
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(constant_id = 0) const uint WTYPE = 0u;  // 0 = f32, 1 = f16, 2 = bf16, 3 = q8, 4 = q4 (scales in binding 1; flag 4 unavailable)
+
+layout(std430, set = 0, binding = 0) readonly buffer WB { uint w[]; };
+layout(std430, set = 0, binding = 1) readonly buffer GB { float gamma[]; };
+layout(std430, set = 0, binding = 2) readonly buffer BB { float bias[]; };
+layout(std430, set = 0, binding = 3) readonly buffer XB { float x[]; };
+layout(std430, set = 0, binding = 4) buffer YB { float y[]; };
+layout(std430, set = 0, binding = 5) readonly buffer HB { float hist[]; };
+layout(push_constant) uniform PC { uint T; uint O; uint C; uint K; uint dil; uint ctx; uint flags; uint bias_n; } pc;
+
+shared float Ws[16][65];
+shared float Xs[16][65];
+
+float getw(uint idx) {
+    if (WTYPE == 0u) return uintBitsToFloat(w[idx]);
+    if (WTYPE == 3u) {
+        const int b = bitfieldExtract(int(w[idx >> 2u]), int((idx & 3u) * 8u), 8);
+        return float(b) * gamma[idx >> 5u];
+    }
+    if (WTYPE == 4u) {
+        const uint blk = idx >> 5u, j = idx & 31u;
+        const uint byte_i = blk * 16u + (j & 15u);
+        const uint sh = (byte_i & 3u) * 8u + ((j >= 16u) ? 4u : 0u);
+        return (float((w[byte_i >> 2u] >> sh) & 15u) - 8.0) * gamma[blk];
+    }
+    const uint word = w[idx >> 1u];
+    if (WTYPE == 1u) {
+        const vec2 v = unpackHalf2x16(word);
+        return ((idx & 1u) == 0u) ? v.x : v.y;
+    }
+    const uint h = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+    return uintBitsToFloat(h << 16u);
+}
+
+float erf_approx(float v) {
+    // erfc via the Chebyshev fit of Numerical Recipes (fractional error < 1.2e-7 everywhere).
+    const float z = abs(v);
+    const float t = 1.0 / (1.0 + 0.5 * z);
+    const float r = t * exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (-0.18628806 +
+                    t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+    return v >= 0.0 ? 1.0 - r : r - 1.0;
+}
+
+void main() {
+    const uint tx = gl_LocalInvocationID.x, ty = gl_LocalInvocationID.y, lid = ty * 16u + tx;
+    const uint t0 = gl_WorkGroupID.x * 64u, o0 = gl_WorkGroupID.y * 64u;
+    const uint KC = pc.K * pc.C;
+    float acc[4][4];
+    for (uint i = 0u; i < 4u; ++i) for (uint j = 0u; j < 4u; ++j) acc[i][j] = 0.0;
+
+    for (uint k0 = 0u; k0 < KC; k0 += 16u) {
+        for (uint e = 0u; e < 4u; ++e) {
+            const uint idx = lid + e * 256u;
+            const uint kl = idx & 15u, rl = idx >> 4u;  // kk fastest: coalesced along the weight row / input channels
+            const uint kk = k0 + kl;
+            const uint o = o0 + rl;
+            Ws[kl][rl] = (o < pc.O && kk < KC) ? getw(o * KC + kk) : 0.0;
+            const uint t = t0 + rl;
+            float xv = 0.0;
+            if (t < pc.T && kk < KC) {
+                const uint k = kk / pc.C, c = kk - k * pc.C;
+                const uint r = t + k * pc.dil;
+                xv = (r < pc.ctx) ? hist[r * pc.C + c] : x[(r - pc.ctx) * pc.C + c];
+            }
+            Xs[kl][rl] = xv;
+        }
+        barrier();
+        for (uint kl = 0u; kl < 16u; ++kl) {
+            float a[4], b[4];
+            for (uint i = 0u; i < 4u; ++i) a[i] = Ws[kl][ty * 4u + i];
+            for (uint j = 0u; j < 4u; ++j) b[j] = Xs[kl][tx * 4u + j];
+            for (uint i = 0u; i < 4u; ++i) for (uint j = 0u; j < 4u; ++j) acc[i][j] += a[i] * b[j];
+        }
+        barrier();
+    }
+    for (uint i = 0u; i < 4u; ++i) {
+        const uint o = o0 + ty * 4u + i;
+        if (o >= pc.O) continue;
+        for (uint j = 0u; j < 4u; ++j) {
+            const uint t = t0 + tx * 4u + j;
+            if (t >= pc.T) continue;
+            float v = acc[i][j];
+            if ((pc.flags & 1u) != 0u) v += bias[o % pc.bias_n];
+            if ((pc.flags & 2u) != 0u) v = 0.5 * v * (1.0 + erf_approx(v * 0.70710678118654752));
+            const uint yi = t * pc.O + o;
+            if ((pc.flags & 4u) != 0u) v = y[yi] + gamma[o] * v;
+            else if ((pc.flags & 8u) != 0u) v = y[yi] + v;
+            if ((pc.flags & 16u) != 0u) v = clamp(v, -1.0, 1.0);
+            y[yi] = v;
+        }
+    }
+}

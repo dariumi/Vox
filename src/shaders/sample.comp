@@ -1,0 +1,85 @@
+#version 450
+// Deterministic sampling on the GPU, same algorithm as vox::sample_logits (src/sampling.hpp):
+// temperature → top-k → softmax → top-p → inverse CDF with u = Philox4x32-10(frame, codebook) under the session key.
+// temperature <= 0: argmax (lowest index on ties). One workgroup; n <= 4096.
+// Probabilities are float here (double on the CPU), so a draw that lands within ~1e-7 of a CDF boundary may pick the
+// neighbouring token — the result is still a pure function of (seed, frame, codebook) on a given device.
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 1) buffer CB { int codes[]; };
+layout(std430, set = 0, binding = 3) readonly buffer LB { float logits[]; };
+layout(push_constant) uniform PC { uint n; uint temp_bits; int top_k; uint top_p_bits; uint key0; uint key1; uint frame; uint cb; } pc;
+
+shared float sv[4096];
+shared uint si[4096];
+shared float pr[4096];
+
+uvec4 philox(uvec4 c, uvec2 k) {
+    for (int i = 0; i < 10; ++i) {
+        uint hi0, lo0, hi1, lo1;
+        umulExtended(0xD2511F53u, c.x, hi0, lo0);
+        umulExtended(0xCD9E8D57u, c.z, hi1, lo1);
+        c = uvec4(hi1 ^ c.y ^ k.x, lo1, hi0 ^ c.w ^ k.y, lo0);
+        if (i < 9) k += uvec2(0x9E3779B9u, 0xBB67AE85u);
+    }
+    return c;
+}
+
+bool before(float va, uint ia, float vb, uint ib) { return va > vb || (va == vb && ia < ib); }
+
+void main() {
+    const uint t = gl_LocalInvocationID.x;
+    const float temp = uintBitsToFloat(pc.temp_bits);
+    uint N = 1u;
+    while (N < pc.n) N <<= 1u;
+    for (uint i = t; i < N; i += 256u) {
+        sv[i] = i < pc.n ? logits[i] : -3.0e38;
+        si[i] = i;
+    }
+    barrier();
+    if (temp <= 0.0) {  // argmax: tree reduction keeping the lowest index on ties
+        for (uint s = N / 2u; s > 0u; s >>= 1u) {
+            for (uint i = t; i < s; i += 256u)
+                if (before(sv[i + s], si[i + s], sv[i], si[i])) { sv[i] = sv[i + s]; si[i] = si[i + s]; }
+            barrier();
+        }
+        if (t == 0u) codes[pc.cb] = int(si[0]);
+        return;
+    }
+    // bitonic sort, descending by value, ascending index on ties
+    for (uint k = 2u; k <= N; k <<= 1u) {
+        for (uint j = k >> 1u; j > 0u; j >>= 1u) {
+            for (uint i = t; i < N; i += 256u) {
+                const uint l = i ^ j;
+                if (l > i) {
+                    const bool up = (i & k) == 0u;
+                    const bool sw = up ? before(sv[l], si[l], sv[i], si[i]) : before(sv[i], si[i], sv[l], si[l]);
+                    if (sw) { const float tv = sv[i]; sv[i] = sv[l]; sv[l] = tv; const uint ti = si[i]; si[i] = si[l]; si[l] = ti; }
+                }
+            }
+            barrier();
+        }
+    }
+    const uint kk = (pc.top_k > 0 && uint(pc.top_k) < pc.n) ? uint(pc.top_k) : pc.n;
+    const float inv_t = 1.0 / temp, mx = sv[0];
+    for (uint i = t; i < kk; i += 256u) pr[i] = exp((sv[i] - mx) * inv_t);
+    barrier();
+    if (t == 0u) {
+        float sum = 0.0;
+        for (uint i = 0u; i < kk; ++i) sum += pr[i];
+        uint keep = kk;
+        const float top_p = uintBitsToFloat(pc.top_p_bits);
+        if (top_p > 0.0 && top_p < 1.0) {
+            float c = 0.0;
+            for (uint i = 0u; i < kk; ++i) { c += pr[i] / sum; if (c >= top_p) { keep = i + 1u; break; } }
+        }
+        float total = 0.0;
+        for (uint i = 0u; i < keep; ++i) total += pr[i] / sum;
+        const uvec4 r = philox(uvec4(pc.frame, 0u, pc.cb, 0u), uvec2(pc.key0, pc.key1));
+        const float u = float(r.x >> 8u) * (1.0 / 16777216.0);
+        const float target = u * total;
+        float acc = 0.0;
+        uint pick = si[keep - 1u];
+        for (uint i = 0u; i < keep; ++i) { acc += pr[i] / sum; if (target < acc) { pick = si[i]; break; } }
+        codes[pc.cb] = int(pick);
+    }
+}

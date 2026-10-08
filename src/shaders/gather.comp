@@ -1,0 +1,21 @@
+#version 450
+// out[e] = table[codes[code_idx]][e] (embedding lookup with the index taken from a GPU buffer).
+layout(local_size_x = 256) in;
+layout(constant_id = 0) const uint WTYPE = 0u;  // 0 = f32, 1 = f16, 2 = bf16
+layout(std430, set = 0, binding = 0) readonly buffer TB { uint t[]; };
+layout(std430, set = 0, binding = 1) readonly buffer CB { int codes[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer OB { float o[]; };
+layout(push_constant) uniform PC { uint cols; uint code_idx; uint rows; uint out_off; } pc;
+float getw(uint idx) {
+    if (WTYPE == 0u) return uintBitsToFloat(t[idx]);
+    const uint word = t[idx >> 1u];
+    if (WTYPE == 1u) { const vec2 v = unpackHalf2x16(word); return ((idx & 1u) == 0u) ? v.x : v.y; }
+    const uint h = ((idx & 1u) == 0u) ? (word & 0xFFFFu) : (word >> 16u);
+    return uintBitsToFloat(h << 16u);
+}
+void main() {
+    const uint e = gl_GlobalInvocationID.x;
+    if (e >= pc.cols) return;
+    const uint r = uint(clamp(codes[pc.code_idx], 0, int(pc.rows) - 1));
+    o[pc.out_off + e] = getw(r * pc.cols + e);
+}

@@ -1,0 +1,48 @@
+#version 450
+// Causal sliding-window attention over a ring KV cache (codec decoder transformer).
+// Query i has absolute position p = pos0 + i and sees keys j in [max(0, p - W + 1), p]; key j lives in ring slot j % R.
+layout(local_size_x = 128) in;
+layout(std430, set = 0, binding = 0) readonly buffer KB { float kc[]; };
+layout(std430, set = 0, binding = 1) readonly buffer VB { float vc[]; };
+layout(std430, set = 0, binding = 3) readonly buffer QB { float q[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer OB { float o[]; };
+layout(push_constant) uniform PC { uint heads; uint kv_heads; uint hd; uint m; uint pos0; uint scale_bits; uint W; uint R; } pc;
+shared float sc[1024];
+shared float qv[256];
+shared float red[128];
+void main() {
+    const uint h = gl_WorkGroupID.x, i = gl_WorkGroupID.y, t = gl_LocalInvocationID.x;
+    const uint p = pc.pos0 + i;
+    const uint first = (p + 1u > pc.W) ? p + 1u - pc.W : 0u;
+    const uint n = p - first + 1u;
+    const uint kd = pc.kv_heads * pc.hd, g = h / (pc.heads / pc.kv_heads);
+    const float scale = uintBitsToFloat(pc.scale_bits);
+    const uint qb = (i * pc.heads + h) * pc.hd;
+    for (uint e = t; e < pc.hd; e += 128u) qv[e] = q[qb + e];
+    barrier();
+    float mx = -3.0e38;
+    for (uint j = t; j < n; j += 128u) {
+        const uint kb = ((first + j) % pc.R) * kd + g * pc.hd;
+        float s = 0.0;
+        for (uint e = 0u; e < pc.hd; ++e) s += qv[e] * kc[kb + e];
+        s *= scale;
+        sc[j] = s;
+        mx = max(mx, s);
+    }
+    red[t] = mx;
+    barrier();
+    for (uint s = 64u; s > 0u; s >>= 1u) { if (t < s) red[t] = max(red[t], red[t + s]); barrier(); }
+    mx = red[0];
+    barrier();
+    float sum = 0.0;
+    for (uint j = t; j < n; j += 128u) { const float e = exp(sc[j] - mx); sc[j] = e; sum += e; }
+    red[t] = sum;
+    barrier();
+    for (uint s = 64u; s > 0u; s >>= 1u) { if (t < s) red[t] += red[t + s]; barrier(); }
+    const float inv = 1.0 / red[0];
+    for (uint e = t; e < pc.hd; e += 128u) {
+        float acc = 0.0;
+        for (uint j = 0u; j < n; ++j) acc += sc[j] * vc[((first + j) % pc.R) * kd + g * pc.hd + e];
+        o[qb + e] = acc * inv;
+    }
+}

@@ -1,0 +1,33 @@
+#version 450
+// RMSNorm по head_dim (если flags&1) + RoPE (rotate_half) на месте. Таблица cos/sin считается на CPU
+// (на GPU sin/cos для больших позиций неточны): cs[((cs_row0 + i)*half + p)*2] = cos, +1 = sin.
+layout(local_size_x = 64) in;
+layout(std430, set = 0, binding = 0) readonly buffer WB { float nw[]; };
+layout(std430, set = 0, binding = 1) readonly buffer CB { float cs[]; };
+layout(std430, set = 0, binding = 3) buffer DB { float d[]; };
+layout(push_constant) uniform PC { uint heads; uint hd; uint m; uint flags; uint eps_bits; uint data_off; uint w_off; uint cs_row0; } pc;
+shared float v[128];
+shared float red[64];
+void main() {
+    const uint h = gl_WorkGroupID.x, i = gl_WorkGroupID.y, t = gl_LocalInvocationID.x;
+    const uint hd = pc.hd, half_ = pc.hd / 2u;
+    const uint base = pc.data_off + (i * pc.heads + h) * hd;
+    for (uint e = t; e < hd; e += 64u) v[e] = d[base + e];
+    barrier();
+    if ((pc.flags & 1u) != 0u) {
+        float ss = 0.0;
+        for (uint e = t; e < hd; e += 64u) ss += v[e] * v[e];
+        red[t] = ss;
+        barrier();
+        for (uint s = 32u; s > 0u; s >>= 1u) { if (t < s) red[t] += red[t + s]; barrier(); }
+        const float inv = 1.0 / sqrt(red[0] / float(hd) + uintBitsToFloat(pc.eps_bits));
+        for (uint e = t; e < hd; e += 64u) v[e] = nw[pc.w_off + e] * (v[e] * inv);
+        barrier();
+    }
+    for (uint p = t; p < half_; p += 64u) {
+        const float c = cs[((pc.cs_row0 + i) * half_ + p) * 2u], s = cs[((pc.cs_row0 + i) * half_ + p) * 2u + 1u];
+        const float a = v[p], b = v[p + half_];
+        d[base + p] = a * c - b * s;
+        d[base + p + half_] = b * c + a * s;
+    }
+}

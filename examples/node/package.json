@@ -1,0 +1,1 @@
+{ "name": "vox-node-example", "version": "0.1.0", "type": "module", "private": true, "dependencies": { "koffi": "^2.9.0" } }

@@ -1,0 +1,12 @@
+#version 450
+// g = silu(g) * u (поэлементно)
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 3) buffer GB { float g[]; };
+layout(std430, set = 0, binding = 4) readonly buffer UB { float u[]; };
+layout(push_constant) uniform PC { uint n; } pc;
+void main() {
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.n) return;
+    const float a = g[i];
+    g[i] = (a / (1.0 + exp(-a))) * u[i];
+}

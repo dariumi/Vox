@@ -1,0 +1,18 @@
+#version 450
+// Fused QKV output [m][qd + 2*kd] → q [m][qd] and K/V caches at rows pos0 .. pos0+m-1 ([*][kd]).
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 0) writeonly buffer KB { float kc[]; };
+layout(std430, set = 0, binding = 1) writeonly buffer VB { float vc[]; };
+layout(std430, set = 0, binding = 3) readonly buffer SB { float qkv[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer QB { float q[]; };
+layout(push_constant) uniform PC { uint m; uint qd; uint kd; uint pos0; } pc;
+void main() {
+    const uint w = pc.qd + 2u * pc.kd;
+    const uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.m * w) return;
+    const uint row = i / w, e = i - row * w;
+    const float v = qkv[i];
+    if (e < pc.qd) q[row * pc.qd + e] = v;
+    else if (e < pc.qd + pc.kd) kc[(pc.pos0 + row) * pc.kd + (e - pc.qd)] = v;
+    else vc[(pc.pos0 + row) * pc.kd + (e - pc.qd - pc.kd)] = v;
+}

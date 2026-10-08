@@ -1,0 +1,40 @@
+# build trees
+/build*/
+/out/
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.exe
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+/dist/
+/.venv/
+/venv/
+
+# models, voices, audio and run artefacts (large, user data)
+*.tmod
+*.tvoice
+*.wav
+*.mp3
+*.safetensors
+*.gguf
+/work/
+/ref_dumps/
+/voices/
+# но не демо-ассеты сайта (крошечная тестовая модель и запись, 2 МБ)
+!/site/assets/*
+!/docs/assets/*
+
+# editors / OS
+.vscode/
+.idea/
+.DS_Store
+examples/rust/target/
+examples/node/node_modules/
+examples/go/vox-go
