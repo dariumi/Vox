@@ -17,7 +17,7 @@ head = "/*! vox.js %s — универсальный TTS-движок vox в б�
 os.makedirs(os.path.join(ROOT, "webgpu", "web", "dist"), exist_ok=True)
 v = ver.group(1) if ver else "0"
 js = head % v + '(function (global) {\n"use strict";\n' + body + '\nif (typeof module === "object" && module.exports) module.exports = Vox;\nglobal.Vox = Vox;\n})(typeof globalThis !== "undefined" ? globalThis : window);\n'
-mjs = head % v + '"use strict";\n' + body + "\nexport default Vox;\nexport { Vox, VoxError, Voice };\n"
+mjs = head % v + '"use strict";\n' + body + '\ntry { VOX_BASE_URL = import.meta.url.replace(/[^/]*$/, ""); } catch (e) { /* ок */ }\n' + "\nexport default Vox;\nexport { Vox, VoxError, Voice };\n"
 open(os.path.join(ROOT, "webgpu", "web", "dist", "vox.js"), "w", encoding="utf-8").write(js)
 open(os.path.join(ROOT, "webgpu", "web", "dist", "vox.mjs"), "w", encoding="utf-8").write(mjs)
 print("dist: vox.js %d KiB, vox.mjs %d KiB" % (len(js.encode()) // 1024, len(mjs.encode()) // 1024))

@@ -27,7 +27,7 @@ function readWav(buf) {
 }
 const getBuf = async (u) => (await fetch(u)).arrayBuffer();
 window.log = [];
-window.loadModel = async (url) => { const t = performance.now(); window.model = await Vox.load(url); return { ms: performance.now() - t, info: window.model.info }; };
+window.loadModel = async (url, opts) => { const t = performance.now(); window.model = await Vox.load(url, opts); return { ms: performance.now() - t, info: window.model.info }; };
 window.setRef = async (wav, text) => { const { pcm, sampleRate } = readWav(await getBuf(wav)); window.voice = await window.model.cloneVoice(pcm, text, { sampleRate }); return { frames: window.voice.frames, rms: window.voice.rms, samples: window.voice.samples, mel: Array.from(window.voice.mel.slice(0, 8)) }; };
 window.voiceMel = () => Array.from(window.voice.mel);
 window.runScenario = async (name, p, noiseUrl, expUrl) => {
@@ -47,6 +47,13 @@ window.runSeed = async (text, seed, nfe) => {
   const r = await window.model.synthesize(text, { voice: window.voice, seed, nfe_step: nfe });
   return { pcm: Array.from(r.pcm), len: r.pcm.length };
 };
+window.loadFrom = async (src, o) => {
+  const statuses = [], t = performance.now();
+  const m = await Vox.load(src, Object.assign({ onStatus: (s) => statuses.push(s) }, o));
+  window.model = m;
+  return { ms: performance.now() - t, info: m.info, statuses };
+};
+window.cacheKeys = async () => (typeof caches === "undefined" ? [] : (await (await caches.open("vox.js/models")).keys()).map((r) => r.url));
 window.noiseCheck = (seed, chunk, n) => Array.from(Vox._internal.f5Noise(seed, chunk, n));
 window.tokCheck = (text) => window.model.f5.tok.symbols(text);
 </script>

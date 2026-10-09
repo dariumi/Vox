@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <chrono>
 #include <fstream>
+#include <mutex>
+#include <thread>
 #if defined(__unix__) || defined(__APPLE__)
 #  include <sys/resource.h>
 #endif
@@ -67,7 +69,7 @@ void check(vox_status st, const char *what) {
 
 void usage() {
     std::puts(
-        "vox 0.10 — движок синтеза речи\n\n"
+        "vox 0.11 — движок синтеза речи\n\n"
         "  vox info <файл.tmod|файл.tvoice>\n"
         "  vox devices [--json]   (процессор, память, GPU с индексами и свободной видеопамятью)\n"
         "  vox voice speaker --model M.tmod [--speaker NAME] [--instruct ТЕКСТ] -o v.tvoice   (диктор CustomVoice / описание голоса VoiceDesign)\n"
@@ -77,6 +79,8 @@ void usage() {
         "                   [--xvector-only] [--name N] [--lang ru] [--seed 42] [--temperature 0.7]\n"
         "  vox say \"текст\" --model M.tmod --voice V.tvoice -o out.wav [--seed 42] [--float]\n"
         "  vox say --stdin --stream --model M.tmod --voice V.tvoice   (сырой float32 PCM в stdout)\n"
+        "  vox live --model M.tmod --voice V.tvoice (-o out.wav | --raw) [--commit auto|sentence|manual] [--idle-ms N] [--flush-nl]\n"
+        "                                                   (текст из stdin на лету → звук на лету; двусторонний стриминг)\n"
         "  vox tokenize --model M.tmod   (JSON-строки из stdin → id токенов)\n"
         "  vox bench --model M.tmod --voice V.tvoice [--text T] [--runs 5]\n"
         "  vox make-test-model -o test.tmod   (модель тестового бэкенда для разработки)\n\n"
@@ -180,6 +184,12 @@ vox_gen_params gen_params(const Args &a, std::string &lang_store) {
         if (a.has("--cfg")) ex["cfg_strength"] = std::stod(a.get("--cfg"));
         if (a.has("--sway")) ex["sway_sampling_coef"] = std::stod(a.get("--sway"));
         if (a.has("--speed")) ex["speed"] = std::stod(a.get("--speed"));
+        if (a.has("--commit") || a.has("--idle-ms")) {   // двусторонний стриминг: политика коммита текста
+            vox::json st = ex.value("stream", vox::json::object());
+            if (a.has("--commit")) st["commit"] = a.get("--commit");
+            if (a.has("--idle-ms")) st["idle_ms"] = std::stoul(a.get("--idle-ms"));
+            ex["stream"] = st;
+        }
         if (!ex.empty()) { extra_store = ex.dump(); p.extra_json = extra_store.c_str(); }
     }
     if (a.has("--max-frames")) p.max_frames = uint32_t(std::stoul(a.get("--max-frames")));
@@ -371,6 +381,89 @@ int cmd_say(const Args &a) {
     double secs = double(r.samples) / sr;
     std::fprintf(stderr, "%.2f s audio, first chunk %.1f ms, RTF %.3f\n", secs, r.first_chunk_ms,
                  secs > 0 ? r.total_ms / 1000.0 / secs : 0.0);
+    vox_voice_free(v);
+    vox_engine_close(e);
+    return 0;
+}
+
+
+// Живой режим: текст читается из stdin по мере поступления (печатаете, или пайп из LLM), звук идёт по мере готовности.
+//   vox live --model M --voice V -o out.wav     текст на лету → одна итоговая запись
+//   vox live --model M --voice V --raw          текст на лету → сырой float32 PCM в stdout (ffplay -f f32le -ar 24000 -i -)
+// --commit auto|sentence|manual  --idle-ms N (автокоммит после паузы в наборе)  --flush-nl (Enter = flush)
+int cmd_live(const Args &a) {
+    const bool raw = a.has("--raw");
+    if (!raw && !a.has("-o")) die("usage: vox live --model M.tmod --voice V.tvoice (-o out.wav | --raw) [--commit auto|sentence|manual] [--idle-ms N] [--flush-nl]");
+    vox_engine *e = open_engine(a);
+    vox_voice *v = load_voice(e, a);
+    std::string lang;
+    vox_gen_params p = gen_params(a, lang);
+    vox_session *s = nullptr;
+    check(vox_session_create(e, v, &p, &s), "create session");
+#if defined(_WIN32)
+    if (raw) _setmode(_fileno(stdout), _O_BINARY);
+#endif
+    std::mutex mu;
+    std::string inbox;
+    bool eof = false;
+    std::thread reader([&] {
+        for (;;) {
+            const int c = std::fgetc(stdin);   // блокирует только этот поток; stdio отдаёт байт, как только он пришёл
+            std::lock_guard<std::mutex> lk(mu);
+            if (c == EOF) { eof = true; return; }
+            inbox.push_back(char(c));
+        }
+    });
+    reader.detach();
+    const bool flush_nl = a.has("--flush-nl");
+    const auto t0 = Clock::now();
+    double first_text_ms = -1, first_audio_ms = -1;
+    std::vector<float> buf(4096), all;
+    size_t samples = 0;
+    bool ended = false;
+    for (;;) {
+        std::string take;
+        bool at_eof = false;
+        {
+            std::lock_guard<std::mutex> lk(mu);
+            take.swap(inbox);
+            at_eof = eof;
+        }
+        if (!take.empty()) {
+            if (first_text_ms < 0) first_text_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            const bool nl = flush_nl && take.find('\n') != std::string::npos;
+            check(vox_session_feed_text(s, take.c_str()), "feed text");
+            if (nl) check(vox_session_flush(s), "flush");
+        }
+        if (at_eof && !ended) { check(vox_session_end_text(s), "end text"); ended = true; }
+        bool got = false;
+        for (;;) {
+            size_t n = 0;
+            const vox_status st = vox_session_pull(s, buf.data(), buf.size(), &n);
+            if (st == VOX_DONE) goto finished;
+            check(st, "synthesis");
+            if (st == VOX_AGAIN) break;
+            if (first_audio_ms < 0) first_audio_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            samples += n;
+            got = true;
+            if (raw) { std::fwrite(buf.data(), sizeof(float), n, stdout); std::fflush(stdout); }
+            else all.insert(all.end(), buf.begin(), buf.begin() + long(n));
+        }
+        if (!got) std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+finished:
+    const uint32_t sr = vox_engine_sample_rate(e);
+    if (!raw) vox::wav_write(a.get("-o"), all.data(), all.size(), sr, !a.has("--float"));
+    size_t n = 0;
+    vox_session_info(s, nullptr, 0, &n);
+    std::string info(n + 1, '\0');
+    vox_session_info(s, info.data(), info.size(), &n);
+    info.resize(n);
+    const vox::json ij = vox::json::parse(info);
+    std::fprintf(stderr, "%.2f s audio; first text at %.0f ms, first audio at %.0f ms (+%.0f ms); %lld flushes (%lld by idle)\n",
+                 double(samples) / sr, first_text_ms, first_audio_ms, first_audio_ms - first_text_ms, (long long)ij.value("flushes", uint64_t(0)),
+                 (long long)ij.value("idle_flushes", uint64_t(0)));
+    vox_session_free(s);
     vox_voice_free(v);
     vox_engine_close(e);
     return 0;
@@ -667,6 +760,7 @@ int main(int argc, char **argv) {
         if (cmd == "info") return cmd_info(a);
         if (cmd == "voice") return cmd_voice(a);
         if (cmd == "say") return cmd_say(a);
+        if (cmd == "live") return cmd_live(a);
         if (cmd == "bench") return cmd_bench(a);
         if (cmd == "tokenize") return cmd_tokenize(a);
         if (cmd == "verify") return cmd_verify(a);

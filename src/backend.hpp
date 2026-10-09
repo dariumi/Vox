@@ -60,10 +60,19 @@ struct Capabilities {
     bool instruct = false;         // управление стилем текстовой инструкцией
     bool streaming_text = true;    // текст можно подавать по частям
     bool requires_instruct = false;
+    // Двусторонний стриминг: как модель принимает текст и отдаёт звук (движок подстраивает под это политику коммита текста).
+    //   text_in: "token" — модель читает текст по мере поступления (слова), звук идёт, пока есть непрочитанный текст;
+    //            "chunk" — модель озвучивает куски целиком (предложения/фразы), частичный текст ждёт, пока закончится кусок;
+    //            "none"  — текст только целиком (до end_text звука нет).
+    //   audio_out: "frames" — звук мелкими порциями, как только готов кадр; "chunks" — звук приходит куском на каждую фразу.
+    //   exact: стриминговый вывод при commit=auto совпадает с одноразовым синтезом всего текста (F5 — да; AR-модели читают текст «вживую»).
+    std::string text_in = "token", audio_out = "frames";
+    bool stream_exact = false;
     std::vector<std::string> speakers, languages;
     json to_json() const {
         return {{"clone_icl", clone_icl}, {"clone_xvector", clone_xvector}, {"named_speakers", named_speakers}, {"instruct", instruct},
-                {"streaming_text", streaming_text}, {"requires_instruct", requires_instruct}, {"speakers", speakers}, {"languages", languages}};
+                {"streaming_text", streaming_text}, {"requires_instruct", requires_instruct}, {"speakers", speakers}, {"languages", languages},
+                {"stream", {{"text_in", text_in}, {"audio_out", audio_out}, {"exact", stream_exact}, {"commit", {"auto", "sentence", "manual"}}}}};
     }
 };
 
@@ -136,6 +145,9 @@ public:
     virtual void direct_text(GenState &, const std::string & /*utf8*/) {}
     // Один возобновляемый шаг: дописывает звук в pcm (может ничего не дописать, если ждёт текст). true → озвучено всё.
     virtual bool direct_step(GenState &, bool /*text_ended*/, std::vector<float> & /*pcm*/) { return true; }
+    // Движок объявляет: весь поданный до сих пор текст — законченные куски (flush или конец предложения при commit=sentence);
+    // ждать продолжения последнего куска не нужно.
+    virtual void direct_seal(GenState &) {}
     // Сверка внутренних стадий с эталонным дампом (safetensors) для `vox verify`; пишет отчёт, true → в допуске.
     virtual bool debug_check(const std::string & /*dump*/, double /*tol*/, std::string &report) {
         report = "this model has no reference check";

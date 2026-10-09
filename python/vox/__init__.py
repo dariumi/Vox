@@ -29,8 +29,8 @@ except ImportError as _e:  # нативный модуль не собран: vo
     _vox = None
     _import_error = _e
 
-__version__ = _vox.VERSION if _vox else "0.10.0"
-__all__ = ["Engine", "Voice", "Session", "Resources", "VoxError", "OutOfMemory", "DeviceError", "devices", "inspect", "plan",
+__version__ = _vox.VERSION if _vox else "0.12.0"
+__all__ = ["Engine", "Voice", "Session", "Duplex", "Resources", "VoxError", "OutOfMemory", "DeviceError", "devices", "inspect", "plan",
            "make_test_model", "register_family", "Family", "Backend", "Tmod", "load_wav", "save_wav", "__version__"]
 
 AudioInput = Union[str, os.PathLike, "tuple[np.ndarray, int]"]
@@ -66,6 +66,8 @@ _PARAM_NAMES = ("temperature", "top_k", "top_p", "repetition_penalty", "sub_temp
 
 # параметры моделей без покадровых кодов (F5-TTS и др.): уходят в extra_json; можно и целиком словарём extra={...}
 _EXTRA_NAMES = ("nfe_step", "cfg_strength", "sway_sampling_coef", "speed", "target_rms", "cross_fade_duration", "fix_duration")
+# двусторонний стриминг: commit = "auto" | "sentence" | "manual", idle_ms — автокоммит после простоя (см. vox.h, ABI 0.4)
+_STREAM_NAMES = ("commit", "idle_ms")
 
 
 def _params(kw: dict) -> "_vox.Params":
@@ -74,6 +76,12 @@ def _params(kw: dict) -> "_vox.Params":
     for k in _EXTRA_NAMES:
         if k in kw:
             extra[k] = kw.pop(k)
+    stream = dict(extra.get("stream") or {})
+    for k in _STREAM_NAMES:
+        if k in kw:
+            stream[k] = kw.pop(k)
+    if stream:
+        extra["stream"] = stream
     unknown = set(kw) - set(_PARAM_NAMES)
     if unknown:
         raise TypeError(f"unknown generation parameter(s): {', '.join(sorted(unknown))}")
@@ -290,6 +298,22 @@ class Session:
             self._ended = True
         return self
 
+    def flush(self) -> "Session":
+        """Передать модели всё накопленное (даже слово без пробела) и закрыть текущий кусок; сессия остаётся открытой."""
+        if not self._ended:
+            self._h.flush()
+        return self
+
+    def set_pending(self, text: str) -> "Session":
+        """Заменить ещё не переданный модели хвост текста (правка при наборе). Уже переданное назад не берётся."""
+        self._h.set_pending(unicodedata.normalize("NFC", text))
+        return self
+
+    @property
+    def info(self) -> dict:
+        """Состояние текста: committed_bytes, pending, text_ended, commit, flushes… (vox_session_info)."""
+        return json.loads(self._h.info())
+
     def cancel(self) -> None:
         self._h.cancel()
 
@@ -416,6 +440,11 @@ class Engine:
         v = self._voice(voice)
         return Session(_vox.session_create(self._h, v._h, _params(params)), chunk_samples)
 
+    def duplex(self, voice: Union[Voice, str, os.PathLike], **kw) -> "Duplex":
+        """Двусторонний стрим: пишете текст в любой момент, звук приходит по мере готовности. См. vox.Duplex."""
+        from .duplex import Duplex
+        return Duplex(self, self._voice(voice), **kw)
+
     def stream(self, text: str, voice: Union[Voice, str, os.PathLike], **params) -> Iterator[np.ndarray]:
         s = self.session(voice, **params)
         s.feed(text)
@@ -466,3 +495,10 @@ class Engine:
             if chunk is sentinel:
                 return
             yield chunk
+
+
+def __getattr__(name):  # vox.Duplex импортируется лениво (потоки не нужны тем, кто их не использует)
+    if name == "Duplex":
+        from .duplex import Duplex
+        return Duplex
+    raise AttributeError(name)

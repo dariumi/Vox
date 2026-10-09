@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 #define VOX_ABI_VERSION_MAJOR 0
-#define VOX_ABI_VERSION_MINOR 3
+#define VOX_ABI_VERSION_MINOR 4
 
 typedef struct vox_engine  vox_engine;
 typedef struct vox_voice   vox_voice;
@@ -162,6 +162,24 @@ VOX_API void       vox_voice_free(vox_voice *v);
 VOX_API vox_status vox_session_create(vox_engine *e, const vox_voice *v, const vox_gen_params *p, vox_session **out);
 VOX_API vox_status vox_session_feed_text(vox_session *s, const char *utf8);
 VOX_API vox_status vox_session_end_text(vox_session *s);
+
+/* ---- Двусторонний стриминг (ABI 0.4) ----
+   Текст можно подавать порциями в любой момент, а звук забирать по мере готовности (vox_session_pull возвращает VOX_AGAIN,
+   когда нужно больше текста). Что именно и когда уходит в модель, решает политика коммита; её задаёт extra_json сессии:
+     {"stream": {"commit": "auto" | "sentence" | "manual", "idle_ms": 600}}
+   auto     — как умеет модель: AR-модели (Qwen3) читают текст по словам сразу, F5 озвучивает все законченные куски и держит
+              последний (результат совпадает с синтезом всего текста сразу);
+   sentence — в модель уходит только законченное предложение (знак конца + пробел, либо 。！？…);
+   manual   — ничего не уходит до vox_session_flush / vox_session_end_text («набираю, потом получаю одну запись»).
+   idle_ms  — если текст не поступал столько мс, всё накопленное коммитится само (при очередном vox_session_pull).
+   Что модель умеет — vox_engine_info → capabilities.stream (text_in, audio_out, exact). */
+
+/* Передать модели всё накопленное (даже слово без пробела) и закрыть текущий кусок. Сессия остаётся открытой. */
+VOX_API vox_status vox_session_flush(vox_session *s);
+/* Заменить ещё не переданный модели хвост текста (правка при наборе). Переданное назад не берётся: смотрите committed_bytes. */
+VOX_API vox_status vox_session_set_pending(vox_session *s, const char *utf8);
+/* JSON: {committed_bytes, pending, pending_bytes, text_ended, finished, frames, commit, idle_ms, flushes, idle_flushes}. */
+VOX_API vox_status vox_session_info(const vox_session *s, char *json_buf, size_t cap, size_t *len);
 /* Пишет до cap сэмплов в pcm_out. Возвращает VOX_OK / VOX_AGAIN / VOX_DONE или ошибку. */
 VOX_API vox_status vox_session_pull(vox_session *s, float *pcm_out, size_t cap, size_t *written);
 VOX_API void       vox_session_cancel(vox_session *s);  /* можно звать из другого потока */

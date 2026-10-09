@@ -92,6 +92,46 @@ class StreamPlayer {
   stop() { for (const s of this.nodes) { try { s.stop(); } catch (e) { /* ок */ } } this.nodes = []; }
 }
 
+// Склейка кусков кроссфейдом: в хвост уходят последние cfMax отсчётов, остальное можно отдавать. Те же формулы, что synth_chunk в ядре.
+class Splicer {
+  constructor(cfMax) { this.cfMax = cfMax; this.tail = new Float32Array(0); this.fadeIn = false; }
+  push(wave, first) {
+    const cfMax = this.cfMax;
+    if (this.fadeIn && cfMax > 0) {   // после паузы между отрезками: нарастание вместо кроссфейда с предыдущим
+      const n = Math.min(cfMax, wave.length);
+      for (let i = 0; i < n; i++) wave[i] *= i / n;
+      this.fadeIn = false;
+    }
+    if (cfMax === 0) return wave;
+    const tail = this.tail;
+    let buf;
+    if (tail.length === 0 && first) buf = wave;
+    else {
+      const cfs = Math.min(cfMax, tail.length, wave.length);
+      if (cfs === 0) { buf = new Float32Array(tail.length + wave.length); buf.set(tail); buf.set(wave, tail.length); }
+      else {
+        buf = new Float32Array(tail.length - cfs + wave.length);
+        buf.set(tail.subarray(0, tail.length - cfs));
+        for (let i = 0; i < cfs; i++) {
+          const fo = cfs === 1 ? 1 : 1 - i / (cfs - 1), fi = cfs === 1 ? 0 : i / (cfs - 1);
+          buf[tail.length - cfs + i] = tail[tail.length - cfs + i] * fo + wave[i] * fi;
+        }
+        buf.set(wave.subarray(cfs), tail.length);
+      }
+    }
+    const keep = Math.min(cfMax, buf.length);
+    this.tail = buf.slice(buf.length - keep);
+    return buf.subarray(0, buf.length - keep);
+  }
+  // Отдать хвост. fade=true — с затуханием до нуля (отрезок закончился, продолжения пока нет)
+  release(fade) {
+    const t = this.tail;
+    this.tail = new Float32Array(0);
+    if (fade && t.length) { const n = t.length; for (let i = 0; i < n; i++) t[i] *= 1 - (i + 1) / n; this.fadeIn = true; }
+    return t;
+  }
+}
+
 class VoxModel {
   constructor(gpu, tm, f5) {
     this.gpu = gpu; this.f5 = f5;
@@ -100,20 +140,35 @@ class VoxModel {
     this.generation = Object.assign({}, DEFAULTS, tm.manifest.generation || {});
     const m = tm.manifest.model || {};
     this.info = {
-      name: m.name || "", family: m.family || "f5-tts", variant: (tm.manifest.f5 && tm.manifest.f5.variant) || "",
-      sampleRate: this.sampleRate, weightBytes: f5.wbytes, device: gpu.info, precision: tm.manifest.precision || {},
+      name: m.name || "", family: m.family || "f5-tts", variant: m.variant || (tm.manifest.f5 && tm.manifest.f5.variant) || "",
+      sampleRate: this.sampleRate, weightBytes: f5.wbytes, device: gpu.info, backend: gpu.isCpu ? "cpu" : "webgpu", precision: tm.manifest.precision || {},
     };
   }
 
   static async load(src, opts = {}) {
     const t0 = performance.now();
-    const bytes = await fetchBytes(src, opts.onProgress);
-    const tm = new Tmod(bytes);
+    const bytes = await acquireTmod(src, opts, true);
+    const tm = bytes && bytes.qwenSource ? bytes.qwenSource : new Tmod(bytes);
     const fam = (tm.manifest.model || {}).family;
-    if (fam && fam !== "f5-tts") fail("vox.js пока умеет только семейство f5-tts, а в файле: " + fam, "unsupported");
-    if (opts.onStatus) opts.onStatus("инициализация WebGPU…");
-    const gpu = opts.gpu || await Gpu.create(opts);
-    if (opts.onStatus) opts.onStatus("загрузка весов в GPU…");
+    if (fam && fam !== "f5-tts" && fam !== "qwen3-tts") fail("vox.js умеет семейства f5-tts и qwen3-tts, а в файле: " + fam, "unsupported");
+    if (opts.onStatus) opts.onStatus("выбор устройства (WebGPU или процессор)…");
+    const gpu = opts.gpu || await createDevice(opts);
+    if (opts.onStatus) opts.onStatus((gpu.isCpu ? "подготовка весов для процессора…" : "загрузка весов в GPU…"));
+    if (fam === "qwen3-tts") {
+      const q = await QwenGpu.create(gpu, tm);
+      const qm = new QwenModel(gpu, tm, q);
+      qm.info.loadMs = performance.now() - t0;
+      if (tm.net) qm.info.net = { requests: tm.net.requests, mib: +(tm.net.bytes / 1048576).toFixed(1), redirects: tm.net.redirects, cachedBlocks: tm.net.cached, netMs: Math.round(tm.net.ms), mibPerSec: tm.net.ms ? +(tm.net.bytes / 1048576 / (tm.net.ms / 1000)).toFixed(1) : 0 };
+      return qm;
+    }
+    if (gpu.precompile) {
+      const k = tm.manifest.f5 || {}, mf = tm.manifest.precision || {};
+      const wt = mf.quant === "q8" ? [0, 1, 2, 3] : mf.quant === "q4" ? [0, 1, 2, 4] : [0, 1, 2];
+      const L = [["attention", "main", { HD: k.dim_head }], ["rope", "main"], ["conv1d", "main"], ["grn", "sumsq"], ["grn", "stats"], ["grn", "apply"], ["ln", "main"]];
+      for (const w of wt) L.push(["gemm", "main", { WTYPE: w }]);
+      for (const e of ["concat_in", "euler", "euler1", "zero_rows"]) L.push(["ew", e]);
+      await gpu.precompile(L);
+    }
     const f5 = new F5Gpu(gpu, tm);
     tm.bytes = null;   // веса уже в видеопамяти
     const m = new VoxModel(gpu, tm, f5);
@@ -155,68 +210,61 @@ class VoxModel {
     return s;
   }
 
-  async *stream(text, opts = {}) {
-    const voice = opts.voice;
-    if (!(voice instanceof Voice)) fail("передайте голос: opts.voice = await model.cloneVoice(...)", "arg");
-    if (voice.melDim !== this.f5.cfg.mel_dim) fail("голос создан для другой модели", "arg");
-    if (typeof text !== "string" || !text.trim()) fail("пустой текст", "arg");
-    const s = this._opts(opts), k = this.f5.cfg;
+  // Параметры нарезки для голоса: нормированный текст образца, длина образца в кадрах, предел символов куска, длина кроссфейда.
+  _plan(voice, s) {
+    const k = this.f5.cfg;
     let rt = voice.refText;
     if (!rt.endsWith(". ") && !rt.endsWith("。")) rt += rt.endsWith(".") ? " " : ". ";
     const refAudioLen = Math.floor(voice.samples / k.mel.hop);
     const refSec = f32r(voice.samples / k.sample_rate);
     let maxChars = s.maxChars;
     if (maxChars <= 0) maxChars = Math.max(1, Math.trunc(blen(rt) / refSec * (22 - refSec) * s.speed));
-    const chunks = chunkText(text, maxChars);
     const cfMax = Math.floor(f32r(Math.max(0, s.crossFade) * k.sample_rate));
-    let tail = new Float32Array(0);
+    return { rt, refAudioLen, refSec, maxChars, cfMax };
+  }
+
+  // Один кусок текста → звук (mel → Vocos → выравнивание громкости). idx — сквозной номер куска (поток шума).
+  async _chunkWave(voice, s, P, gen, idx, opts) {
+    const k = this.f5.cfg;
+    let ref = P.rt;
+    if (ref.charCodeAt(ref.length - 1) < 0x80) ref += " ";
+    const ids = this.f5.tok.encode(ref + gen);
+    const localSpeed = blen(gen) < 10 ? f32r(0.3) : s.speed;
+    let dur = P.refAudioLen + Math.trunc(P.refAudioLen / blen(ref) * blen(gen) / localSpeed);
+    dur = Math.max(dur, Math.max(ids.length, voice.frames) + 1);
+    dur = Math.min(dur, 65536);
+    let noise;
+    if (opts.noise) noise = typeof opts.noise === "function" ? opts.noise(idx, dur * k.mel_dim) : opts.noise[idx];
+    if (!noise) noise = f5Noise(s.seed, idx, dur * k.mel_dim);
+    if (noise.length < dur * k.mel_dim) fail("переданный шум короче нужного для куска " + idx, "arg");
+    const mel = await this.f5.sample(voice.mel, voice.frames, ids, dur, { nfe: s.nfe, cfg: s.cfg, sway: s.sway, epss: s.epss }, noise,
+      { signal: opts.signal, onStep: opts.onStep ? (a, b) => opts.onStep({ chunk: idx, chunks: opts.chunksTotal || 0, step: a, steps: b }) : null });
+    const from = P.refAudioLen;
+    const wave = await this.f5.vocode(mel.subarray(from * k.mel_dim), dur - from);
+    if (voice.rms < s.targetRms && voice.rms > 0) { const g = f32r(voice.rms / s.targetRms); for (let i = 0; i < wave.length; i++) wave[i] *= g; }
+    return wave;
+  }
+
+  async *stream(text, opts = {}) {
+    const voice = opts.voice;
+    if (!(voice instanceof Voice)) fail("передайте голос: opts.voice = await model.cloneVoice(...)", "arg");
+    if (voice.melDim !== this.f5.cfg.mel_dim) fail("голос создан для другой модели", "arg");
+    if (typeof text !== "string" || !text.trim()) fail("пустой текст", "arg");
+    const s = this._opts(opts), k = this.f5.cfg;
+    const P = this._plan(voice, s);
+    const chunks = chunkText(text, P.maxChars);
+    const sp = new Splicer(P.cfMax);
     const t0 = performance.now();
     this.f5.timing = { dit_ms: 0, vocos_ms: 0, text_ms: 0 };   // статистика — за этот запуск
     let produced = 0;
     for (let idx = 0; idx < chunks.length; idx++) {
       if (opts.signal && opts.signal.aborted) fail("синтез отменён", "aborted");
-      const gen = chunks[idx];
-      let ref = rt;
-      if (ref.charCodeAt(ref.length - 1) < 0x80) ref += " ";
-      const ids = this.f5.tok.encode(ref + gen);
-      const localSpeed = blen(gen) < 10 ? f32r(0.3) : s.speed;
-      let dur = refAudioLen + Math.trunc(refAudioLen / blen(ref) * blen(gen) / localSpeed);
-      dur = Math.max(dur, Math.max(ids.length, voice.frames) + 1);
-      dur = Math.min(dur, 65536);
-      let noise;
-      if (opts.noise) noise = typeof opts.noise === "function" ? opts.noise(idx, dur * k.mel_dim) : opts.noise[idx];
-      if (!noise) noise = f5Noise(s.seed, idx, dur * k.mel_dim);
-      if (noise.length < dur * k.mel_dim) fail("переданный шум короче нужного для куска " + idx, "arg");
-      const mel = await this.f5.sample(voice.mel, voice.frames, ids, dur, { nfe: s.nfe, cfg: s.cfg, sway: s.sway, epss: s.epss }, noise,
-        { signal: opts.signal, onStep: opts.onStep ? (a, b) => opts.onStep({ chunk: idx, chunks: chunks.length, step: a, steps: b }) : null });
-      const from = refAudioLen;
-      const wave = await this.f5.vocode(mel.subarray(from * k.mel_dim), dur - from);
-      if (voice.rms < s.targetRms && voice.rms > 0) { const g = f32r(voice.rms / s.targetRms); for (let i = 0; i < wave.length; i++) wave[i] *= g; }
-      let piece;
-      if (cfMax === 0) piece = wave;
-      else {
-        let buf;
-        if (tail.length === 0 && idx === 0) buf = wave;
-        else {
-          const cfs = Math.min(cfMax, tail.length, wave.length);
-          if (cfs === 0) { buf = new Float32Array(tail.length + wave.length); buf.set(tail); buf.set(wave, tail.length); }
-          else {
-            buf = new Float32Array(tail.length - cfs + wave.length);
-            buf.set(tail.subarray(0, tail.length - cfs));
-            for (let i = 0; i < cfs; i++) {
-              const fo = cfs === 1 ? 1 : 1 - i / (cfs - 1), fi = cfs === 1 ? 0 : i / (cfs - 1);
-              buf[tail.length - cfs + i] = tail[tail.length - cfs + i] * fo + wave[i] * fi;
-            }
-            buf.set(wave.subarray(cfs), tail.length);
-          }
-        }
-        const keep = Math.min(cfMax, buf.length);
-        piece = buf.subarray(0, buf.length - keep);
-        tail = buf.slice(buf.length - keep);
-      }
+      const wave = await this._chunkWave(voice, s, P, chunks[idx], idx, Object.assign({}, opts, { chunksTotal: chunks.length }));
+      const piece = sp.push(wave, idx === 0);
       produced += piece.length;
       if (piece.length) yield piece;
     }
+    const tail = sp.release(false);
     if (tail.length) { produced += tail.length; yield tail; }
     this.lastRun = { audioSeconds: produced / k.sample_rate, wallMs: performance.now() - t0, chunks: chunks.length, timing: Object.assign({}, this.f5.timing) };
   }
@@ -242,12 +290,3 @@ class VoxModel {
 
   dispose() { this.f5.dispose(); try { this.gpu.device.destroy(); } catch (e) { /* ок */ } }
 }
-
-const Vox = {
-  version: VOX_VERSION,
-  supported: () => typeof navigator !== "undefined" && !!navigator.gpu,
-  load: (src, opts) => VoxModel.load(src, opts),
-  Voice, VoxError, decodeAudio, wav: wavBlob, play: playPcm, StreamPlayer,
-  splitText: chunkText,
-  _internal: { Gpu, Tmod, F5Gpu, F5Tokenizer, f5Noise, f5Timesteps, melLogSpectrogram, istftSame, resampleSinc, blen },
-};

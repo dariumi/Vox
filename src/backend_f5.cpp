@@ -80,8 +80,11 @@ struct F5State : GenState {
     int cond_frames = 0, ref_audio_len = 0;
     float rms = 0.1f, ref_sec = 0;
     std::string ref_text;          // после нормировки (кончается ". " или "。")
-    std::string text;              // весь поданный текст
-    size_t next_chunk = 0;
+    std::string text;              // текущий отрезок текста (после запечатывания — следующий)
+    size_t next_chunk = 0;         // следующий кусок внутри отрезка
+    uint32_t chunk_counter = 0;    // сквозной номер куска: поток шума и признак первого куска
+    bool sealed = false;           // отрезок законченный: последний кусок можно озвучивать, не ожидая продолжения
+    bool fade_in_next = false;     // предыдущий отрезок закончился затуханием хвоста: следующий кусок начинаем с нарастания
     std::vector<float> tail;       // хвост для кроссфейда (до cross_fade отсчётов)
     bool flushed = false;
     uint64_t seed = 1;
@@ -123,6 +126,9 @@ public:
         Capabilities c;
         c.clone_icl = true;
         c.streaming_text = true;
+        c.text_in = "chunk";      // куски озвучиваются целиком: частичное предложение ждёт его конца
+        c.audio_out = "chunks";
+        c.stream_exact = true;    // при commit=auto результат совпадает с синтезом всего текста сразу
         return c;
     }
     SessionCost session_cost(const VoiceData &, const SessionOptions &) const override {
@@ -229,15 +235,30 @@ public:
     }
 
     void direct_text(GenState &g, const std::string &utf8) override { static_cast<F5State &>(g).text += utf8; }
+    void direct_seal(GenState &g) override { static_cast<F5State &>(g).sealed = true; }
 
     bool direct_step(GenState &g, bool text_ended, std::vector<float> &pcm) override {
         F5State &s = static_cast<F5State &>(g);
         const auto chunks = chunk_text(s.text, s.max_chars);
         // пока текст не закончился, последний кусок может ещё вырасти — озвучиваем только законченные
-        const size_t avail = text_ended ? chunks.size() : (chunks.empty() ? 0 : chunks.size() - 1);
+        // (если отрезок запечатан — flush или конец предложения — последний кусок тоже законченный)
+        const size_t avail = (text_ended || s.sealed) ? chunks.size() : (chunks.empty() ? 0 : chunks.size() - 1);
         if (s.next_chunk < avail) {
-            synth_chunk(s, chunks[s.next_chunk], uint32_t(s.next_chunk), pcm);
+            synth_chunk(s, chunks[s.next_chunk], s.chunk_counter, pcm);
             ++s.next_chunk;
+            ++s.chunk_counter;
+            return false;
+        }
+        if (s.sealed && !text_ended) {
+            // отрезок озвучен целиком, продолжения пока нет: отдаём хвост (с затуханием), чтобы последние 150 мс не повисли
+            const size_t n = s.tail.size();
+            for (size_t i = 0; i < n; ++i) s.tail[i] *= float(1.0 - double(i + 1) / double(n));
+            pcm.insert(pcm.end(), s.tail.begin(), s.tail.end());
+            s.fade_in_next = n > 0;
+            s.tail.clear();
+            s.text.clear();
+            s.next_chunk = 0;
+            s.sealed = false;
             return false;
         }
         if (!text_ended) return false;
@@ -260,6 +281,11 @@ public:
         std::vector<float> wave;
         synth_wave(s, gen_text, idx, wave);
         const size_t cf_max = size_t(std::max(0.f, s.cross_fade) * float(model_.cfg().sample_rate));
+        if (s.fade_in_next) {  // после паузы между отрезками: мягкое нарастание вместо кроссфейда с предыдущим
+            const size_t n = std::min(cf_max, wave.size());
+            for (size_t i = 0; i < n; ++i) wave[i] *= float(double(i) / double(n));
+            s.fade_in_next = false;
+        }
         std::vector<float> buf;
         if (cf_max == 0) {
             pcm.insert(pcm.end(), wave.begin(), wave.end());

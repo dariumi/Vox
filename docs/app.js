@@ -73,29 +73,31 @@
   }
   drawIdle($("heroScope")); drawIdle($("scope"));
 
-  // ---------- WebGPU ----------
+  // ---------- WebGPU или процессор ----------
   const supported = Vox.supported();
-  let gpuLabel = "";
+  let gpuLabel = "", hasGpu = false;
+  function enableDemo() { $("heroRun").disabled = false; $("loadTiny").disabled = false; $("loadUrl").disabled = false; $("loadHf").disabled = false; }
   async function probeGpu() {
-    if (!supported) {
-      $("gpuName").textContent = "WebGPU недоступен"; $("gpuDot").classList.add("off");
-      $("gpuNote").textContent = "нужен Chrome/Edge 113+, Firefox 141+ (Windows) или Safari 26";
+    const cpuNote = (why) => {
+      $("gpuName").textContent = "WebGPU недоступен — будет считать процессор"; $("gpuDot").classList.add("off");
+      $("gpuNote").textContent = why;
       const n = $("noGpu"); n.hidden = false;
-      n.textContent = "В этом браузере нет WebGPU, поэтому демо не запустится. Откройте страницу в свежем Chrome, Edge, Safari 26 или Firefox по HTTPS. Остальные разделы страницы работают без WebGPU.";
-      return;
-    }
+      n.textContent = "Без WebGPU демо работает на процессоре: это в десятки раз медленнее видеокарты. Тестовая модель и короткие фразы Qwen3-TTS 0.6B пойдут, большие модели будут очень долгими. Для скорости откройте страницу в свежем Chrome, Edge, Safari 26 или Firefox по HTTPS.";
+      const sel = $("backend"); if (sel) { sel.value = "cpu"; sel.disabled = true; }
+      enableDemo();
+    };
+    if (!supported) { cpuNote("нужен Chrome/Edge 113+, Firefox 141+ (Windows) или Safari 26"); return; }
     try {
       const a = await navigator.gpu.requestAdapter({ powerPreference: "high-performance" });
       if (!a) throw new Error("no adapter");
       const i = a.info || {};
       gpuLabel = [i.vendor, i.architecture || i.device || i.description].filter(Boolean).join(" ") || "видеокарта";
+      hasGpu = true;
       $("gpuName").textContent = "WebGPU доступен"; $("gpuDot").classList.add("on");
       $("gpuNote").textContent = gpuLabel;
-      $("heroRun").disabled = false; $("loadTiny").disabled = false; $("loadUrl").disabled = false;
+      enableDemo();
     } catch (e) {
-      $("gpuName").textContent = "WebGPU есть, адаптера нет"; $("gpuDot").classList.add("off");
-      $("gpuNote").textContent = "проверьте драйвер или список блокировок браузера";
-      $("noGpu").hidden = false; $("noGpu").textContent = "Браузер поддерживает WebGPU, но не нашёл подходящую видеокарту. Обновите драйвер или проверьте chrome://gpu.";
+      cpuNote("WebGPU есть, но адаптера нет: проверьте драйвер или chrome://gpu");
     }
   }
   probeGpu();
@@ -106,20 +108,47 @@
   const heroStat = (t) => { $("heroStat").textContent = t; };
   function progress(el, p) { el.hidden = false; el.firstElementChild.style.width = Math.round(p * 100) + "%"; }
 
-  async function loadModel(src, label, tiny) {
+  let isQwen = false, needsClone = true;
+  async function loadModel(src, label, tiny, extra) {
     if (model) { try { model.dispose(); } catch (e) { /* ок */ } model = null; voice = null; }
     $("stModel").textContent = "загрузка…"; $("stModel").classList.remove("done");
     setStatus("Загружаю модель…");
     try {
-      model = await Vox.load(src, {
-        onProgress: (p) => progress($("loadProg"), p), onStatus: setStatus,
-      });
+      const t0 = performance.now();
+      model = await Vox.load(src, Object.assign({
+        backend: $("backend").value, load: $("loadMode").value,
+        onProgress: (p, got, total) => {
+          progress($("loadProg"), p);
+          if (got && total && p < 1) {
+            const sec = (performance.now() - t0) / 1000, rate = got / 1048576 / Math.max(0.1, sec), left = rate > 0 ? (total - got) / 1048576 / rate : 0;
+            setStatus("Скачиваю и готовлю веса: " + fmt(got / 1048576, 0) + " из " + fmt(total / 1048576, 0) + " МБ, " + fmt(rate, 1) + " МБ/с" + (left > 3 ? ", осталось около " + (left > 90 ? Math.round(left / 60) + " мин" : Math.round(left) + " с") : ""));
+          }
+        },
+        onStatus: setStatus,
+      }, extra || {}));
       $("loadProg").hidden = true;
+      isQwen = model.info.family === "qwen3-tts";
+      needsClone = !isQwen || model.type === "base";
+      $("qwenVoice").hidden = needsClone;
+      $("f5Voice").hidden = !needsClone;
+      $("qBaseOnly").hidden = !(isQwen && needsClone);
+      $("refTiny").hidden = isQwen;
+      for (const id of ["f5Only", "nfeBox"]) $(id).hidden = isQwen;
+      $("dlVoice").hidden = true; $("stVoice").textContent = "нет"; $("stVoice").classList.remove("done"); $("demoVoice").textContent = "";
+      if (isQwen && !needsClone) {
+        $("qSpk").innerHTML = '<option value="">(без диктора)</option>' + model.speakers.map((x) => `<option>${x}</option>`).join("");
+        if (model.speakers.length) $("qSpk").value = model.speakers[0];
+        $("qLang").innerHTML = model.languages.map((x) => `<option>${x}</option>`).join("");
+        $("qIns").placeholder = model.capabilities.requires_instruct ? "Обязательно: опишите голос, например «A calm, deep narrator voice»" : "Необязательно";
+        $("qSpk").disabled = !model.capabilities.named_speakers; $("qIns").disabled = !model.capabilities.instruct;
+        $("stQVoice").textContent = "выбирается при запуске";
+      }
       const mb = (model.info.weightBytes / 1048576).toFixed(0);
       $("stModel").textContent = "готова"; $("stModel").classList.add("done");
       $("demoModel").textContent = label + ", " + mb + " МБ весов"; $("demoDot").classList.add("on");
       $("recBtn").disabled = false; $("refTiny").disabled = !tiny;
-      setStatus("Модель загружена за " + fmt(model.info.loadMs / 1000, 1) + " с. Теперь создайте голос.");
+      const nt = model.info.net, bk = model.info.backend === "cpu" ? "процессор" : "WebGPU";
+      setStatus("Модель загружена за " + fmt(model.info.loadMs / 1000, 1) + " с (" + bk + (nt ? ", " + nt.requests + " запросов, " + fmt(nt.mib, 0) + " МБ" : "") + "). " + (isQwen ? "Выберите диктора или описание голоса." : "Теперь создайте голос."));
       updateButtons();
     } catch (e) {
       $("stModel").textContent = "ошибка";
@@ -129,10 +158,21 @@
   }
   function updateButtons() {
     $("makeVoice").disabled = !(model && ($("refFile").files[0] || refBlob) && $("refText").value.trim());
-    $("speak").disabled = !(model && voice);
+    const ready = !!(model && (!needsClone || voice));
+    $("speak").disabled = !ready;
+    $("liveStart").disabled = !ready || !!duplex;
   }
+  // голос Qwen3-TTS из выбранного диктора / описания / файла .tvoice
+  async function qwenVoice() {
+    return model.speakerVoice($("qSpk").value, $("qIns").value.trim(), { language: $("qLang").value });
+  }
+  async function currentVoice() { return needsClone ? voice : qwenVoice(); }
   let refBlob = null;
   $("loadTiny").addEventListener("click", () => loadModel("assets/tiny-f5.tmod", "тестовая модель", true));
+  $("loadHf").addEventListener("click", () => {
+    const u = $("hfLink").value.trim();
+    if (u) loadModel(u, u.replace(/^https?:\/\/huggingface\.co\//, "").replace(/^hf:/, ""), false, { dtype: $("hfDtype").value, quant: $("hfQuant").value });
+  });
   $("modelFile").addEventListener("change", (e) => { const f = e.target.files[0]; if (f) loadModel(f, f.name); });
   $("loadUrl").addEventListener("click", () => { const u = $("modelUrl").value.trim(); if (u) loadModel(u, u.split("/").pop() || "модель"); });
   $("refFile").addEventListener("change", () => { refBlob = null; updateButtons(); });
@@ -162,28 +202,53 @@
     } catch (e) { setStatus("Нет доступа к микрофону: разрешите его в настройках сайта или загрузите файл.", true); }
   });
 
+  function showVoice(v, label) {
+    voice = v;
+    $("stVoice").textContent = label; $("stVoice").classList.add("done");
+    $("demoVoice").textContent = "голос: " + label;
+    if (isQwen && v.toTvoice) {
+      const a = $("dlVoice"); if (a.href && a.href.startsWith("blob:")) URL.revokeObjectURL(a.href);
+      a.href = URL.createObjectURL(new Blob([v.toTvoice()], { type: "application/octet-stream" })); a.hidden = false;
+    }
+    updateButtons();
+  }
+  $("qTvoice").addEventListener("change", async () => {
+    const f = $("qTvoice").files[0];
+    if (!f || !model) return;
+    try { const v = model.voiceFromFile(new Uint8Array(await f.arrayBuffer())); showVoice(v, f.name); setStatus("Голос из файла загружен. Можно говорить."); }
+    catch (e) { setStatus(e.message || String(e), true); }
+  });
   $("makeVoice").addEventListener("click", async () => {
     const src = $("refFile").files[0] || refBlob;
+    const btn = $("makeVoice"); btn.disabled = true;
     try {
-      setStatus("Считаю спектрограмму образца…");
+      setStatus(isQwen ? "Считаю голос по записи на процессоре (страница остаётся живой, это может занять от секунд до минуты)…" : "Считаю спектрограмму образца…");
       const t0 = performance.now();
-      voice = await model.cloneVoice(src, $("refText").value, { name: "demo" });
-      $("stVoice").textContent = fmt(voice.seconds, 1) + " с"; $("stVoice").classList.add("done");
-      $("demoVoice").textContent = "голос: " + fmt(voice.seconds, 1) + " с записи";
-      setStatus("Голос создан за " + fmt((performance.now() - t0) / 1000, 2) + " с. Можно говорить.");
-      updateButtons();
-    } catch (e) { setStatus(e.message || String(e), true); }
+      const v = await model.cloneVoice(src, $("refText").value, { name: "demo", xvectorOnly: isQwen && $("xvOnly").checked,
+        onProgress: (p) => progress($("voiceProg"), p) });
+      $("voiceProg").hidden = true;
+      showVoice(v, fmt(v.seconds, 1) + " с записи");
+      setStatus("Голос создан за " + fmt((performance.now() - t0) / 1000, 1) + " с. Можно говорить.");
+    } catch (e) { $("voiceProg").hidden = true; setStatus(e.message || String(e), true); }
+    finally { updateButtons(); }
   });
 
+  function setPlayer(blob) {
+    const au = $("player");
+    if (au.src && au.src.startsWith("blob:")) URL.revokeObjectURL(au.src);
+    au.src = URL.createObjectURL(blob); au.hidden = false;
+  }
   async function synth(text, opts, ui) {
     if (abort) abort.abort();
+    let v;
+    try { v = await currentVoice(); } catch (e) { ui.msg(e && e.message ? e.message : String(e), true); return; }
     abort = new AbortController();
     if (player) player.stop();
     player = new Vox.StreamPlayer(model.sampleRate);
     ui.disable(true);
     try {
       const t0 = performance.now();
-      const res = await model.synthesize(text, Object.assign({ voice, signal: abort.signal, onChunk: (p) => player.push(p),
+      const res = await model.synthesize(text, Object.assign({ voice: v, signal: abort.signal, onChunk: (p) => player.push(p),
         onStep: (s) => ui.progress((s.chunk + s.step / s.steps) / s.chunks) }, opts));
       ui.progress(1);
       const sp = model.spectrogram(res.pcm);
@@ -199,7 +264,7 @@
 
   $("speak").addEventListener("click", () => {
     const ui = {
-      disable: (b) => { $("speak").disabled = b || !voice; $("stop").disabled = !b; },
+      disable: (b) => { $("speak").disabled = b || !(!needsClone || voice); $("stop").disabled = !b; },
       progress: (p) => { $("scopeBar").style.width = Math.round(p * 100) + "%"; },
       draw: (sp) => { $("scopeHint").hidden = true; drawSpec($("scope"), sp); },
       msg: (t, err) => setStatus(t, err),
@@ -209,13 +274,52 @@
         $("sDit").textContent = fmt(t.dit_ms / 1000, 1); $("sVoc").textContent = fmt(t.vocos_ms / 1000, 2);
         $("demoStat").textContent = fmt(res.seconds, 1) + " с звука за " + fmt(wall, 1) + " с";
         const a = $("dlWav"); a.hidden = false; a.href = URL.createObjectURL(lastWav);
+        setPlayer(lastWav);
         setStatus("Готово. Звук уже играет; скачать его можно кнопкой под спектрограммой.");
       },
     };
     setStatus("Считаю…"); $("scopeBar").style.width = "0";
-    synth($("text").value, { nfe_step: Number($("nfe").value), speed: Number($("speed").value), seed: Number($("seed").value) || 1 }, ui);
+    synth($("text").value, isQwen ? { seed: Number($("seed").value) || 1, language: $("qLang").value }
+      : { nfe_step: Number($("nfe").value), speed: Number($("speed").value), seed: Number($("seed").value) || 1 }, ui);
   });
   $("stop").addEventListener("click", () => { if (abort) abort.abort(); if (player) player.stop(); });
+
+  // ---------- живой ввод (двусторонний стриминг) ----------
+  let duplex = null, livePlayer = null, liveTimer = null;
+  const liveSay = (t, err) => { const s = $("liveStatus"); s.textContent = t; s.classList.toggle("err", !!err); };
+  function liveStats() {
+    if (!duplex) return;
+    const st = duplex.stats, inf = duplex.info();
+    $("lvFirst").textContent = st.firstAudioMs != null ? fmt(st.firstAudioMs / 1000, 2) : "–";
+    $("lvAudio").textContent = fmt(st.audioSamples / model.sampleRate, 1);
+    $("lvSpoken").textContent = String(inf.committed_bytes != null ? inf.committed_bytes : 0);
+  }
+  $("liveStart").addEventListener("click", async () => {
+    let v;
+    try { v = await currentVoice(); } catch (e) { liveSay(e && e.message ? e.message : String(e), true); return; }
+    if (player) player.stop();
+    livePlayer = new Vox.StreamPlayer(model.sampleRate);
+    const rec = [];
+    const d = duplex = model.duplex({ voice: v, commit: $("liveCommit").value, idle_ms: Number($("liveIdle").value) || 0,
+      utterance_gap_ms: isQwen ? 1500 : 0, seed: Number($("seed").value) || 1, language: isQwen ? $("qLang").value : undefined });
+    $("liveText").disabled = false; $("liveText").value = ""; $("liveText").focus();
+    $("liveStart").disabled = true; $("liveFlush").disabled = false; $("liveStop").disabled = false;
+    $("stLive").textContent = "слушаю"; $("stLive").classList.add("done");
+    liveSay(d.caps && d.caps.text_in === "token" ? "Модель читает по словам: звук пойдёт почти сразу." : "Модель озвучивает кусками: звук пойдёт после законченного предложения или паузы.");
+    liveTimer = setInterval(liveStats, 300);
+    (async () => {
+      try { for await (const c of d.audio()) { livePlayer.push(c); rec.push(c); } liveSay("Готово: весь введённый текст озвучен. Запись можно прослушать плеером выше."); if (rec.length) { const n = rec.reduce((s2, q) => s2 + q.length, 0), all = new Float32Array(n); let o = 0; for (const q of rec) { all.set(q, o); o += q.length; } lastWav = Vox.wav(all, model.sampleRate); setPlayer(lastWav); const a = $("dlWav"); a.hidden = false; a.href = URL.createObjectURL(lastWav); } }
+      catch (e) { if (!(e && e.code === "aborted")) liveSay(e && e.message ? e.message : String(e), true); }
+      finally { clearInterval(liveTimer); liveStats(); duplex = null; $("liveText").disabled = true; $("liveFlush").disabled = true; $("liveStop").disabled = true;
+        $("stLive").textContent = "остановлено"; $("stLive").classList.remove("done"); updateButtons(); }
+    })();
+  });
+  $("liveText").addEventListener("input", () => {
+    if (!duplex) return;
+    try { duplex.setText($("liveText").value); } catch (e) { liveSay(e && e.message ? e.message : String(e), true); }
+  });
+  $("liveFlush").addEventListener("click", () => { if (duplex) duplex.flush(); });
+  $("liveStop").addEventListener("click", () => { if (duplex) { duplex.end(); liveSay("Текст закончен, дожидаюсь звука…"); $("liveText").disabled = true; $("liveStop").disabled = true; } });
 
   // ---------- проверка в hero: тестовая модель + запись из репозитория ----------
   $("heroRun").addEventListener("click", async () => {

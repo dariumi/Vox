@@ -8,7 +8,7 @@ const PARAM_BYTES = 8 * 1024 * 1024;   // 32768 диспетчеров на пр
 const f = (x) => ({ f: x });           // пометка float в списке параметров
 
 class Gpu {
-  constructor(device, adapterInfo) {
+  constructor(device, adapterInfo, opts_load) {
     this.device = device;
     this.info = adapterInfo || {};
     this.pipes = new Map();
@@ -29,6 +29,9 @@ class Gpu {
     this.pass = null;
     this.dispatches = 0;
     this.bytes = 0;
+    this.ops = [];       // записанные диспетчеры текущего begin()…submit()
+    this.q = [];         // отправленные, но ещё не исполненные пачки (исполняются порциями в drain())
+    this.setLoad(opts_load);
   }
 
   static async create(opts = {}) {
@@ -43,7 +46,7 @@ class Gpu {
     catch (e) { device = await adapter.requestDevice(); }
     let ai = {};
     try { ai = adapter.info || (adapter.requestAdapterInfo ? await adapter.requestAdapterInfo() : {}); } catch (e) { /* нет */ }
-    const g = new Gpu(device, { vendor: ai.vendor || "", architecture: ai.architecture || "", device: ai.device || "", description: ai.description || "" });
+    const g = new Gpu(device, { vendor: ai.vendor || "", architecture: ai.architecture || "", device: ai.device || "", description: ai.description || "" }, opts.load);
     g.limits = { maxBuffer: device.limits.maxBufferSize, maxBinding: device.limits.maxStorageBufferBindingSize };
     return g;
   }
@@ -65,7 +68,7 @@ class Gpu {
     else { const t = new Uint8Array(n4); t.set(u8); this.device.queue.writeBuffer(b, 0, t); }
     return b;
   }
-  write(buf, f32, offsetFloats = 0) { this.device.queue.writeBuffer(buf, offsetFloats * 4, f32.buffer, f32.byteOffset, f32.byteLength); }
+  write(buf, f32, offsetFloats = 0) { this._flushSync(); this.device.queue.writeBuffer(buf, offsetFloats * 4, f32.buffer, f32.byteOffset, f32.byteLength); }
   free(b) { if (b && b !== this.dummyRO) { try { b.destroy(); } catch (e) { /* ок */ } } }
 
   // конвейер: kernel — имя из KERNELS, defs — подстановки {{...}}
@@ -73,6 +76,13 @@ class Gpu {
     const key = kernel + "/" + entry + "/" + JSON.stringify(defs || {});
     let p = this.pipes.get(key);
     if (p) return p;
+    const made = this._pipeDesc(kernel, entry, defs);
+    const pipeline = this.device.createComputePipeline(made.desc);
+    p = { pipeline, bgl: made.bgl, entries: made.entries, key, id: this.nextId++, module: made.module };
+    this.pipes.set(key, p);
+    return p;
+  }
+  _pipeDesc(kernel, entry, defs) {
     let src = KERNELS[kernel];
     if (!src) fail("нет шейдера " + kernel, "internal");
     for (const k of Object.keys(defs || {})) src = src.split("{{" + k + "}}").join(String(defs[k]));
@@ -89,14 +99,11 @@ class Gpu {
     }
     const module = this.device.createShaderModule({ code: src, label: kernel });
     const bgl = this.device.createBindGroupLayout({ entries });
-    const pipeline = this.device.createComputePipeline({
-      label: key, layout: this.device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
-      compute: { module, entryPoint: entry },
-    });
-    p = { pipeline, bgl, entries, key, id: this.nextId++, module };
-    this.pipes.set(key, p);
-    return p;
+    const key = kernel + "/" + entry + "/" + JSON.stringify(defs || {});
+    const desc = { label: key, layout: this.device.createPipelineLayout({ bindGroupLayouts: [bgl] }), compute: { module, entryPoint: entry } };
+    return { desc, bgl, entries, module };
   }
+
   async checkShader(kernel, defs) {
     let src = KERNELS[kernel];
     for (const k of Object.keys(defs || {})) src = src.split("{{" + k + "}}").join(String(defs[k]));
@@ -106,9 +113,11 @@ class Gpu {
   }
 
   // ---- запись команд ----
+  // Диспетчеры записываются в список, а кодируются и отправляются порциями в drain() — после submit() вызывающий делает await g.read()/g.idle().
+  // Так видеокарта не получает за раз многосекундную пачку (ОС и браузер не замирают, нет срабатывания сторожевого таймера драйвера).
   begin() {
-    this.enc = this.device.createCommandEncoder();
-    this.pass = this.enc.beginComputePass();
+    this._flushSync();
+    this.ops = [];
     this.poff = 0;
     this.dispatches = 0;
   }
@@ -132,9 +141,7 @@ class Gpu {
     }
     let bg = this.bgs.get(key);
     if (!bg) { bg = this.device.createBindGroup({ layout: pipe.bgl, entries }); this.bgs.set(key, bg); }
-    this.pass.setPipeline(pipe.pipeline);
-    this.pass.setBindGroup(0, bg, [this.poff]);
-    this.pass.dispatchWorkgroups(gx, gy, 1);
+    this.ops.push({ pipeline: pipe.pipeline, bg, off: this.poff, gx, gy });
     this.poff += PARAM_SLOT;
     this.dispatches++;
   }
@@ -144,13 +151,53 @@ class Gpu {
     this.run(pipe, bufs, params, Math.min(groups, 65535), Math.ceil(groups / 65535));
   }
   submit() {
-    this.pass.end();
     this.device.queue.writeBuffer(this.paramBuf, 0, this.pdata, 0, this.poff);
-    this.device.queue.submit([this.enc.finish()]);
-    this.enc = null; this.pass = null;
+    if (this.ops.length) this.q.push(this.ops);
+    this.ops = [];
   }
-  async idle() { await this.device.queue.onSubmittedWorkDone(); }
+  _encode(ops) {
+    const enc = this.device.createCommandEncoder(), pass = enc.beginComputePass();
+    for (const o of ops) { pass.setPipeline(o.pipeline); pass.setBindGroup(0, o.bg, [o.off]); pass.dispatchWorkgroups(o.gx, o.gy, 1); }
+    pass.end();
+    this.device.queue.submit([enc.finish()]);
+  }
+  // всё накопленное — немедленно одной пачкой (для записей в буферы и копий, которым важен порядок)
+  _flushSync() {
+    while (this.q.length) this._encode(this.q.shift());
+  }
+  // Нагрузка: "full" — без пауз, "balanced" (по умолчанию) — GPU занят не более ~70% времени, "gentle" — ~40% (ноутбуки, слабые встроенные видеокарты)
+  setLoad(load) {
+    const L = typeof load === "object" && load ? load : { full: { duty: 1, ms: 60 }, balanced: { duty: 0.7, ms: 30 }, gentle: { duty: 0.4, ms: 16 } }[load || "balanced"];
+    if (!L) fail("load: full | balanced | gentle", "arg");
+    this.pace = { duty: Math.min(1, Math.max(0.1, L.duty)), ms: Math.max(4, L.ms) };
+    this.sliceOps = this.sliceOps || 48;
+    this.pstat = this.pstat || { slices: 0, busyMs: 0, sleptMs: 0, maxSliceMs: 0 };
+  }
+  // Исполнить накопленное порциями ~pace.ms: размер порции подстраивается по измеренному времени, между порциями — пауза под нагрузку.
+  async drain() {
+    const P = this.pace;
+    while (this.q.length) {
+      const batch = this.q.shift();
+      for (let i = 0; i < batch.length;) {
+        const n = Math.min(this.sliceOps, batch.length - i);
+        const t0 = performance.now();
+        this._encode(batch.slice(i, i + n));
+        i += n;
+        if (i >= batch.length && !this.q.length && n === batch.length) return;   // вся пачка помещается в одну порцию: ждать будет read()/idle()
+        await this.device.queue.onSubmittedWorkDone();
+        const t = performance.now() - t0;
+        this.pstat.slices++; this.pstat.busyMs += t; if (t > this.pstat.maxSliceMs) this.pstat.maxSliceMs = t;
+        if (t > P.ms * 1.3) this.sliceOps = Math.max(1, Math.floor(this.sliceOps * P.ms / t));
+        else if (t < P.ms * 0.6) this.sliceOps = Math.min(4096, Math.ceil(this.sliceOps * 1.5));
+        const rest = (i < batch.length || this.q.length) ? Math.round(t * (1 - P.duty) / P.duty) : 0;
+        if (rest >= 2 && t >= 4) { this.pstat.sleptMs += rest; await new Promise((r) => setTimeout(r, rest)); }
+        else await new Promise((r) => setTimeout(r, 0));   // отдать поток странице (ввод, отрисовка)
+      }
+    }
+  }
+  async idle() { await this.drain(); await this.device.queue.onSubmittedWorkDone(); }
   async read(buf, floats, offsetFloats = 0) {
+    await this.drain();
     const U = GPUBufferUsage;
     const st = this.device.createBuffer({ size: (floats * 4 + 3) & ~3, usage: U.MAP_READ | U.COPY_DST });
     const enc = this.device.createCommandEncoder();
@@ -160,6 +207,24 @@ class Gpu {
     const out = new Float32Array(st.getMappedRange().slice(0, floats * 4));
     st.unmap(); st.destroy();
     return out;
+  }
+  // Асинхронная сборка конвейеров заранее (createComputePipeline блокирует поток страницы на время компиляции шейдера)
+  async precompile(list, onProgress) {
+    let done = 0;
+    const one = async ([kernel, entry, defs]) => {
+      const key = kernel + "/" + entry + "/" + JSON.stringify(defs || {});
+      if (this.pipes.has(key)) return;
+      const made = this._pipeDesc(kernel, entry, defs);
+      let pipeline;
+      try { pipeline = await this.device.createComputePipelineAsync(made.desc); } catch (e) { return; }   // не вышло — соберётся синхронно при первом использовании
+      if (!this.pipes.has(key)) this.pipes.set(key, { pipeline, bgl: made.bgl, entries: made.entries, key, id: this.nextId++, module: made.module });
+    };
+    for (let i = 0; i < list.length; i += 4) {
+      await Promise.all(list.slice(i, i + 4).map(one));
+      done = Math.min(list.length, i + 4);
+      if (onProgress) onProgress(done / list.length);
+      await new Promise((r) => setTimeout(r, 0));
+    }
   }
 }
 

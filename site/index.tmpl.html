@@ -75,7 +75,7 @@
       <table>
         <thead><tr><th>Модель</th><th>Процессор</th><th>Vulkan</th><th>Браузер (WebGPU)</th><th>Что проверено</th></tr></thead>
         <tbody>
-          <tr><td><b>Qwen3-TTS 12Hz</b><small>Base, CustomVoice, VoiceDesign; 0,6B и 1,7B</small></td><td class="y">да</td><td class="y">да</td><td class="n">пока нет</td><td>Сверена с официальным <code>qwen_tts</code>, в том числе на настоящей 1,7B-Base; замеры скорости на RTX 3050 есть в README</td></tr>
+          <tr><td><b>Qwen3-TTS 12Hz</b><small>Base, CustomVoice, VoiceDesign; 0,6B и 1,7B</small></td><td class="y">да</td><td class="y">да</td><td class="y">да</td><td>Ядро сверено с официальным <code>qwen_tts</code>, в том числе на настоящей 1,7B-Base; замеры скорости на RTX 3050 есть в README. В браузере: загрузка по ссылке HF и синтез сверены с ядром на крошечной модели; на настоящих весах и на реальной видеокарте не измерялось. Голос из записи в браузере пока не создаётся: нужен готовый .tvoice, диктор или описание</td></tr>
           <tr><td><b>F5-TTS</b><small>DiT + flow matching + Vocos, клонирование по образцу</small></td><td class="y">да</td><td class="p">линейные слои</td><td class="y">да</td><td>Сверена с <code>f5_tts</code> и <code>vocos</code> на тестовой модели, в браузере тоже. На настоящих весах и на реальной видеокарте скорость не измерялась</td></tr>
           <tr><td><b>XTTS, CosyVoice, Chatterbox</b></td><td class="n" colspan="3">в очереди</td><td>Будут подключены по одной модели за итерацию</td></tr>
         </tbody>
@@ -122,7 +122,7 @@ cmake --build build -j</pre>
           <a class="btn small" href="vox.mjs" download>vox.mjs (ES-модуль)</a>
         </div>
         <pre>&lt;script src="vox.js"&gt;&lt;/script&gt;</pre>
-        <p>Без сборки и зависимостей, около 75 КБ. Нужен браузер с WebGPU: Chrome и Edge 113+ (Windows, macOS; на Linux WebGPU пока включается флагами), Firefox 141+ (Windows), Safari 26. Страница должна открываться по HTTPS или с localhost.</p>
+        <p>Без сборки и зависимостей, около 75 КБ. Лучше всего с WebGPU (иначе считает процессор, в разы медленнее): Chrome и Edge 113+ (Windows, macOS; на Linux WebGPU пока включается флагами), Firefox 141+ (Windows), Safari 26. Страница должна открываться по HTTPS или с localhost.</p>
       </div>
       <div>
         <h3>Файл модели .tmod</h3>
@@ -151,8 +151,8 @@ python -m vox.build_f5 --ckpt model_1250000.safetensors \
 
 <section class="block" id="demo">
   <div class="wrap">
-    <h2>Демо: F5-TTS на WebGPU</h2>
-    <p class="sub">Всё считается у вас в браузере, на вашей видеокарте. Ничего не отправляется на сервер: модель и запись голоса остаются на странице.</p>
+    <h2>Демо: F5-TTS и Qwen3-TTS на WebGPU</h2>
+    <p class="sub">Всё считается у вас в браузере: на видеокарте (WebGPU), а если её нет — на процессоре. Ничего не отправляется на сервер: модель и запись голоса остаются на странице.</p>
     <div id="noGpu" class="notice" hidden></div>
     <div class="demo">
       <div>
@@ -163,28 +163,56 @@ python -m vox.build_f5 --ckpt model_1250000.safetensors \
           <input id="modelFile" type="file" accept=".tmod">
           <label class="f" for="modelUrl">Или ссылка на файл (сервер должен разрешать CORS)</label>
           <div class="row" style="margin-top:0"><input id="modelUrl" type="url" placeholder="https://…/f5.bf16.tmod" style="flex:1"><button class="btn small" id="loadUrl" type="button" disabled>Загрузить</button></div>
+          <label class="f" for="hfLink">Или репозиторий Hugging Face — движок сам скачает веса и сконвертирует их в браузере</label>
+          <div class="row" style="margin-top:0"><input id="hfLink" type="text" placeholder="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice" list="hfPresets" style="flex:1"><button class="btn small" id="loadHf" type="button" disabled>Загрузить</button></div>
+          <datalist id="hfPresets"><option value="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"><option value="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"><option value="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"><option value="SWivid/F5-TTS"></datalist>
+          <div class="grid2">
+            <div><label class="f" for="hfDtype">Точность весов</label><select id="hfDtype"><option value="bf16" selected>bf16 (меньше памяти)</option><option value="f16">f16</option><option value="f32">f32 (точнее, вдвое больше)</option></select></div>
+            <div><label class="f" for="hfQuant">Квантование</label><select id="hfQuant"><option value="" selected>нет</option><option value="q8">q8 (вчетверо меньше f32)</option></select></div>
+          </div>
+          <div class="grid2">
+            <div><label class="f" for="backend">Чем считать</label><select id="backend"><option value="auto" selected>Автоматически (WebGPU, иначе процессор)</option><option value="webgpu">Видеокарта (WebGPU)</option><option value="cpu">Процессор (медленно, но без видеокарты)</option></select></div>
+            <div><label class="f" for="loadMode">Нагрузка на машину</label><select id="loadMode"><option value="balanced" selected>Сбалансированная</option><option value="gentle">Щадящая (ноутбук, слабая видеокарта)</option><option value="full">Полная скорость</option></select></div>
+          </div>
           <div class="progress" id="loadProg" hidden><i></i></div>
         </div>
-        <div class="stepbox">
+        <div class="stepbox" id="qwenVoice" hidden>
+          <h3>2. Диктор <span class="state" id="stQVoice">не выбран</span></h3>
+          <div class="grid2">
+            <div><label class="f" for="qSpk">Диктор</label><select id="qSpk"></select></div>
+            <div><label class="f" for="qLang">Язык</label><select id="qLang"></select></div>
+          </div>
+          <label class="f" for="qIns">Описание голоса или стиля (VoiceDesign и CustomVoice 1.7B), по-английски или по-китайски</label>
+          <input id="qIns" type="text" placeholder="A calm, deep narrator voice">
+        </div>
+        <div class="stepbox" id="f5Voice">
           <h3>2. Голос <span class="state" id="stVoice">нет</span></h3>
           <label class="f" for="refFile">Запись голоса, 5–12 секунд чистой речи</label>
           <input id="refFile" type="file" accept="audio/*">
           <div class="row"><button class="btn small" id="recBtn" type="button" disabled>Записать с микрофона</button><button class="btn small" id="refTiny" type="button" disabled>Взять запись тестовой модели</button></div>
           <label class="f" for="refText">Что произносится в записи (слово в слово)</label>
           <input id="refText" type="text" placeholder="Текст, который сказан в записи">
-          <div class="row"><button class="btn small" id="makeVoice" type="button" disabled>Создать голос</button></div>
+          <div id="qBaseOnly" hidden>
+            <label class="f"><input id="xvOnly" type="checkbox"> Только вектор диктора (быстрее, текст записи не нужен; сходство чуть хуже)</label>
+            <label class="f" for="qTvoice">Или готовый голос .tvoice (созданный здесь или командой <code>vox voice create</code>)</label>
+            <input id="qTvoice" type="file" accept=".tvoice">
+          </div>
+          <div class="row"><button class="btn small" id="makeVoice" type="button" disabled>Создать голос</button><a class="btn small" id="dlVoice" href="#" download="voice.tvoice" hidden>Скачать голос (.tvoice)</a></div>
+          <div class="progress" id="voiceProg" hidden><i></i></div>
         </div>
         <div class="stepbox">
           <h3>3. Текст</h3>
           <label class="f" for="text">Что сказать</label>
           <textarea id="text">Привет! Это проверка синтеза речи прямо в браузере.</textarea>
           <div class="grid2">
-            <div><label class="f" for="nfe">Качество</label>
+            <div id="nfeBox"><label class="f" for="nfe">Качество</label>
               <select id="nfe"><option value="7">Быстро: 7 шагов</option><option value="16" selected>Баланс: 16 шагов</option><option value="32">Качество: 32 шага</option></select></div>
             <div><label class="f" for="seed">Seed</label><input id="seed" type="number" value="1" min="0" step="1"></div>
           </div>
+          <div id="f5Only">
           <label class="f" for="speed">Скорость речи: <span id="speedVal">1.0</span></label>
           <input id="speed" type="range" min="0.5" max="1.5" step="0.05" value="1">
+          </div>
           <div class="row"><button class="btn primary" id="speak" type="button" disabled>Сказать</button><button class="btn" id="stop" type="button" disabled>Остановить</button></div>
         </div>
       </div>
@@ -193,6 +221,7 @@ python -m vox.build_f5 --ckpt model_1250000.safetensors \
           <header><span><span class="dot" id="demoDot"></span><b id="demoModel">модель не загружена</b></span><span id="demoVoice"></span></header>
           <div class="scope"><canvas id="scope" width="1000" height="440"></canvas><div class="hint" id="scopeHint">Спектрограмма появится после первого синтеза</div><div class="bar" id="scopeBar"></div></div>
           <footer><span class="stat" id="demoStat">&nbsp;</span><a class="btn small" id="dlWav" href="#" download="vox.wav" hidden>Скачать WAV</a></footer>
+          <audio id="player" controls preload="auto" style="width:100%;margin-top:10px" hidden></audio>
         </div>
         <p class="status" id="status" role="status" aria-live="polite">Загрузите модель, чтобы начать.</p>
         <div class="stats" id="stats" hidden>
@@ -203,6 +232,37 @@ python -m vox.build_f5 --ckpt model_1250000.safetensors \
           <div><b id="sVoc">–</b><span>Vocos, с</span></div>
         </div>
         <p class="status" style="margin-top:20px">Скорость зависит от видеокарты и числа шагов. F5-TTS тяжёлая: на слабых встроенных видеокартах берите «Быстро». Замеров на реальных видеокартах у автора страницы пока нет.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="live">
+  <div class="wrap">
+    <h2>Живой ввод: печатаете — звучит</h2>
+    <p class="sub">Двусторонний стриминг. Текст подаётся на лету, звук идёт сразу, пока модель читает дальше. Модели разные: Qwen3-TTS читает текст по словам и начинает говорить на полуслове, F5-TTS озвучивает целыми кусками (по предложению или по паузе в наборе). Движок сам подбирает, как кормить выбранную модель. Нужна загруженная выше модель и голос.</p>
+    <div class="demo">
+      <div>
+        <div class="stepbox">
+          <h3>Ввод <span class="state" id="stLive">остановлено</span></h3>
+          <label class="f" for="liveText">Печатайте здесь</label>
+          <textarea id="liveText" placeholder="Начните печатать. Предложение озвучится, как только вы поставите точку или сделаете паузу." disabled></textarea>
+          <div class="grid2">
+            <div><label class="f" for="liveCommit">Когда отдавать текст модели</label>
+              <select id="liveCommit"><option value="auto">auto — как только модели хватает текста</option><option value="sentence">sentence — по законченному предложению</option><option value="manual">manual — только по кнопке</option></select></div>
+            <div><label class="f" for="liveIdle">Пауза в наборе, мс (0 — выкл.)</label><input id="liveIdle" type="number" value="700" min="0" step="100"></div>
+          </div>
+          <div class="row"><button class="btn primary" id="liveStart" type="button" disabled>Начать</button><button class="btn" id="liveFlush" type="button" disabled>Озвучить сейчас</button><button class="btn" id="liveStop" type="button" disabled>Закончить</button></div>
+        </div>
+      </div>
+      <div>
+        <div class="stats">
+          <div><b id="lvFirst">–</b><span>до первого звука, с</span></div>
+          <div><b id="lvAudio">–</b><span>звука, с</span></div>
+          <div><b id="lvSpoken">0</b><span>знаков передано модели</span></div>
+        </div>
+        <p class="status" id="liveStatus" role="status" aria-live="polite">Загрузите модель и выберите голос, потом нажмите «Начать».</p>
+        <p class="status" style="margin-top:20px">Режим <b>manual</b> собирает всё набранное в одну запись: нажмите «Закончить» и дождитесь звука. Правка уже озвученного не переозвучивается.</p>
       </div>
     </div>
   </div>

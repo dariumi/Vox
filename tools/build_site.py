@@ -52,26 +52,33 @@ with eng.session(voice, seed=42) as s:
     ("go", "Go", VERIFIED, "examples/go/main.go", read("examples/go/main.go"), "cgo, поэтому нужен компилятор C."),
     ("node", "Node.js", VERIFIED, "examples/node/vox.mjs", read("examples/node/vox.mjs"), "Через FFI-библиотеку <code>koffi</code> (<code>npm install</code> в папке примера)."),
     ("ctypes", "Python ctypes", VERIFIED, "examples/python/ctypes_example.py", read("examples/python/ctypes_example.py"), "Если не хотите собирать Python-модуль: чистый <code>ctypes</code> поверх той же библиотеки."),
-    ("web", "Браузер", "проверено в Chromium (WebGPU через SwiftShader) на тестовой модели", "vox.js", """<script src="vox.js"></script>
+    ("web", "Браузер", "проверено в Chromium (WebGPU через SwiftShader) на тестовых моделях", "vox.js", """<script src="vox.js"></script>
 <script type="module">
-  // 1. модель: URL, File, Blob или ArrayBuffer; onProgress — для индикатора загрузки
-  const model = await Vox.load("f5.bf16.tmod", { onProgress: (p) => console.log(Math.round(p * 100) + "%") });
-
-  // 2. голос: File из <input type=file>, Blob из MediaRecorder, URL или Float32Array (+ sampleRate)
-  const voice = await model.cloneVoice(refFile, "Текст, который сказан в записи");
-  voice.export();                       // JSON: сохраните и позже восстановите через Vox.Voice.from(json)
-
-  // 3. синтез целиком
-  const { pcm, sampleRate, stats } = await model.synthesize("Привет, мир!", {
-    voice, nfe_step: 16, speed: 1, seed: 1,
-    onStep: ({ chunk, chunks, step, steps }) => console.log(chunk + 1, "/", chunks, step, "/", steps),
+  // 1. модель: что угодно — репозиторий HF, прямая ссылка, .tmod, File/Blob. Чекпойнт (safetensors) качается и
+  //    конвертируется в браузере сам; Qwen3-TTS читается по тензорам (HTTP Range), целиком в память не попадает.
+  const model = await Vox.load("hf:Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", {
+    dtype: "bf16", quant: "",             // "q8" — вчетверо меньше f32
+    onProgress: (p) => console.log(Math.round(p * 100) + "%"), onStatus: console.log,
   });
+  // F5-TTS так же: Vox.load("hf:SWivid/F5-TTS") или Vox.load("https://…/model_1250000.safetensors", { vocab: "https://…/vocab.txt" })
+
+  // 2. голос. F5-TTS: из записи (File, Blob, URL или Float32Array + sampleRate) и текста записи.
+  //    Qwen3-TTS: готовый диктор / описание голоса или .tvoice (создаётся командой vox voice create)
+  const voice = model.family === "qwen3-tts"
+    ? model.speakerVoice("aiden", "Speak slowly and calmly", { language: "english" })
+    : await model.cloneVoice(refFile, "Текст, который сказан в записи");
+
+  // 3. синтез целиком или потоком
+  const { pcm, sampleRate } = await model.synthesize("Привет, мир!", { voice, seed: 1 });
   Vox.play(pcm, sampleRate);            // или Vox.wav(pcm, sampleRate) → Blob для скачивания
 
-  // 4. или потоком: звук играет, пока считаются следующие куски текста
+  // 4. двусторонний стриминг: текст подаётся на лету, звук забирается на лету
   const player = new Vox.StreamPlayer(model.sampleRate);
-  for await (const piece of model.stream("Длинный текст из нескольких предложений.", { voice })) player.push(piece);
-</script>""", "Параметры называются как в официальном F5-TTS: <code>nfe_step</code>, <code>cfg_strength</code>, <code>sway_sampling_coef</code>, <code>speed</code>, <code>cross_fade_duration</code>. Отмена — <code>signal</code> (AbortSignal)."),
+  const d = model.duplex({ voice, commit: "auto", idle_ms: 600 });   // auto | sentence | manual
+  input.addEventListener("input", () => d.setText(input.value));     // поле ввода; можно и d.write(токен из LLM)
+  (async () => { for await (const piece of d.audio()) player.push(piece); })();
+  // d.flush() — озвучить накопленное сейчас; d.end() — текст закончился; d.cancel() — оборвать
+</script>""", "Qwen3-TTS читает текст по словам и говорит на полуслове, F5-TTS озвучивает целыми кусками (<code>d.caps</code> показывает, как модель принимает текст). Параметры F5 называются как в официальном коде: <code>nfe_step</code>, <code>cfg_strength</code>, <code>sway_sampling_coef</code>, <code>speed</code>. Отмена — <code>signal</code> (AbortSignal)."),
     ("http", "HTTP", "", "python -m vox serve", """python -m vox serve --model model.tmod --voices ./voices --port 8080 --device vulkan
 
 curl localhost:8080/v1/voices
@@ -96,8 +103,10 @@ os.makedirs(D, exist_ok=True)
 open(os.path.join(D, "index.html"), "w", encoding="utf-8").write(t + "\n")
 for f in ("style.css", "app.js"):
     shutil.copy(os.path.join(S, f), D)
-for f in ("vox.js", "vox.mjs"):
-    shutil.copy(os.path.join(ROOT, "webgpu", "web", "dist", f), D)
+for f in ("vox.js", "vox.mjs", "pinyin.json"):   # pinyin.json нужен только китайскому тексту в F5-TTS; лежит рядом с vox.js
+    src = os.path.join(ROOT, "webgpu", "web", "dist", f)
+    if os.path.exists(src):
+        shutil.copy(src, D)
 shutil.copytree(os.path.join(S, "assets"), os.path.join(D, "assets"), dirs_exist_ok=True)
 open(os.path.join(D, ".nojekyll"), "w").close()
 print("site: docs/index.html (%d KiB), vox %s" % (len(t.encode()) // 1024, ver))

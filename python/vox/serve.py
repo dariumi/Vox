@@ -8,9 +8,19 @@
     POST /v1/tts  {"text": "...", "voice": "имя", "language": "russian", "seed": 42, "temperature": 0.7,
                    "format": "wav" | "pcm16" | "f32", "decoder_mode": "stream" | "reference"}
                                                    → аудио, отдаётся чанками по мере генерации
+    GET  /v1/duplex (WebSocket)     → двусторонний стриминг: текст на лету внутрь, звук на лету наружу (протокол ниже)
     POST /v1/voices {"name": "my_voice", "audio_b64": "<WAV в base64>", "ref_text": "текст референса",
                      "language": "russian", "xvector_only": false}
                                                    → создаёт голос нативно (без torch) и кладёт <name>.tvoice в --voices
+
+/v1/duplex — WebSocket. Клиент → сервер, текстовые сообщения JSON:
+    {"type":"start","voice":"имя","format":"pcm16"|"f32","commit":"auto"|"sentence"|"manual","idle_ms":600,"utterance_gap_ms":0,
+     "on_conflict":"keep"|"raise"|"respeak","seed":42,...параметры генерации как у /v1/tts}   (первым)
+    {"type":"text","text":"…"}   дописать текст          {"type":"flush"}   закрыть текущий кусок
+    {"type":"set_text","text":"весь текст из поля ввода"} режим набора (правки ещё не озвученного хвоста)
+    {"type":"end"}   текст закончился                       {"type":"cancel"}  оборвать
+  Сервер → клиент: {"type":"ready","sample_rate":…,"format":…,"capabilities":{…}}; двоичные кадры — PCM (little-endian);
+    {"type":"set_text_result",…}, {"type":"done","utterances":n,"stats":{…}}, {"type":"error","message":…}.
 
 Для WAV заголовок пишется со «стриминговой» длиной (0xFFFFFFFF): плееры и ffmpeg читают такой поток.
 curl -X POST localhost:8080/v1/tts -d '{"text":"Привет!","voice":"my_voice"}' | ffplay -i -
@@ -68,6 +78,83 @@ class Server:
                 self._voices[name] = (mtime, self.engine.load_voice(path))
             return self._voices[name][1]
 
+    def duplex_session(self, sock):
+        """Один WebSocket = одна двусторонняя сессия (см. протокол в шапке файла)."""
+        from . import ws as _ws
+        kind, raw = sock.recv()
+        try:
+            start = json.loads(raw) if kind == "text" else {}
+            if start.get("type") != "start":
+                raise ValueError('first message must be {"type":"start",...}')
+            fmt = start.get("format", "pcm16")
+            if fmt not in ("pcm16", "f32"):
+                raise ValueError("format must be pcm16 or f32")
+            voice = self.voice(start.get("voice", ""))
+            params = {k: start[k] for k in _GEN_KEYS if k in start and k != "seed"}
+            kw = {k: start[k] for k in ("commit", "idle_ms", "utterance_gap_ms", "on_conflict") if k in start}
+            if "seed" in start:
+                kw["seed"] = int(start["seed"])
+            dx = self.engine.duplex(voice, **kw, **params)
+        except KeyError as e:
+            sock.send_text(json.dumps({"type": "error", "message": f"unknown voice: {e}"}))
+            return
+        except (ValueError, TypeError, VoxError, json.JSONDecodeError) as e:
+            sock.send_text(json.dumps({"type": "error", "message": str(e)}))
+            return
+        sock.send_text(json.dumps({"type": "ready", "sample_rate": self.engine.sample_rate, "format": fmt,
+                                   "capabilities": self.engine.capabilities}))
+
+        def pump():   # звук наружу
+            try:
+                while True:
+                    c = dx.read(timeout=0.05)
+                    if c is None:
+                        if dx.done:
+                            break
+                        continue
+                    sock.send_binary(np.ascontiguousarray(c, dtype="<f4").tobytes() if fmt == "f32"
+                                     else (np.clip(c, -1, 1) * 32767).astype("<i2").tobytes())
+                sock.send_text(json.dumps({"type": "done", "utterances": dx.utterances, "stats": dx.stats}))
+            except (_ws.Closed, OSError):
+                pass
+            except Exception as e:  # noqa: BLE001 — ошибка генерации
+                try:
+                    sock.send_text(json.dumps({"type": "error", "message": str(e)}))
+                except Exception:  # noqa: BLE001
+                    pass
+
+        th = threading.Thread(target=pump, daemon=True)
+        th.start()
+        try:
+            while True:
+                kind, raw = sock.recv()
+                if kind != "text":
+                    continue
+                try:
+                    msg = json.loads(raw)
+                    t = msg.get("type")
+                    if t == "text":
+                        dx.write(str(msg.get("text", "")))
+                    elif t == "flush":
+                        dx.flush()
+                    elif t == "set_text":
+                        r = dx.set_text(str(msg.get("text", "")))
+                        sock.send_text(json.dumps(dict(r, type="set_text_result"), ensure_ascii=False))
+                    elif t == "end":
+                        dx.end()
+                    elif t == "cancel":
+                        dx.cancel()
+                        break
+                    else:
+                        sock.send_text(json.dumps({"type": "error", "message": f"unknown message type: {t}"}))
+                except (VoxError, ValueError, TypeError, json.JSONDecodeError) as e:
+                    sock.send_text(json.dumps({"type": "error", "message": str(e)}))
+        except _ws.Closed:
+            pass
+        finally:
+            dx.cancel() if not dx.done else None
+            th.join(timeout=2)
+
     def create_voice(self, req: dict) -> str:
         from .audio import load_wav
         name = req.get("name", "")
@@ -105,7 +192,31 @@ def make_handler(srv: Server):
             self.end_headers()
             self.wfile.write(body)
 
+        def _duplex(self):
+            key = self.headers.get("Sec-WebSocket-Key")
+            if "websocket" not in self.headers.get("Upgrade", "").lower() or not key:
+                return self._json(400, {"error": "WebSocket upgrade required"})
+            from . import ws as _ws
+            self.send_response(101, "Switching Protocols")
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", _ws.accept_key(key))
+            self.end_headers()
+            self.wfile.flush()
+            self.close_connection = True
+            sock = _ws.WebSocket(self.rfile, self.wfile)
+            try:
+                srv.duplex_session(sock)
+            except _ws.Closed:
+                pass
+            except Exception as e:  # noqa: BLE001
+                sys.stderr.write(f"vox serve: duplex failed: {e}\n")
+            finally:
+                sock.close()
+
         def do_GET(self):
+            if self.path.split("?")[0] == "/v1/duplex":
+                return self._duplex()
             if self.path == "/health":
                 self._json(200, {"status": "ok"})
             elif self.path == "/v1/info":

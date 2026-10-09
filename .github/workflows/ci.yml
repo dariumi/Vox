@@ -86,6 +86,13 @@ jobs:
           pip install playwright
           playwright install --with-deps chromium
           python tests/test_web.py build/vox
+          python tests/test_web_convert.py
+      - name: vox.js Qwen3-TTS in Chromium (load from HF link, WebGPU, duplex)
+        run: VOX_QWEN2_GGUF=qwen2.gguf python tests/test_web_qwen.py build/vox
+      - name: vox.js without WebGPU (CPU backend) vs core and WebGPU
+        run: VOX_QWEN2_GGUF=qwen2.gguf python tests/test_web_cpu.py build/vox
+      - name: Duplex streaming (core, Python, CLI, WebSocket)
+        run: VOX_QWEN2_GGUF=qwen2.gguf python tests/test_duplex.py build/vox
 
   aarch64:
     name: aarch64 cross build (qemu)

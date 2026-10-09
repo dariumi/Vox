@@ -15,7 +15,7 @@
 using namespace vox;
 
 #ifndef VOX_VERSION_STRING
-#define VOX_VERSION_STRING "0.10.0"
+#define VOX_VERSION_STRING "0.12.0"
 #endif
 
 extern std::string vox_internal_last_error();
@@ -45,7 +45,15 @@ struct vox_session {
     DetRng rng{1};
     uint32_t chunk_frames = 4, max_frames = 2048;
 
-    std::string text_tail;          // текст, ещё не отданный токенизатору (незаконченное слово)
+    // Двусторонний стриминг: поданный, но ещё не переданный модели текст (pending) и политика его коммита.
+    enum class Commit { Auto, Sentence, Manual };
+    std::string pending;            // текст, ещё не отданный модели (незаконченное слово/предложение, либо всё при commit=manual)
+    uint64_t committed_bytes = 0;   // сколько байт текста уже передано модели (откатить нельзя: звук уже считается)
+    Commit commit = Commit::Auto;
+    uint32_t idle_ms = 0;           // >0: если текст не приходит столько мс, а pending не пуст — коммитим его (flush)
+    bool idle_armed = false;        // таймер простоя запущен (после последней подачи текста)
+    std::chrono::steady_clock::time_point last_feed;
+    uint64_t flushes = 0, idle_flushes = 0;
     bool text_ended = false, finished = false, flushed = false;
     uint64_t frame = 0;
     std::vector<int32_t> history0;  // для repetition penalty
@@ -150,14 +158,72 @@ void fill_voice(Backend &b, const json &manifest, const float *pcm, size_t n, ui
     if (v.created.empty()) v.created = today_iso();
 }
 
-// Отдаёт токенизатору только ту часть текста, токенизация которой не зависит от продолжения.
-void flush_text(vox_session *s, bool all) {
-    std::string &t = s->text_tail;
-    size_t cut = all ? t.size() : s->e->backend->text_safe_cut(t);
-    if (cut == 0) return;
-    auto toks = s->e->backend->tokenize(t.substr(0, cut));
+// Позиция (в байтах) конца последнего законченного предложения в pending; 0 — нет. Знак конца считается законченным, если за ним
+// пробел/перевод строки (так "3.5" и "e.g." не рвутся посередине) или он полноширинный (。！？…); `final` — конец текста: любой знак в конце.
+size_t sentence_cut(const std::string &t, bool final) {
+    size_t best = 0;
+    for (size_t i = 0; i < t.size();) {
+        const unsigned char c = static_cast<unsigned char>(t[i]);
+        size_t len = 1;
+        bool term = false, full = false;
+        if (c < 0x80) {
+            term = c == '.' || c == '!' || c == '?' || c == '\n';
+        } else {
+            len = (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : (c >> 3) == 30 ? 4 : 1;
+            len = std::min(len, t.size() - i);
+            static const char *kFull[] = {"。", "！", "？", "…"};
+            for (const char *f : kFull)
+                if (t.compare(i, std::strlen(f), f) == 0) { term = full = true; break; }
+        }
+        if (term) {
+            size_t j = i + len;
+            const bool ws_after = j < t.size() && (t[j] == ' ' || t[j] == '\t' || t[j] == '\n' || t[j] == '\r');
+            if (full || ws_after || final || c == '\n') {
+                while (j < t.size() && (t[j] == ' ' || t[j] == '\t' || t[j] == '\n' || t[j] == '\r')) ++j;
+                // многоточие "..." и "?!" не рвём посередине: знак конца сливается со следующим знаком
+                const bool glued = !full && j == i + len && j < t.size() && (t[j] == '.' || t[j] == '!' || t[j] == '?');
+                if (!glued) best = j;
+            }
+        }
+        i += len;
+    }
+    return best;
+}
+
+// Переносит готовую к коммиту часть pending в модель по политике. force — flush/конец текста: коммитим всё, включая слово без пробела.
+// Возвращает число переданных байт.
+size_t commit_pending(vox_session *s, bool force) {
+    std::string &t = s->pending;
+    if (t.empty()) return 0;
+    size_t cut = 0;
+    if (force) cut = t.size();
+    else switch (s->commit) {
+        case vox_session::Commit::Manual: cut = 0; break;
+        case vox_session::Commit::Sentence: cut = sentence_cut(t, false); break;
+        case vox_session::Commit::Auto: cut = s->direct ? t.size() : s->e->backend->text_safe_cut(t); break;
+    }
+    if (cut == 0) return 0;
+    const std::string piece = t.substr(0, cut);
+    if (s->direct) {
+        s->e->backend->direct_text(*s->st, piece);
+    } else {
+        auto toks = s->e->backend->tokenize(piece);
+        if (!toks.empty()) s->e->backend->append_text(*s->st, toks);
+    }
     t.erase(0, cut);
-    if (!toks.empty()) s->e->backend->append_text(*s->st, toks);
+    s->committed_bytes += cut;
+    // модели, озвучивающие куски целиком: «законченный кусок» — повод озвучить его сразу, не ожидая продолжения
+    if (s->direct && (force || s->commit != vox_session::Commit::Auto)) s->e->backend->direct_seal(*s->st);
+    return cut;
+}
+
+// Простой: текст не поступал idle_ms, а в pending что-то осталось — коммитим (клиент опрашивает pull, так что отдельный поток не нужен).
+void check_idle(vox_session *s) {
+    if (!s->idle_ms || !s->idle_armed || s->text_ended || s->pending.empty()) return;
+    const auto waited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - s->last_feed).count();
+    if (waited < int64_t(s->idle_ms)) return;
+    s->idle_armed = false;
+    if (commit_pending(s, true)) { ++s->flushes; ++s->idle_flushes; }
 }
 
 void decode_buffered(vox_session *s) {
@@ -579,6 +645,18 @@ VOX_API vox_status vox_session_create(vox_engine *e, const vox_voice *v, const v
         s->st = e->backend->begin(*v->data, lang);
         e->backend->configure(*s->st, so);
         s->direct = e->backend->direct();
+        if (so.options.contains("stream") && so.options["stream"].is_object()) {
+            const json &sj = so.options["stream"];
+            const std::string c = sj.value("commit", std::string("auto"));
+            if (c == "auto") s->commit = vox_session::Commit::Auto;
+            else if (c == "sentence") s->commit = vox_session::Commit::Sentence;
+            else if (c == "manual") s->commit = vox_session::Commit::Manual;
+            else fail(VOX_ERR_ARG, "stream.commit must be \"auto\", \"sentence\" or \"manual\", got \"" + c + "\"");
+            if (sj.contains("idle_ms")) {
+                if (!sj["idle_ms"].is_number() || sj["idle_ms"].get<double>() < 0) fail(VOX_ERR_ARG, "stream.idle_ms must be a non-negative number");
+                s->idle_ms = uint32_t(sj["idle_ms"].get<double>());
+            }
+        }
         *out = s.release();
     });
 }
@@ -587,9 +665,32 @@ VOX_API vox_status vox_session_feed_text(vox_session *s, const char *utf8) {
     return guard([&] {
         if (!s || !utf8) fail(VOX_ERR_ARG, "session and text are required");
         if (s->text_ended) fail(VOX_ERR_STATE, "text already ended");
-        if (s->direct) { s->e->backend->direct_text(*s->st, utf8); return; }
-        s->text_tail += utf8;
-        flush_text(s, false);
+        if (!*utf8) return;
+        s->pending += utf8;
+        s->last_feed = std::chrono::steady_clock::now();
+        s->idle_armed = true;
+        commit_pending(s, false);
+    });
+}
+
+VOX_API vox_status vox_session_flush(vox_session *s) {
+    return guard([&] {
+        if (!s) fail(VOX_ERR_ARG, "session is null");
+        if (s->text_ended) return;
+        if (commit_pending(s, true)) ++s->flushes;
+        else if (s->direct) s->e->backend->direct_seal(*s->st);  // нечего коммитить, но озвученный отрезок надо закрыть (отдать хвост)
+        s->idle_armed = false;
+    });
+}
+
+VOX_API vox_status vox_session_set_pending(vox_session *s, const char *utf8) {
+    return guard([&] {
+        if (!s || !utf8) fail(VOX_ERR_ARG, "session and text are required");
+        if (s->text_ended) fail(VOX_ERR_STATE, "text already ended");
+        s->pending = utf8;
+        s->last_feed = std::chrono::steady_clock::now();
+        s->idle_armed = !s->pending.empty();
+        commit_pending(s, false);
     });
 }
 
@@ -597,8 +698,19 @@ VOX_API vox_status vox_session_end_text(vox_session *s) {
     return guard([&] {
         if (!s) fail(VOX_ERR_ARG, "session is null");
         if (s->text_ended) return;
-        if (!s->direct) flush_text(s, true);
+        commit_pending(s, true);
         s->text_ended = true;
+    });
+}
+
+VOX_API vox_status vox_session_info(const vox_session *s, char *buf, size_t cap, size_t *len) {
+    return guard([&] {
+        if (!s) fail(VOX_ERR_ARG, "session is null");
+        const char *cm = s->commit == vox_session::Commit::Auto ? "auto" : s->commit == vox_session::Commit::Sentence ? "sentence" : "manual";
+        json j = {{"committed_bytes", s->committed_bytes}, {"pending", s->pending}, {"pending_bytes", s->pending.size()},
+                  {"text_ended", s->text_ended}, {"finished", s->finished}, {"frames", s->frame}, {"commit", cm}, {"idle_ms", s->idle_ms},
+                  {"flushes", s->flushes}, {"idle_flushes", s->idle_flushes}, {"direct", s->direct}};
+        write_json(j.dump(), buf, cap, len);
     });
 }
 
@@ -610,6 +722,7 @@ VOX_API vox_status vox_session_pull(vox_session *s, float *out, size_t cap, size
         if (!s || !out || !cap) fail(VOX_ERR_ARG, "session, buffer and capacity are required");
         PoolScope scope(s->e->pool.get());
         if (s->cancelled.load()) fail(VOX_ERR_CANCELLED, "session cancelled");
+        check_idle(s);
         for (;;) {
             if (s->direct && s->pcm_pos >= s->pcm.size() && !s->finished) {
                 // модель без покадровых кодов: шаг модели дописывает звук (по предложению), пока не озвучен весь текст

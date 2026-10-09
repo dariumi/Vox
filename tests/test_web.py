@@ -24,6 +24,8 @@ import threading
 
 import numpy as np
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 FLAGS = ["--enable-unsafe-webgpu", "--enable-features=Vulkan,WebGPU", "--use-webgpu-adapter=swiftshader", "--use-angle=swiftshader",
@@ -90,6 +92,9 @@ def main(cli, work=None):
     stage = tempfile.mkdtemp(prefix="voxweb_srv_")
     shutil.copy(os.path.join(ROOT, "webgpu", "web", "dist", "vox.js"), stage)
     shutil.copy(os.path.join(ROOT, "webgpu", "web", "test", "harness.html"), stage)
+    if not os.path.exists(os.path.join(ROOT, "webgpu", "web", "dist", "pinyin.json")):
+        subprocess.check_call([sys.executable, os.path.join(ROOT, "tools", "gen_pinyin.py")])
+    shutil.copy(os.path.join(ROOT, "webgpu", "web", "dist", "pinyin.json"), stage)
     for fn in os.listdir(work):
         if fn.endswith((".tmod", ".safetensors", ".wav", ".json")):
             shutil.copy(os.path.join(work, fn), stage)
@@ -149,6 +154,13 @@ def main(cli, work=None):
         got = np.array(js["pcm"], dtype=np.float32)
         d = float(np.abs(got[:len(nat)] - nat[:len(got)]).max()) if len(got) and len(nat) else 1.0
         check(len(got) == len(nat) and d < 5e-6, f"JS Philox noise ≡ core noise: same seed → same audio ({len(got)} samples, max|diff| {d:.2e})")
+        # 4b. без WebGPU: процессорный бэкенд (JS-версии шейдеров F5-TTS: gemm, attention, ln, grn, conv1d, rope, euler…) даёт то же аудио
+        pg.evaluate("loadModel('tiny_f32.tmod', { backend: 'cpu' })")
+        pg.evaluate(f"setRef('ref.wav', {json.dumps(e2e['ref_text'])})")
+        js = pg.evaluate("a => runSeed(a[0], a[1], a[2])", [text, 5, 4])
+        gotc = np.array(js["pcm"], dtype=np.float32)
+        dc = float(np.abs(gotc[:len(nat)] - nat[:len(gotc)]).max()) if len(gotc) and len(nat) else 1.0
+        check(len(gotc) == len(nat) and dc < 5e-5 and pg.evaluate("window.model.info.backend") == "cpu", f"процессорный бэкенд (backend:'cpu') ≡ ядро: те же {len(gotc)} отсчётов (max|diff| {dc:.2e})")
         # 5. квантованные модели
         for name in ("bf16", "q8"):
             pg.evaluate(f"loadModel('tiny_{name}.tmod')")
@@ -194,6 +206,90 @@ def main(cli, work=None):
         check(api["fixDur"].startswith("unsupported:") and "fix_duration" in api["fixDur"], "fix_duration is rejected with a clear message")
         check(api["tooShort"].startswith("arg:") and api["noRate"].startswith("arg:"), "short reference / missing sampleRate → clear errors")
         check(api["wav"] and api["stats"], "Vox.wav() size is right, run statistics are reported")
+        # 7. модель берётся по ссылке на «репозиторий HF» и конвертируется в самом браузере; второй раз — из кэша
+        from mockhf import MockHF, build_repos
+        tmp = tempfile.mkdtemp(prefix="voxweb_hf_")
+        repos, refs = build_repos(work, tmp)
+        hf = MockHF(repos)
+        try:
+            pg.evaluate("loadModel('tiny_f32.tmod')")
+            pg.evaluate(f"setRef('ref.wav', {json.dumps(e2e['ref_text'])})")
+            base_out = pg.evaluate("runSeed('Short one.', 9, 2)")
+            opts = {"hfHost": hf.url, "dtype": "f32", "dimHead": 32}
+            r = pg.evaluate("a => loadFrom(a[0], a[1])", ["hf:mock/F5-TTS", opts])
+            check(any("конвертация" in x for x in r["statuses"]) and r["info"]["variant"] == "F5TTS_v1_Base",
+                  f"Vox.load('hf:mock/F5-TTS'): скачано и сконвертировано в браузере за {r['ms']:.0f} мс")
+            pg.evaluate(f"setRef('ref.wav', {json.dumps(e2e['ref_text'])})")
+            conv = pg.evaluate("runSeed('Short one.', 9, 2)")
+            a, b = np.array(base_out["pcm"], dtype=np.float32), np.array(conv["pcm"], dtype=np.float32)
+            rel = float(np.linalg.norm(a - b) / np.linalg.norm(a)) if len(a) == len(b) else 9.9
+            check(rel < 1e-3, f"модель, сконвертированная в браузере, звучит как собранная Python (относительная L2 {rel:.2e})")
+            keys = pg.evaluate("cacheKeys()")
+            check(len(keys) == 1, "результат конвертации лёг в Cache API")
+            r2 = pg.evaluate("a => loadFrom(a[0], a[1])", ["hf:mock/F5-TTS", opts])
+            n_ckpt = sum(1 for p, _ in hf.log if p.endswith(".safetensors"))
+            check(any("кэш" in x for x in r2["statuses"]) and n_ckpt == 1, f"повторная загрузка — из кэша браузера ({r2['ms']:.0f} мс), чекпойнт скачан {n_ckpt} раз")
+            pinyin_hits = pg.evaluate("Vox.config().baseUrl")
+            check(pinyin_hits.endswith("/"), "baseUrl (для pinyin.json) определён по адресу скрипта: " + pinyin_hits)
+        finally:
+            hf.close()
+        # 8. двусторонний стриминг в браузере (та же логика коммита, что в ядре)
+        pg.evaluate("loadModel('tiny_f32.tmod')")
+        pg.evaluate(f"setRef('ref.wav', {json.dumps(e2e['ref_text'])})")
+        dx = pg.evaluate("""async () => {
+          const o = {}, m = window.model, base = { voice, seed: 3, nfe_step: 2, max_chars: 4 };
+          const whole = await m.synthesize('One. Two.', base);
+          const same = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+          const cat = (parts) => { const n = parts.reduce((s, p) => s + p.length, 0), r = new Float32Array(n); let k = 0; for (const p of parts) { r.set(p, k); k += p.length; } return r; };
+          // auto: текст порциями, итог = синтез целиком (F5 озвучивает законченные куски, последний держит до конца)
+          let d = m.duplex(base);
+          d.write('One'); d.write('. Tw'); d.write('o.'); d.end();
+          const parts = []; for await (const c of d.audio()) parts.push(c);
+          o.autoSame = same(cat(parts), whole.pcm);
+          o.autoCaps = d.caps;
+          // manual: до end() в модель ничего не уходит
+          d = m.duplex(Object.assign({ commit: 'manual' }, base));
+          d.write('One. '); d.write('Two.');
+          await new Promise((r) => setTimeout(r, 300));
+          o.manualQuiet = d.q.length === 0 && d.info().committed_bytes === 0 && d.info().pending_bytes === 9;
+          o.manualSame = same((await d.final()).pcm, whole.pcm);
+          // sentence: законченное предложение озвучивается, пока второе набирается
+          d = m.duplex(Object.assign({ commit: 'sentence' }, base));
+          d.write('One. Tw');
+          const first = await d.read(300000);
+          o.sentFirst = first && first.length > 0 && d.info().pending === 'Tw' && !d.done;
+          d.write('o.');
+          const rest = await d.final();
+          o.sentTotal = rest.pcm.length > 0 && rest.pcm.every(Number.isFinite);
+          // flush: фраза озвучена без end(), конец затухает до нуля
+          d = m.duplex(Object.assign({ commit: 'manual' }, base));
+          d.write('One'); d.flush();
+          const got = []; let c;
+          while ((c = await d.read(120000)) && c.length) { got.push(c); if (d.q.length === 0 && got.length) { c = await d.read(1500); if (c) got.push(c); else break; } }
+          const fl = cat(got);
+          o.flushLen = fl.length; o.flushLast = fl.length ? Math.abs(fl[fl.length - 1]) : 1; o.flushNotDone = !d.done;
+          d.cancel();
+          // набор текста: хвост правится, озвученное — нет
+          d = m.duplex(Object.assign({ commit: 'sentence' }, base));
+          const r1 = d.setText('One. T');
+          await d.read(300000);
+          const r2 = d.setText('One. Tw');
+          const r3 = d.setText('Uno. Tw');
+          o.typing = [r1.ok, r1.committed, r2.ok, r2.pending, r3.ok, r3.spoken];
+          d.cancel();
+          // ошибки
+          const err = (f) => { try { f(); return ''; } catch (e) { return e.code; } };
+          d = m.duplex(base); d.end();
+          o.errWrite = err(() => d.write('x'));
+          o.errCommit = err(() => m.duplex(Object.assign({}, base, { commit: 'whenever' })));
+          o.errVoice = err(() => m.duplex({}));
+          return o; }""")
+        check(dx["autoSame"] and dx["autoCaps"]["text_in"] == "chunk", "duplex auto в браузере: текст порциями → тот же звук, что у synthesize()")
+        check(dx["manualQuiet"] and dx["manualSame"], "duplex manual: до end() в модель ничего не уходит, итог = синтез целиком")
+        check(dx["sentFirst"] and dx["sentTotal"], "duplex sentence: первое предложение озвучено, пока второе набирается")
+        check(dx["flushLen"] > 1000 and dx["flushLast"] < 1e-6 and dx["flushNotDone"], f"duplex flush: фраза озвучена без end(), конец затухает ({dx['flushLen']} отсч., |last|={dx['flushLast']:.1e})")
+        check(dx["typing"] == [True, 5, True, "Tw", False, "One. "], f"duplex setText: правка хвоста принята, правка озвученного отклонена {dx['typing']}")
+        check(dx["errWrite"] == "state" and dx["errCommit"] == "arg" and dx["errVoice"] == "arg", "duplex: понятные ошибки (write после end, commit, голос)")
         check(not errors, "no page errors" + ("" if not errors else ": " + "; ".join(errors[:3])))
         br.close()
     srv.shutdown()

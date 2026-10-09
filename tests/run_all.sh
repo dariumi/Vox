@@ -23,6 +23,10 @@ VOX_TEST_DEVICES="$F5_DEVICES" python3 tests/test_f5_tiny.py build/vox   # F5-TT
 python3 tests/test_library.py
 python3 tests/test_examples.py build/vox   # примеры на C, C++, Rust, Go, Node.js, Python ctypes: звук = звуку CLI до бита (нет инструментов — SKIP)
 VOX_WEB_FULL="${VOX_WEB_FULL:-}" python3 tests/test_web.py build/vox   # vox.js в Chromium (WebGPU) против эталона f5_tts (нужны playwright + chromium, torch, f5-tts; иначе SKIP)
+python3 tests/test_web_convert.py   # загрузка и конвертация F5 в браузере против мок-HF (нужны node, torch, safetensors; иначе SKIP)
+python3 tests/test_web_qwen.py build/vox   # Qwen3-TTS в браузере: HF-ссылка, конвертация побайтно = python, WebGPU, duplex (иначе SKIP)
+python3 tests/test_web_cpu.py build/vox   # vox.js без WebGPU: процессорный бэкенд = ядро (f32/bf16/f16), q8 = WebGPU, страница не замирает (иначе SKIP)
+python3 tests/test_duplex.py build/vox   # двусторонний стриминг: ядро, Python, CLI vox live, WebSocket
 python3 tests/test_py_family.py
 python3 tests/test_api_serve.py
 VOX_TEST_DEVICES="$DEVICES" python3 tests/test_q4.py build/vox

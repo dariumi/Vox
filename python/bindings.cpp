@@ -127,6 +127,16 @@ struct Session {
     ~Session() { vox_session_free(h); }
     void feed(const std::string &t) { check(vox_session_feed_text(h, t.c_str())); }
     void end() { check(vox_session_end_text(h)); }
+    void flush() { check(vox_session_flush(h)); }
+    void set_pending(const std::string &t) { check(vox_session_set_pending(h, t.c_str())); }
+    std::string info() {
+        size_t n = 0;
+        check(vox_session_info(h, nullptr, 0, &n));
+        std::string s(n + 1, '\0');
+        check(vox_session_info(h, s.data(), s.size(), &n));
+        s.resize(n);
+        return s;
+    }
     void cancel() { vox_session_cancel(h); }
     // Возвращает (status, chunk). chunk — numpy float32 без лишних копий.
     std::pair<int, F32Array> pull(size_t max_samples) {
@@ -175,6 +185,9 @@ NB_MODULE(_vox, m) {
     nb::class_<Session>(m, "Session")
         .def("feed", &Session::feed)
         .def("end", &Session::end)
+        .def("flush", &Session::flush)
+        .def("set_pending", &Session::set_pending)
+        .def("info", &Session::info)
         .def("cancel", &Session::cancel)
         .def("pull", &Session::pull, "max_samples"_a = 8192);
 

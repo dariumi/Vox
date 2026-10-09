@@ -211,6 +211,135 @@ static void test_engine() {
 }
 
 
+// ---- двусторонний стриминг: коммит текста, flush, правка хвоста, простой ----
+static std::string session_info(vox_session *s) {
+    char buf[4096];
+    size_t len = 0;
+    CHECK_OK(vox_session_info(s, buf, sizeof buf, &len));
+    return buf;
+}
+static vox_session *open_stream(vox_engine *e, vox_voice *v, const char *extra, uint64_t seed = 42) {
+    vox_gen_params p;
+    vox_gen_params_default(&p);
+    p.seed = seed;
+    p.extra_json = extra;
+    vox_session *s = nullptr;
+    CHECK_OK(vox_session_create(e, v, &p, &s));
+    return s;
+}
+// забирает всё, что готово сейчас (до VOX_AGAIN/DONE)
+static std::vector<float> take(vox_session *s, vox_status *last = nullptr) {
+    std::vector<float> all, buf(4096);
+    for (;;) {
+        size_t n = 0;
+        vox_status st = vox_session_pull(s, buf.data(), buf.size(), &n);
+        if (last) *last = st;
+        if (st == VOX_OK) { all.insert(all.end(), buf.begin(), buf.begin() + long(n)); continue; }
+        return all;
+    }
+}
+static void test_duplex() {
+    vox::write_test_model("test.tmod");
+    vox_engine *e = nullptr;
+    CHECK_OK(vox_engine_open("test.tmod", nullptr, &e));
+    if (!e) return;
+    std::vector<float> ref(24000 * 3);
+    for (size_t i = 0; i < ref.size(); ++i) ref[i] = 0.3f * std::sin(float(i) * 0.05f);
+    vox_voice *v = nullptr;
+    CHECK_OK(vox_voice_create(e, ref.data(), ref.size(), 24000, "Пример.", VOX_VOICE_ICL, &v));
+    const std::string text = "Hello there. How are you today? Fine.";
+    const auto whole = run(e, v, 42, {text});
+    CHECK(!whole.empty());
+
+    // capabilities.stream описывает модель
+    char cap[8192];
+    size_t len = 0;
+    CHECK_OK(vox_engine_info(e, cap, sizeof cap, &len));
+    CHECK(std::string(cap).find("\"text_in\":\"token\"") != std::string::npos);
+
+    // auto: слова уходят в модель сразу, хвост без пробела ждёт
+    vox_session *s = open_stream(e, v, nullptr);
+    CHECK_OK(vox_session_feed_text(s, "Hello th"));
+    auto j = json::parse(session_info(s));
+    CHECK(j["committed_bytes"] == 6 && j["pending"] == "th" && j["commit"] == "auto");
+    vox_status st = VOX_OK;
+    auto first = take(s, &st);
+    CHECK(!first.empty() && st == VOX_AGAIN);  // звук пошёл, пока текст не закончился
+    // правка хвоста: «th» → «there. How»
+    CHECK_OK(vox_session_set_pending(s, "there. How"));
+    j = json::parse(session_info(s));
+    CHECK(j["committed_bytes"] == 13 && j["pending"] == "How");
+    CHECK_OK(vox_session_feed_text(s, " are you today? Fine."));
+    CHECK_OK(vox_session_end_text(s));
+    auto rest = take(s, &st);
+    CHECK(st == VOX_DONE && !rest.empty());
+    CHECK(vox_session_feed_text(s, "more") == VOX_ERR_STATE && vox_session_set_pending(s, "x") == VOX_ERR_STATE);
+    vox_session_free(s);
+
+    // manual: до end_text звука нет, а итог совпадает с синтезом всего текста сразу
+    s = open_stream(e, v, "{\"stream\":{\"commit\":\"manual\"}}");
+    CHECK_OK(vox_session_feed_text(s, "Hello there. "));
+    CHECK_OK(vox_session_feed_text(s, "How are you today? Fine."));
+    auto none = take(s, &st);
+    CHECK(none.empty() && st == VOX_AGAIN);
+    j = json::parse(session_info(s));
+    CHECK(j["committed_bytes"] == 0 && j["pending_bytes"] == text.size());
+    CHECK_OK(vox_session_end_text(s));
+    auto all = take(s, &st);
+    CHECK(st == VOX_DONE && all == whole);
+    vox_session_free(s);
+
+    // sentence: уходят только законченные предложения; «3.5» не рвётся; конец текста коммитит остаток
+    s = open_stream(e, v, "{\"stream\":{\"commit\":\"sentence\"}}");
+    CHECK_OK(vox_session_feed_text(s, "It is 3.5 now. Wor"));
+    j = json::parse(session_info(s));
+    CHECK(j["committed_bytes"] == 15 && j["pending"] == "Wor");
+    CHECK_OK(vox_session_feed_text(s, "ld! Next."));    // «Next.» без пробела за точкой — ещё не законченное
+    j = json::parse(session_info(s));
+    CHECK(j["pending"] == "Next." && j["committed_bytes"] == 22);
+    CHECK_OK(vox_session_flush(s));                      // flush коммитит и «Next.»
+    j = json::parse(session_info(s));
+    CHECK(j["pending_bytes"] == 0 && j["flushes"] == 1);
+    CHECK_OK(vox_session_end_text(s));
+    CHECK(!take(s, &st).empty() && st == VOX_DONE);
+    vox_session_free(s);
+
+    // flush: слово без пробела уходит в модель, сессия остаётся открытой
+    s = open_stream(e, v, "{\"stream\":{\"commit\":\"manual\"}}");
+    CHECK_OK(vox_session_feed_text(s, "abcd"));
+    CHECK(take(s, &st).empty());
+    CHECK_OK(vox_session_flush(s));
+    auto fl = take(s, &st);
+    CHECK(!fl.empty() && st == VOX_AGAIN && json::parse(session_info(s))["committed_bytes"] == 4);
+    CHECK_OK(vox_session_feed_text(s, "e"));   // продолжаем: manual по-прежнему копит
+    CHECK(take(s, &st).empty() && json::parse(session_info(s))["pending"] == "e");
+    CHECK_OK(vox_session_end_text(s));
+    CHECK(!take(s, &st).empty() && st == VOX_DONE);
+    vox_session_free(s);
+
+    // idle_ms: простой коммитит хвост без явного flush
+    s = open_stream(e, v, "{\"stream\":{\"commit\":\"manual\",\"idle_ms\":40}}");
+    CHECK_OK(vox_session_feed_text(s, "idle"));
+    CHECK(take(s, &st).empty());
+    usleep(80 * 1000);
+    auto idl = take(s, &st);
+    j = json::parse(session_info(s));
+    CHECK(!idl.empty() && j["idle_flushes"] == 1 && j["pending_bytes"] == 0);
+    vox_session_free(s);
+
+    // неверные настройки
+    vox_gen_params p;
+    vox_gen_params_default(&p);
+    vox_session *bad = nullptr;
+    p.extra_json = "{\"stream\":{\"commit\":\"whenever\"}}";
+    CHECK(vox_session_create(e, v, &p, &bad) == VOX_ERR_ARG && bad == nullptr);
+    p.extra_json = "{\"stream\":{\"idle_ms\":-5}}";
+    CHECK(vox_session_create(e, v, &p, &bad) == VOX_ERR_ARG);
+
+    vox_voice_free(v);
+    vox_engine_close(e);
+}
+
 // ---- планировщик ресурсов на выдуманных устройствах ----
 static const uint64_t MiB = 1024ull * 1024, GiB = 1024 * MiB;
 static ModelFootprint fake_model() {
@@ -549,6 +678,7 @@ int main() {
     test_sampler();
     test_formats();
     test_engine();
+    test_duplex();
     std::printf("%d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
 }

@@ -15,6 +15,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 import numpy as np
 
@@ -167,6 +168,60 @@ def main(cli):
                 s.end()
                 out.extend(s)
             check(np.array_equal(np.concatenate(out), whole), "text fed in pieces == whole text")
+
+            # --- двусторонний стриминг (F5 озвучивает куски целиком: text_in = "chunk") ---
+            caps = eng.capabilities["stream"]
+            check(caps["text_in"] == "chunk" and caps["audio_out"] == "chunks" and caps["exact"], f"capabilities.stream у F5: {caps}")
+            sp = dict(seed=5, nfe_step=4)
+            # auto: звук идёт до конца текста (готовые куски), а итог = синтез целиком (exact)
+            with eng.duplex(v, **sp) as dx:
+                dx.write("Seed test. Another sentence, ")
+                dx.write("with commas; and more!")
+                time.sleep(0.05)
+                dx.end()
+                got = np.concatenate(list(dx.audio()))
+            check(np.array_equal(got, whole), "duplex auto: текст порциями → тот же звук, что у синтеза целиком")
+            # manual: до end() ничего не озвучивается
+            with eng.duplex(v, commit="manual", **sp) as dx:
+                for piece in ["Seed te", "st. Another sent", "ence, with com", "mas; and mo", "re!"]:
+                    dx.write(piece)
+                check(dx.read(timeout=0.3) is None and dx.info()["committed_bytes"] == 0, "duplex manual: пока текст не закончен, звука нет")
+                got = dx.final(timeout=120)
+            check(np.array_equal(got, whole), "duplex manual: набор → одна запись = синтез целиком")
+            # sentence: законченное предложение озвучивается сразу, не дожидаясь следующего
+            with eng.duplex(v, commit="sentence", **sp) as dx:
+                dx.write("Seed test. Another sen")
+                first = dx.read(timeout=120)
+                inf = dx.info()
+                check(first is not None and len(first) > 0 and inf["pending"] == "Another sen" and not dx.done,
+                      f"duplex sentence: первое предложение озвучено, пока второе набирается ({0 if first is None else len(first)} отсч.)")
+                dx.write("tence, with commas; and more!")
+                rest = dx.final(timeout=120)
+                full = np.concatenate([first, rest])
+            check(len(full) > len(first) and np.isfinite(full).all() and np.abs(full).max() < 1.0,
+                  "duplex sentence: итоговый звук конечен и в пределах [-1, 1] (куски другие, чем у целого текста — это ожидаемо)")
+            # flush: незаконченное предложение озвучивается по требованию, хвост отдаётся с затуханием
+            with eng.duplex(v, commit="manual", **sp) as dx:
+                dx.write("Seed test")
+                dx.flush()
+                parts = [dx.read(timeout=120)]
+                while parts[-1] is not None:
+                    nxt = dx.read(timeout=1.0)   # ждём, пока фраза дочитается до конца
+                    if nxt is None:
+                        break
+                    parts.append(nxt)
+                first = np.concatenate(parts) if parts[0] is not None else None
+                check(first is not None and len(first) > 1000 and not dx.done and abs(float(first[-1])) < 1e-6,
+                      f"duplex flush: фраза озвучена целиком без end(), конец затухает до нуля (|last|={0 if first is None else abs(float(first[-1])):.2e})")
+                dx.write(" again.")
+                tail = dx.final(timeout=120)
+                check(len(tail) > 0 and np.isfinite(tail).all(), "duplex flush: после flush продолжение озвучивается новым куском")
+            # idle: набор замолчал — озвучивается накопленное
+            with eng.duplex(v, commit="manual", idle_ms=80, **sp) as dx:
+                dx.write("Idle phrase")
+                first = dx.read(timeout=120)
+                check(first is not None and len(first) > 0 and dx.info()["idle_flushes"] == 1, "duplex idle_ms: накопленное озвучено после паузы в наборе")
+                dx.cancel()
             vp = os.path.join(work, "saved.tvoice")
             v.save(vp)
             again = eng.synthesize(text, voice=vp, seed=5, nfe_step=4)

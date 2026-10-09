@@ -236,42 +236,103 @@ mel образца, текстовый энкодер, DiT (обе ветки CF
 сандхи тонов, например «你好» даёт `ni3 hao3`, а не `ni2 hao3`); нет очистки образца от тишины (pydub) — берутся первые
 12 с; `fix_duration` не поддержан. Внимание DiT считается на CPU, линейные слои — на CPU или GPU (Vulkan); вокодер на CPU.
 
-### Браузер: vox.js (WebGPU, с 0.10)
+### Двусторонний стриминг (с 0.11)
 
-Один скрипт без зависимостей и сборки (`docs/vox.js`, около 75 КБ; тот же код как ES-модуль — `docs/vox.mjs`). Сейчас умеет семейство
-F5-TTS: веса и все активации живут в видеопамяти, на CPU остаются токены, mel образца, вектор времени и iSTFT.
+Текст можно подавать на лету, а звук забирать по мере готовности — и наоборот: набирать текст и получить одну общую запись.
+Не все модели умеют одинаково, поэтому «обвязку» берёт на себя движок: он знает, как модель принимает текст, и сам решает, что и когда ей отдать.
+
+| Модель | как читает текст | что делает движок |
+|---|---|---|
+| Qwen3-TTS | по словам (`text_in: token`): говорить можно начинать на полуслове | отдаёт слова по мере поступления, держит неоконченное слово; высказывание закрывается по `utterance_gap_ms` |
+| F5-TTS | целыми кусками (`text_in: chunk`): ему нужна длительность всего куска | копит текст до конца предложения (или паузы набора `idle_ms`), озвучивает куски по очереди; результат при `auto` совпадает с синтезом всего текста сразу |
+
+Политика коммита (`commit`): `auto` — как умеет модель; `sentence` — только законченные предложения; `manual` — ничего не уходит до `flush()` / `end()`
+(«набираю, потом получаю одну запись»). `idle_ms` — автокоммит после паузы в наборе, `utterance_gap_ms` — закрыть высказывание после паузы.
+Режим набора: `set_text(весь_текст_из_поля)` — дописанное и правки ещё не озвученного хвоста применяются, уже озвученное не переозвучивается
+(`on_conflict`: `keep` | `raise` | `respeak`). Возможности модели: `engine.capabilities["stream"]` (`text_in`, `audio_out`, `exact`).
+
+    # C ABI: {"stream": {"commit": "auto", "idle_ms": 600}} в extra_json сессии; vox_session_feed_text / _flush / _set_pending / _end_text / _pull
+    with engine.duplex(voice, commit="auto", idle_ms=600) as d:       # Python
+        d.write("Привет, "); d.write("как дела?"); d.end()           # из любого потока
+        for chunk in d.audio(): play(chunk)                           # aaudio() — для asyncio, final() — одной записью
+    printf 'Привет. Как дела?' | vox live --model m.tmod --voice v.tvoice -o out.wav --commit sentence   # CLI, текст из stdin
+    # HTTP: WebSocket /v1/duplex — {"type":"start",…} {"type":"text"|"set_text"|"flush"|"end"|"cancel"}, звук приходит двоичными кадрами PCM
+
+Тот же интерфейс в браузере: `model.duplex({ voice, commit, idle_ms })` → `write` / `setText` / `flush` / `end` / `cancel`, `for await (… of d.audio())`
+(см. ниже). Пример на Python — `examples/python/duplex_example.py`. Тесты — `tests/test_duplex.py` (ядро, Python, CLI, WebSocket) и `tests/test_web_qwen.py` (браузер).
+**Не проверено:** задержки на настоящих моделях и видеокартах (на тестовых моделях звук идёт сразу, но это шум), поведение при реальной речи LLM-потока.
+Ограничения: у AR-модели одно высказывание — одна сессия, поэтому при `utterance_gap_ms` просодия не переносится между высказываниями;
+F5 не может озвучить кусок раньше, чем увидит его конец.
+
+### Браузер: vox.js (WebGPU, с 0.10; Qwen3-TTS и загрузка по ссылке — с 0.11; процессорный запасной путь и клон голоса Qwen Base — с 0.12)
+
+Один скрипт без зависимостей и сборки (`docs/vox.js`, около 230 КБ; тот же код как ES-модуль — `docs/vox.mjs`). Умеет семейства F5-TTS и Qwen3-TTS:
+веса и все активации живут в видеопамяти, на CPU остаются токены, таблицы эмбеддингов, сэмплинг, mel образца и iSTFT.
+
+**Модель по ссылке.** `Vox.load` принимает репозиторий Hugging Face (`hf:org/name`, `org/name`, ссылка на страницу, `tree` или `resolve`), прямую ссылку, `.tmod`,
+`File`/`Blob`/байты или набор файлов `{files: {"config.json": File, …}}`. Если это не готовый `.tmod`, а чекпойнт (safetensors; для F5 ещё `.pt`),
+он скачивается и конвертируется прямо в браузере — теми же преобразованиями, что `python -m vox.build` / `vox.build_f5` (для Qwen3 проверено побайтно по каждому тензору).
+F5 после конвертации кладётся в Cache API браузера. Qwen3-TTS читается по тензорам (HTTP Range по заголовку safetensors, шесть запросов параллельно),
+каждый тензор сразу уходит в видеопамять, поэтому целая модель в памяти страницы не собирается (на CPU остаётся только таблица эмбеддингов текста).
+Чтение идёт крупными блоками (по умолчанию 8 МиБ) с шестью запросами параллельно, а не по запросу на тензор (у Qwen3-TTS их больше 400, и у настоящего HF каждый запрос — ещё и редирект на CDN и предзапрос CORS);
+после первого редиректа движок ходит прямо на адрес CDN. Блоки кладутся в Cache API (ключ — адрес, размер и ETag файла), поэтому вторая загрузка той же модели не качает ничего.
+Статистика загрузки — `model.info.net` (запросы, МиБ, редиректы, блоки из кэша).
+Опции: `dtype` (`bf16` | `f16` | `f32`), `quant` (`q8`; `q4` — только через Python), `token` (закрытые репозитории), `hfHost` (зеркало), `onProgress`, `onStatus`,
+`backend` (`auto` | `webgpu` | `cpu`), `load` (`balanced` | `gentle` | `full`), `cache: false` (не хранить скачанные блоки), `blockMiB` (размер блока чтения, 8).
+`Vox.convert(src)` возвращает байты `.tmod` для сохранения в файл (нужна память под всю модель).
 
 ```html
 <script src="vox.js"></script>
 <script type="module">
-  const model = await Vox.load("f5.bf16.tmod", { onProgress: (p) => console.log(p) });   // URL, File, Blob, ArrayBuffer
-  const voice = await model.cloneVoice(refFile, "Текст, который сказан в записи");        // File, Blob, URL, Float32Array + sampleRate
-  const { pcm, sampleRate } = await model.synthesize("Привет, мир!", { voice, nfe_step: 16, seed: 1 });
-  Vox.play(pcm, sampleRate);                                                                // или Vox.wav(pcm, sampleRate) → Blob
-  for await (const piece of model.stream("Длинный текст.", { voice })) { /* куски звука по мере готовности */ }
+  // F5-TTS: готовый .tmod, чекпойнт по ссылке или репозиторий HF
+  const f5 = await Vox.load("hf:SWivid/F5-TTS", { dtype: "bf16", onProgress: (p) => console.log(p) });
+  const voice = await f5.cloneVoice(refFile, "Текст, который сказан в записи");              // File, Blob, URL, Float32Array + sampleRate
+  const { pcm, sampleRate } = await f5.synthesize("Привет, мир!", { voice, nfe_step: 16, seed: 1 });
+  Vox.play(pcm, sampleRate);                                                                    // или Vox.wav(pcm, sampleRate) → Blob
+
+  // Qwen3-TTS: диктор / описание голоса (CustomVoice, VoiceDesign) или .tvoice (Base)
+  const q = await Vox.load("hf:Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", { dtype: "bf16" });
+  const v = q.speakerVoice(q.speakers[0], "", { language: "english" });                        // q.voiceFromFile(bytesOfTvoice) — для Base
+  for await (const piece of q.stream("Long text.", { voice: v, seed: 1 })) { /* куски звука по мере готовности */ }
+
+  // Qwen3-TTS Base: клон голоса прямо из записи (File, Blob, URL, Float32Array + sampleRate) и текста записи
+  // const base = await Vox.load("hf:Qwen/Qwen3-TTS-12Hz-0.6B-Base"); const cv = await base.cloneVoice(file, "Что сказано в записи"); download(cv.toTvoice());
+
+  // двусторонний стриминг
+  const d = q.duplex({ voice: v, commit: "auto", idle_ms: 600 });
+  input.oninput = () => d.setText(input.value);                                                 // или d.write(токен из LLM)
+  (async () => { for await (const piece of d.audio()) player.push(piece); })();
 </script>
 ```
 
-Параметры называются как в официальном F5-TTS (`nfe_step`, `cfg_strength`, `sway_sampling_coef`, `speed`, `cross_fade_duration`,
+Параметры F5 называются как в официальном коде (`nfe_step`, `cfg_strength`, `sway_sampling_coef`, `speed`, `cross_fade_duration`,
 `target_rms`, `use_epss`, `max_chars`), отмена — `signal` (AbortSignal), `voice.export()` / `Vox.Voice.from(json)` — сохранение голоса.
-Тот же `seed` даёт тот же звук, что `vox say --seed` в ядре: генератор шума Philox портирован в JS побитово.
-Шейдеры WGSL лежат в `webgpu/wgsl/` (GEMM с разворачиванием f32/f16/bf16/q8/q4 на лету, LayerNorm, свёртки, RoPE, внимание с онлайн-softmax,
-GRN), их собирает `tools/gen_wgsl.py`; библиотеку — `python tools/build_web.py` (части в `webgpu/web/src/`).
-Нужен браузер с WebGPU (Chrome и Edge 113+ (Windows, macOS; на Linux WebGPU пока включается флагами), Firefox 141+ (Windows), Safari 26; сводка — [web.dev](https://web.dev/blog/webgpu-supported-major-browsers)), страница по HTTPS или с localhost. Для браузера берите bf16 или q8:
-F5 в f32 весит больше 1 ГБ.
+Тот же `seed` даёт тот же звук, что `vox say --seed` в ядре: генератор шума Philox портирован в JS побитово (у Qwen — и сэмплинг).
+Шейдеры WGSL лежат в `webgpu/wgsl/` (GEMM с разворачиванием f32/f16/bf16/q8/q4 на лету, LayerNorm и RMSNorm, свёртки, RoPE, внимание с онлайн-softmax и с KV-кэшем,
+транспонированные свёртки потокового декодера, Snake, GRN), их собирает `tools/gen_wgsl.py`; библиотеку — `python tools/build_web.py` (части в `webgpu/web/src/`).
+**Без WebGPU** vox.js сам переключается на процессор (`backend: "auto"`, принудительно — `backend: "cpu"`): те же шейдеры реализованы на JS (`CpuGpu`), считают порциями по ~24 мс с уступкой потока странице, поэтому вкладка не замирает. Это на порядки медленнее видеокарты и идёт на одном ядре: годится для тестовой модели, F5 с малым `nfe_step` и коротких фраз Qwen3-TTS 0.6B; `model.info.backend` говорит, что именно считает.
+**Нагрузка на видеокарту.** Команды копятся и уходят порциями (~30 мс; размер порции подбирается по измеренному времени), между порциями — пауза, чтобы GPU не был занят дольше ~70% времени (`load: "balanced"`; `gentle` — ~40%, `full` — без пауз). Так ОС и браузер не замирают и не срабатывает сторожевой таймер драйвера; `model.gpu.setLoad(...)` меняет режим на лету. Один очень тяжёлый диспетчер порцией не разрезать, поэтому на совсем слабых встроенных видеокартах лучше `gentle` или `cpu`. Шейдеры компилируются асинхронно (`createComputePipelineAsync`) параллельно со скачиванием весов.
+Лучше всего с WebGPU (Chrome и Edge 113+ (Windows, macOS; на Linux WebGPU пока включается флагами), Firefox 141+ (Windows), Safari 26; сводка — [web.dev](https://web.dev/blog/webgpu-supported-major-browsers)), страница по HTTPS или с localhost.
+Для браузера берите bf16 или q8: F5 в f32 весит больше 1 ГБ.
 
-`tests/test_web.py` запускает vox.js в Chromium (WebGPU через программный SwiftShader) на крошечной модели и сверяет: токенизатор и mel образца с
-ядром, сквозной звук четырёх сценариев с настоящим `infer_batch_process` (максимум |diff| 3.7e-9 при амплитуде 5e-3), собственный шум JS с шумом ядра
-(тот же seed — тот же звук), bf16 и q8 с ядром, прикладной слой (экспорт голоса, поток, отмена, ошибки). **Не проверено:** скорость и поведение на
-настоящих видеокартах и драйверах (SwiftShader считает на процессоре), настоящие веса F5. Известные ограничения: вычисления в f32 (без f16),
-свёртки позиционного кодирования наивные, нет WASM-запасного пути без WebGPU, вся модель читается в память страницы целиком.
+`tests/test_web.py` запускает vox.js в Chromium (WebGPU через программный SwiftShader) на крошечной F5 и сверяет: токенизатор и mel образца с
+ядром, сквозной звук четырёх сценариев с настоящим `infer_batch_process` (максимум |diff| 3.7e-9 при амплитуде 5e-3), собственный шум JS с шумом ядра,
+bf16 и q8 с ядром, прикладной слой. `tests/test_web_convert.py` — загрузку и конвертацию F5 против мок-сервера «Hugging Face».
+`tests/test_web_qwen.py` — Qwen3-TTS (крошечные CustomVoice и VoiceDesign из официальных классов): конвертация в JS побайтно = `python -m vox.build` (bf16 и f16+q8),
+загрузка по ссылке HF кусками Range, звук = `vox say --seed` (сверено также с официальным PyTorch-дампом при разработке: ICL, x-vector, диктор с инструкцией),
+токенизатор JS = ядро, двусторонний стриминг (auto, sentence, manual, пауза), чтение блоками через «CDN»-редирект и повторная загрузка из кэша, клон голоса Base из записи (вектор диктора 1e-7, коды Mimi совпадают, звук = `vox say --voice`).
+`tests/test_web_cpu.py` — vox.js без WebGPU: процессорный бэкенд = ядро (f32, bf16, f16; расхождение < 1e-4), q8 = WebGPU, страница не замирает; для F5 то же самое — в `tests/test_web.py` (расхождение 1.4e-9).
+**Не проверено:** скорость и поведение на настоящих видеокартах и драйверах (SwiftShader считает на процессоре и очень медленно), настоящие веса Qwen3-TTS 0.6B/1,7B
+и F5 в браузере (проверялись крошечные модели со случайными весами), Safari и Firefox, загрузка с настоящего huggingface.co (в тестах мок-сервер).
+Известные ограничения: вычисления в f32 (без f16 и cooperative matrix), KV-кэш в f32 (1,7B при длине 3072 около 0,7 ГБ), на одного токена идёт полный GEMM-тайл (отдельного GEMV-ядра нет),
+у Qwen на каждый кадр 16 обменов с видеокартой (по кодбуку), создание голоса из записи для Qwen Base (`model.cloneVoice(audio, refText)`: mel → ECAPA → Mimi, всё на процессоре с уступкой потока, `voice.toTvoice()` сохраняет голос) проверено на крошечной модели, на настоящем Mimi по времени не измерено, q4 в браузере не собирается, декодер-режим `reference` и кэш разогрева ICL-голосов не реализованы, процессорный запасной путь — на JS в одном потоке (без WASM SIMD и воркеров), q8/bf16 для таблицы эмбеддингов текста остаётся в оперативной памяти страницы.
 F5 тяжёлая: порядок 2 ТФЛОП на шаг и фразу в 15 секунд (обе ветки CFG), поэтому на слабых видеокартах ставьте `nfe_step` 7–16 (с EPSS).
 
 ### Сайт и демо
 
 `site/` — исходники страницы проекта (презентация, как скачать, примеры по языкам, живое демо WebGPU); `python tools/build_site.py` собирает её в
 `docs/`. Для GitHub Pages: Settings → Pages → Deploy from a branch → `main` / `/docs`. Примеры кода на странице подставляются прямо из `examples/`,
-то есть это те же файлы, которые проверяют тесты. Демо принимает свой `.tmod` (файл или ссылка с CORS), запись или микрофон, а кнопка «Запустить тест»
+то есть это те же файлы, которые проверяют тесты. Демо принимает репозиторий Hugging Face (веса качаются и конвертируются в браузере), свой `.tmod` (файл или ссылка с CORS), запись или микрофон; для Qwen3-TTS — выбор диктора и описание голоса; секция «Живой ввод» показывает двусторонний стриминг, а кнопка «Запустить тест»
 прогоняет тестовую модель на 2 МБ со случайными весами (звук — шум, это проверка пути).
 
 ### Из других языков
@@ -325,7 +386,7 @@ chinese/auto своим диалектом; инструкция идёт пре
 
 ## Ограничения
 
-- GPU в нативных сборках: только Vulkan. CUDA и Metal не реализованы; нативный WebGPU (Dawn / wgpu-native) ещё не сделан: WebGPU есть только в браузере (`vox.js`) и только для F5-TTS. Шейдеры универсальные, без тензорных ядер и
+- GPU в нативных сборках: только Vulkan. CUDA и Metal не реализованы; нативный WebGPU (Dawn / wgpu-native) ещё не сделан: WebGPU есть только в браузере (`vox.js`: F5-TTS и Qwen3-TTS). Шейдеры универсальные, без тензорных ядер и
   cooperative matrix. Один Vulkan-девайс на процесс.
 - Скорость 0.8 на видеокарте не измерена (разработка шла без неё): Q4, гибридный talker и режимы ресурсов проверены на
   корректность (lavapipe + эталон), но не на скорость. Системные пробы RAM/ядер для macOS и Windows написаны, но не
