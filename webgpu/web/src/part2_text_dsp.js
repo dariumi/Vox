@@ -163,9 +163,10 @@ function melLogSpectrogram(cfg, fb, pcm) {
   return { mel: out, frames };
 }
 
-// Выход головы Vocos: [T][2*nb] = (log|X|, фаза) → звук ("same" padding, как ISTFT в Vocos).
-function istftSame(head, T, nfft, hop) {
-  const nb = (nfft >> 1) + 1, pad = (nfft - hop) >> 1, total = (T - 1) * hop + nfft;
+// Выход головы Vocos: [T][2*nb] = (log|X|, фаза) → звук. center=false: padding "same" (обрезка (n_fft-hop)/2 с краёв);
+// center=true: как torch.istft(center=True) у charactr/vocos-mel-24khz (обрезка n_fft/2, длина (T-1)*hop).
+function istftSame(head, T, nfft, hop, center = false) {
+  const nb = (nfft >> 1) + 1, pad = center ? (nfft >> 1) : (nfft - hop) >> 1, total = (T - 1) * hop + nfft;
   const win = hannPeriodic(nfft), fft = new FFT(nfft);
   const y = new Float64Array(total), env = new Float64Array(total);
   const re = new Float64Array(nfft), im = new Float64Array(nfft);
@@ -182,7 +183,7 @@ function istftSame(head, T, nfft, hop) {
     const o = t * hop;
     for (let i = 0; i < nfft; i++) { y[o + i] += f32r(re[i] / nfft) * win[i]; env[o + i] += win[i] * win[i]; }
   }
-  const out = new Float32Array(total - 2 * pad);
+  const out = new Float32Array(Math.max(0, total - 2 * pad));
   for (let i = 0; i < out.length; i++) out[i] = y[i + pad] / env[i + pad];
   return out;
 }

@@ -1,7 +1,7 @@
-"""Чистый ctypes поверх C ABI (без установки пакета vox): синтез в stdout — сырой float32 PCM.
-    python examples/python/ctypes_example.py model.tmod voice.tvoice "Привет!" > out.f32
-Путь к библиотеке: VOX_LIB (по умолчанию build/libvox.so; macOS — libvox.dylib, Windows — vox.dll).
-Обычно удобнее готовый пакет: `import vox; vox.Engine(...)` (см. README)."""
+"""Plain ctypes over the C ABI (no vox package needed): synthesis to stdout as raw float32 PCM.
+    python examples/python/ctypes_example.py model.tmod voice.tvoice "Hello!" > out.f32
+Library path: VOX_LIB (default build/libvox.so; macOS: libvox.dylib, Windows: vox.dll).
+The ready-made package is usually more convenient: `import vox; vox.Engine(...)` (see the README)."""
 import ctypes as C
 import os
 import struct
@@ -26,9 +26,9 @@ def main(model, voice_path, text):
     e, v, s = C.c_void_p(), C.c_void_p(), C.c_void_p()
     check(lib.vox_engine_open(model.encode(), None, C.byref(e)), "open")
     check(lib.vox_voice_load(e, voice_path.encode(), C.byref(v)), "voice")
-    params = C.create_string_buffer(72)               # vox_gen_params; struct_size проставит vox_gen_params_default
+    params = C.create_string_buffer(72)               # vox_gen_params; vox_gen_params_default sets struct_size
     lib.vox_gen_params_default(params)
-    struct.pack_into("<Q", params, 32, 42)            # seed: uint64 по смещению 32
+    struct.pack_into("<Q", params, 32, 42)            # seed: uint64 at offset 32
     check(lib.vox_session_create(e, v, params, C.byref(s)), "session")
     check(lib.vox_session_feed_text(s, text.encode()), "feed")
     check(lib.vox_session_end_text(s), "end")

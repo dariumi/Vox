@@ -14,5 +14,5 @@ const Vox = {
   config: (c) => { if (c && c.baseUrl != null) VOX_BASE_URL = c.baseUrl; return { baseUrl: VOX_BASE_URL }; },
   Voice, QVoice, VoxError, decodeAudio, wav: wavBlob, play: playPcm, StreamPlayer,
   splitText: chunkText,
-  _internal: { QwenVoiceEncoder, Yielder, openQwenSource, qwenFsFromHf, qwenFsFromMap, qwenSourceToTmod, QwenTokenizer, qwenPretokenize, QwenGpu, QwenModel, QwenSession, qSample, qUniform, unpickle, readTorchArchive, parseSafetensors, convertF5, melFilterbank, planFromFiles, f32ToF16Bits, f32ToBf16Bits, sniffKind, Gpu, CpuGpu, createDevice, Tmod, F5Gpu, F5Tokenizer, f5Noise, f5Timesteps, melLogSpectrogram, istftSame, resampleSinc, blen },
+  _internal: { QwenVoiceEncoder, Yielder, openQwenSource, qwenFsFromHf, qwenFsFromMap, qwenSourceToTmod, QwenTokenizer, qwenPretokenize, QwenGpu, QwenModel, QwenSession, qSample, qUniform, unpickle, readTorchArchive, parseSafetensors, convertF5, splitVocab, parseVocosPadding, melFilterbank, planFromFiles, f32ToF16Bits, f32ToBf16Bits, sniffKind, Gpu, CpuGpu, createDevice, Tmod, F5Gpu, F5Tokenizer, f5Noise, f5Timesteps, melLogSpectrogram, istftSame, resampleSinc, blen },
 };

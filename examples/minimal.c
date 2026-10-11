@@ -1,6 +1,6 @@
-/* Минимальный пример C ABI на чистом C: синтез фразы в сырой float32 PCM.
+/* Minimal C ABI example in plain C: synthesize a phrase to raw float32 PCM.
  *   cc examples/minimal.c -Iinclude -Lbuild -lvox -o minimal
- *   ./minimal model.tmod voice.tvoice "Привет!" > out.f32
+ *   ./minimal model.tmod voice.tvoice "Hello!" > out.f32
  */
 #include <stdio.h>
 #include "vox.h"

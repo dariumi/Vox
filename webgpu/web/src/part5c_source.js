@@ -161,16 +161,20 @@ async function acquireTmod(src, opts = {}, keepSource = false) {
 }
 async function acquireTmodRaw(src, opts = {}) {
   const status = (s) => { if (opts.onStatus) opts.onStatus(s); };
-  const cvtOpts = () => ({ dtype: opts.dtype || "bf16", quant: opts.quant || "", tokenizer: opts.tokenizer, hash: opts.hash });
-  const cacheKeyFor = (parts) => "tmod/1|" + JSON.stringify(parts) + "|" + JSON.stringify(cvtOpts());
+  const cvtOpts = () => ({ dtype: opts.dtype || "bf16", quant: opts.quant || "", tokenizer: opts.tokenizer, hash: opts.hash, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, vocosPadding: opts.vocosPadding });
+  const cacheKeyFor = (parts) => "tmod/2|" + JSON.stringify(parts) + "|" + JSON.stringify(cvtOpts());
   const useCache = opts.cache !== false;
+  // config.yaml вокодера (ради padding головы ISTFT); не нашёлся — конвертер считает, что это charactr/vocos-mel-24khz (center)
+  const vocosConfigAt = async (url) => { try { return await fetchText(url, Object.assign({}, opts, { onProgress: null }), "config.yaml"); } catch (e) { return null; } };
+  let vocosConfig = opts.vocosConfig != null ? opts.vocosConfig : null;
   const convertF5From = async (ckptBytes, ckptName, vocabText, vocosBytes, vocosName, variant) => {
+    vocabText = splitVocab(vocabText).join("\n") + "\n";
     status("конвертация весов в формат vox (в браузере)…");
     const tokenizer = opts.tokenizer || guessTokenizer(vocabText);
     const pinyin = tokenizer === "pinyin" ? await loadPinyin(opts) : null;
     return convertF5({
       ckpt: ckptBytes, ckptName, vocab: vocabText, vocos: vocosBytes, vocosName, dtype: opts.dtype || "bf16", quant: opts.quant || "",
-      tokenizer, variant: opts.variant || variant, pinyin, dimHead: opts.dimHead, mel: opts.mel, hash: opts.hash, onWarn: status,
+      tokenizer, variant: opts.variant || variant, vocosConfig, vocosPadding: opts.vocosPadding, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, pinyin, dimHead: opts.dimHead, mel: opts.mel, hash: opts.hash, onWarn: status,
       onProgress: (st, f) => { if (opts.onProgress && st === "convert") opts.onProgress(f, 0, 0, "convert"); },
     });
   };
@@ -189,6 +193,7 @@ async function acquireTmodRaw(src, opts = {}) {
         const ref = { repo: DEFAULT_VOCOS, rev: "main", path: "pytorch_model.bin", kind: "file" };
         status("скачиваю вокодер Vocos (" + DEFAULT_VOCOS + ")…");
         vocosBytes = await fetchAny(hfUrl(ref, "pytorch_model.bin", opts), opts, "vocos");
+        if (vocosConfig == null && !opts.vocosPadding) vocosConfig = await vocosConfigAt(hfUrl(ref, "config.yaml", opts));
       }
       return convertF5From(bytes, opts.ckptName || label || "model.safetensors", vocabText, vocosBytes, opts.vocosName || "pytorch_model.bin", opts.variant || "f5-tts");
     }
@@ -227,10 +232,13 @@ async function acquireTmodRaw(src, opts = {}) {
         const vt = opts.vocab != null ? await fetchText(opts.vocab, opts, "vocab.txt") : await fetchText(hfUrl(ref, plan.vocab, opts), opts, "vocab.txt");
         let vb;
         if (opts.vocos != null) vb = await fetchAny(opts.vocos, opts, "vocos");
-        else if (plan.vocos) vb = await fetchAny(hfUrl(ref, plan.vocos, opts), opts, "vocos");
-        else {
+        else if (plan.vocos) {
+          vb = await fetchAny(hfUrl(ref, plan.vocos, opts), opts, "vocos");
+          if (vocosConfig == null && !opts.vocosPadding) vocosConfig = await vocosConfigAt(hfUrl(ref, (dirOf(plan.vocos) ? dirOf(plan.vocos) + "/" : "") + "config.yaml", opts));
+        } else {
           status("скачиваю вокодер Vocos (" + DEFAULT_VOCOS + ")…");
           vb = await fetchAny(hfUrl({ repo: DEFAULT_VOCOS, rev: "main" }, "pytorch_model.bin", opts), opts, "vocos");
+          if (vocosConfig == null && !opts.vocosPadding) vocosConfig = await vocosConfigAt(hfUrl({ repo: DEFAULT_VOCOS, rev: "main" }, "config.yaml", opts));
         }
         out = await convertF5From(cb, baseOf(plan.ckpt), vt, vb, opts.vocosName || (plan.vocos ? baseOf(plan.vocos) : "pytorch_model.bin"), plan.variant);
       } else if (plan.kind === "qwen3") {

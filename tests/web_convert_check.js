@@ -101,6 +101,16 @@ const raises = async (fn, code, re) => { try { await fn(); return false; } catch
   // --- Qwen3-репозиторий распознаётся ---
   // (мок-репозиторий с пустышками вместо весов: распознан как Qwen3-TTS и отвергнут понятной ошибкой; настоящая загрузка — tests/test_web_qwen.py)
   check(await raises(() => Vox.convert("hf:mock/Qwen3-TTS-12Hz-0.6B-Base", { hfHost: host }), "format", /Qwen3|speech_tokenizer/), "репозиторий Qwen3-TTS распознан (config.json + speech_tokenizer/), битый — внятная ошибка");
+  // --- словарь с CRLF и padding вокодера (то, что ломало hotstone228/F5-TTS-Russian) ---
+  const { splitVocab, parseVocosPadding } = Vox._internal;
+  check(JSON.stringify(splitVocab(" \r\n!\r\nа\r\n")) === JSON.stringify([" ", "!", "а"]) && JSON.stringify(splitVocab("a\nb")) === JSON.stringify(["a", "b"]),
+        "vocab.txt с CRLF: \\r не попадает в токены");
+  const realCfg = "feature_extractor:\n  class_path: vocos.feature_extractors.MelSpectrogramFeatures\n  init_args:\n    padding: center\n" +
+                  "backbone:\n  class_path: vocos.models.VocosBackbone\nhead:\n  class_path: vocos.heads.ISTFTHead\n  init_args:\n    dim: 512\n    padding: center\n";
+  check(parseVocosPadding(realCfg) === "center" && parseVocosPadding(realCfg.replace(/padding: center\n$/, "padding: same\n")) === "same" &&
+        parseVocosPadding("head:\n  init_args: {dim: 48, padding: same}\n") === "same" && parseVocosPadding(null) === "center" &&
+        parseVocosPadding("feature_extractor:\n  init_args:\n    padding: center\nhead:\n  init_args:\n    dim: 4\n") === "same",
+        "config.yaml Vocos: padding головы ISTFT (center у charactr/vocos-mel-24khz, same по умолчанию, center без конфига)");
   console.log(fails ? "FAILED: " + fails : "ALL OK");
   process.exit(fails ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(2); });

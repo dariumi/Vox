@@ -16,6 +16,7 @@ class F5Gpu {
       dim: c.dim, depth: c.depth, heads: c.heads, dim_head: c.dim_head || 64, ff_mult: c.ff_mult || 2,
       text_dim: c.text_dim, text_rows: c.text_rows, mel_dim: c.mel_dim || 100, conv_layers: c.conv_layers ?? 4, conv_mult: c.conv_mult || 2,
       mask_padding: c.text_mask_padding !== false,
+      pe_attn_head: Number.isInteger(c.pe_attn_head) && c.pe_attn_head > 0 ? c.pe_attn_head : 0,
       mel: Object.assign({ sample_rate: 24000, n_fft: 1024, hop: 256, win: 1024, n_mels: 100 }, c.mel),
       vocos: Object.assign({ n_fft: 1024, hop: 256 }, c.vocos),
     };
@@ -85,7 +86,7 @@ class F5Gpu {
     this.proj_out = this.lin(d + "proj_out.weight");
     // Vocos
     const v = "vocos.", vc = tm.manifest.f5.vocos;
-    this.vk = { dim: vc.dim, inter: vc.intermediate, layers: vc.layers, n_fft: vc.n_fft || 1024, hop: vc.hop || 256 };
+    this.vk = { dim: vc.dim, inter: vc.intermediate, layers: vc.layers, n_fft: vc.n_fft || 1024, hop: vc.hop || 256, center: vc.padding === "center" };
     this.v_embed = this.conv(v + "backbone.embed", k.mel_dim, vc.dim, 7, 1);
     this.v_ln = { w: this.vec(v + "backbone.norm.weight"), b: this.vec(v + "backbone.norm.bias") };
     this.v_fln = { w: this.vec(v + "backbone.final_layer_norm.weight"), b: this.vec(v + "backbone.final_layer_norm.bias") };

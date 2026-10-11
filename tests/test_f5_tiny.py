@@ -56,11 +56,12 @@ def main(cli):
     except Exception as e:  # noqa: BLE001
         print("SKIP: needs torch, f5-tts, vocos, safetensors:", e)
         return 0
-    try:
-        from vox.build_f5 import build   # установленный пакет (pip install .), с нативным модулем
-    except ImportError:
-        sys.path[:0] = [os.path.join(ROOT, "python")]
-        from vox.build_f5 import build   # только чистый Python: проверки Python API будут пропущены
+    # конвертер всегда из репозитория (установленный пакет может быть старее), а Python API ниже — из установленного (с нативным модулем)
+    sys.path.insert(0, os.path.join(ROOT, "python"))
+    from vox.build_f5 import build
+    sys.path.remove(os.path.join(ROOT, "python"))
+    for m in [m for m in sys.modules if m == "vox" or m.startswith("vox.")]:
+        del sys.modules[m]
 
     work = tempfile.mkdtemp(prefix="voxf5_")
     rc, out = run([sys.executable, os.path.join(ROOT, "tools", "make_tiny_f5.py"), "--out", work])
@@ -133,6 +134,41 @@ def main(cli):
         got = read_wav_f32(outp)
         rel = float(np.linalg.norm(got - exp) / np.linalg.norm(exp)) if len(got) == len(exp) else 9.9
         check(rel < 0.05, f"end-to-end {name}: relative L2 error {rel:.3e} (< 5e-2)")
+
+    # 5. F5TTS_Base (v0): text_mask_padding=False + RoPE только на первой голове. По весам v0 и v1 не отличить, поэтому конфиг
+    # задаётся при конвертации; неверный конфиг на тех же весах даёт расхождение (так выглядела ошибка на hotstone228/F5-TTS-Russian).
+    v0w = os.path.join(work, "v0")
+    rc, out = run([sys.executable, os.path.join(ROOT, "tools", "make_tiny_f5.py"), "--out", v0w, "--v0", "--seed", "7", "--vocos-center", "--crlf-vocab"])
+    assert rc == 0, out[-2000:]
+    ck0, vc0, vb0 = os.path.join(v0w, "ckpt", "model.safetensors"), os.path.join(v0w, "vocos"), os.path.join(v0w, "ckpt", "vocab.txt")
+    t0, t0_wrong = os.path.join(work, "tiny_v0.tmod"), os.path.join(work, "tiny_v0_as_v1.tmod")
+    build(ck0, vb0, vc0, t0, dtype="f32", dim_head=32, model_cfg="v0")
+    build(ck0, vb0, vc0, t0_wrong, dtype="f32", dim_head=32, model_cfg="v1")
+    for dev in devices:
+        gpu = not dev.startswith("cpu")
+        for dump in ("dump.safetensors", "dump_long.safetensors"):
+            rc, out = run([cli, "verify", "--model", t0, "--dump", os.path.join(v0w, dump), "--device", dev, "--tol", "1e-4" if not gpu else "1e-3"])
+            check(rc == 0 and "PASS" in out, f"v0: verify f32 {dump} [{dev}]")
+            if rc != 0:
+                print(out)
+    rc, out = run([cli, "verify", "--model", t0_wrong, "--dump", os.path.join(v0w, "dump.safetensors"), "--device", "cpu", "--tol", "1e-4"])
+    check(rc != 0, "v0-веса, собранные как v1, НЕ проходят сверку (конфиг действительно влияет)")
+    e0 = json.load(open(os.path.join(v0w, "e2e.json")))
+    v0voice = os.path.join(work, "v0.tvoice")
+    assert run([cli, "voice", "create", os.path.join(v0w, "ref.wav"), "--model", t0, "--text", e0["ref_text"], "-o", v0voice, "--device", "cpu"])[0] == 0
+    for sc in ("single", "chunks"):
+        p = e0["scenarios"][sc]
+        exp = load_st(os.path.join(v0w, f"expected_{sc}.safetensors"))["wave"]
+        extra = {"noise_file": os.path.join(v0w, f"noise_{sc}.safetensors")}
+        if p["max_chars"]:
+            extra["max_chars"] = p["max_chars"]
+        outp = os.path.join(work, f"out_v0_{sc}.wav")
+        rc, so = run([cli, "say", p["gen_text"], "--model", t0, "--voice", v0voice, "-o", outp, "--float", "--device", "cpu",
+                      "--nfe", str(p["nfe"]), "--speed", str(p["speed"]), "--extra", json.dumps(extra)])
+        assert rc == 0, so
+        got = read_wav_f32(outp)
+        d = float(np.abs(got[:min(len(got), len(exp))] - exp[:min(len(got), len(exp))]).max()) if len(got) and len(exp) else 1.0
+        check(len(got) == len(exp) and d < 1e-6, f"v0: end-to-end {sc}: {len(exp)} samples, max|diff| {d:.2e} против официального f5_tts")
 
     # 4. детерминизм, подача текста частями, голос, ошибки
     text = "Seed test. Another sentence, with commas; and more!"

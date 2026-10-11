@@ -1,4 +1,4 @@
-/*! vox.js 0.12.0 — универсальный TTS-движок vox в браузере (WebGPU). Лицензия — как у проекта: https://github.com/dariumi/Vox */
+/*! vox.js 0.12.2 — универсальный TTS-движок vox в браузере (WebGPU). Лицензия — как у проекта: https://github.com/dariumi/Vox */
 "use strict";
 // Сгенерировано tools/gen_wgsl.py из webgpu/wgsl/*.wgsl — не править вручную.
 const KERNELS = {
@@ -654,7 +654,7 @@ fn ip(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) lid: v
 }
 `,
   rope: `// RoPE в виде пар (2j, 2j+1) по таблице cs[pos][j] = (cos, sin); на месте для q и k. Строка r = последовательность * N + позиция.
-struct P { rows: u32, N: u32, heads: u32, HD: u32, q_off: u32, k_off: u32, pad0: u32, pad1: u32 }
+struct P { rows: u32, N: u32, heads: u32, HD: u32, q_off: u32, k_off: u32, hlim: u32, pad1: u32 }   // hlim > 0: rotate only heads < hlim (F5TTS_Base v0: pe_attn_head)
 @group(0) @binding(0) var<uniform> p: P;
 @group(0) @binding(1) var<storage, read_write> Q: array<f32>;
 @group(0) @binding(2) var<storage, read_write> K: array<f32>;
@@ -669,6 +669,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let j = idx % half;
   let h = (idx / half) % p.heads;
   let r = idx / (half * p.heads);
+  if (p.hlim > 0u && h >= p.hlim) { return; }
   let pos = r % p.N;
   let cs = CS[pos * half + j];
   let inner = p.heads * p.HD;
@@ -743,7 +744,7 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
 // Эта часть: утилиты, формат .tmod, форматы весов, Philox-шум, расписание шагов.
 // ============================================================================
 
-const VOX_VERSION = "0.12.0";
+const VOX_VERSION = "0.12.2";
 // Папка, откуда загружен vox.js: рядом лежат pinyin.json и прочие ресурсы. Меняется через Vox.config({ baseUrl }).
 let VOX_BASE_URL = "";
 try { if (typeof document !== "undefined" && document.currentScript && document.currentScript.src) VOX_BASE_URL = document.currentScript.src.replace(/[^/]*$/, ""); } catch (e) { /* ок */ }
@@ -1125,9 +1126,10 @@ function melLogSpectrogram(cfg, fb, pcm) {
   return { mel: out, frames };
 }
 
-// Выход головы Vocos: [T][2*nb] = (log|X|, фаза) → звук ("same" padding, как ISTFT в Vocos).
-function istftSame(head, T, nfft, hop) {
-  const nb = (nfft >> 1) + 1, pad = (nfft - hop) >> 1, total = (T - 1) * hop + nfft;
+// Выход головы Vocos: [T][2*nb] = (log|X|, фаза) → звук. center=false: padding "same" (обрезка (n_fft-hop)/2 с краёв);
+// center=true: как torch.istft(center=True) у charactr/vocos-mel-24khz (обрезка n_fft/2, длина (T-1)*hop).
+function istftSame(head, T, nfft, hop, center = false) {
+  const nb = (nfft >> 1) + 1, pad = center ? (nfft >> 1) : (nfft - hop) >> 1, total = (T - 1) * hop + nfft;
   const win = hannPeriodic(nfft), fft = new FFT(nfft);
   const y = new Float64Array(total), env = new Float64Array(total);
   const re = new Float64Array(nfft), im = new Float64Array(nfft);
@@ -1144,7 +1146,7 @@ function istftSame(head, T, nfft, hop) {
     const o = t * hop;
     for (let i = 0; i < nfft; i++) { y[o + i] += f32r(re[i] / nfft) * win[i]; env[o + i] += win[i] * win[i]; }
   }
-  const out = new Float32Array(total - 2 * pad);
+  const out = new Float32Array(Math.max(0, total - 2 * pad));
   for (let i = 0; i < out.length; i++) out[i] = y[i + pad] / env[i + pad];
   return out;
 }
@@ -1603,12 +1605,13 @@ const CPU_KERNELS = {
     return { total: R, cost: C * 4, fn(lo, hi) { for (let r = lo; r < hi; r++) { const bs = yo + r * C; let s = 0; for (let c = 0; c < C; c++) { const v = Yf[bs + c]; s += v * v; } const inv = 1 / Math.sqrt(s / C + eps); for (let c = 0; c < C; c++) Yf[bs + c] = Wf[c] * (Yf[bs + c] * inv); } } };
   },
   "rope/main": () => (b, u) => {
-    const [Q, K, CS] = b, rows = u[0], N = u[1], heads = u[2], HD = u[3], qo = u[4], ko = u[5], half = HD >> 1, Qf = Q.f, Kf = K.f, Cf = CS.f, inner = heads * HD;
+    const [Q, K, CS] = b, rows = u[0], N = u[1], heads = u[2], HD = u[3], qo = u[4], ko = u[5], hlim = u[6], half = HD >> 1, Qf = Q.f, Kf = K.f, Cf = CS.f, inner = heads * HD;
     return {
       total: rows * heads, cost: half * 12,
       fn(lo, hi) {
         for (let i = lo; i < hi; i++) {
           const r = Math.floor(i / heads), h = i - r * heads, pos = r % N;
+          if (hlim > 0 && h >= hlim) continue;
           for (let j = 0; j < half; j++) {
             const c = Cf[(pos * half + j) * 2], s = Cf[(pos * half + j) * 2 + 1];
             const qi = qo + r * inner + h * HD + 2 * j, ki = ko + r * inner + h * HD + 2 * j;
@@ -1791,6 +1794,7 @@ class F5Gpu {
       dim: c.dim, depth: c.depth, heads: c.heads, dim_head: c.dim_head || 64, ff_mult: c.ff_mult || 2,
       text_dim: c.text_dim, text_rows: c.text_rows, mel_dim: c.mel_dim || 100, conv_layers: c.conv_layers ?? 4, conv_mult: c.conv_mult || 2,
       mask_padding: c.text_mask_padding !== false,
+      pe_attn_head: Number.isInteger(c.pe_attn_head) && c.pe_attn_head > 0 ? c.pe_attn_head : 0,
       mel: Object.assign({ sample_rate: 24000, n_fft: 1024, hop: 256, win: 1024, n_mels: 100 }, c.mel),
       vocos: Object.assign({ n_fft: 1024, hop: 256 }, c.vocos),
     };
@@ -1860,7 +1864,7 @@ class F5Gpu {
     this.proj_out = this.lin(d + "proj_out.weight");
     // Vocos
     const v = "vocos.", vc = tm.manifest.f5.vocos;
-    this.vk = { dim: vc.dim, inter: vc.intermediate, layers: vc.layers, n_fft: vc.n_fft || 1024, hop: vc.hop || 256 };
+    this.vk = { dim: vc.dim, inter: vc.intermediate, layers: vc.layers, n_fft: vc.n_fft || 1024, hop: vc.hop || 256, center: vc.padding === "center" };
     this.v_embed = this.conv(v + "backbone.embed", k.mel_dim, vc.dim, 7, 1);
     this.v_ln = { w: this.vec(v + "backbone.norm.weight"), b: this.vec(v + "backbone.norm.bias") };
     this.v_fln = { w: this.vec(v + "backbone.final_layer_norm.weight"), b: this.vec(v + "backbone.final_layer_norm.bias") };
@@ -3000,7 +3004,7 @@ Object.assign(F5Gpu.prototype, {
       this.gemm(ws.nrm, L.q, ws.q, R);
       this.gemm(ws.nrm, L.k, ws.k, R);
       this.gemm(ws.nrm, L.v, ws.v, R);
-      g.run1d(rope, [ws.q, ws.k, ws.cs], [R, N, H, HD, 0, 0, 0, 0], R * H * (HD >> 1));
+      g.run1d(rope, [ws.q, ws.k, ws.cs], [R, N, H, HD, 0, 0, k.pe_attn_head || 0, 0], R * H * (HD >> 1));
       g.run(attn, [ws.q, ws.k, ws.v, ws.at], [N, H, B, 0, f(scale), 0, 0, 0], Math.ceil(N / 4), H * B);
       this.gemm(ws.at, L.o, ws.h, R, { epi: 3, G: ws.ada, gOff: a0 + 2 * D });
       this.ln(ws.h, ws.nrm, R, D, { mode: 1, V: ws.ada, scOff: a0 + 4 * D, shOff: a0 + 3 * D });
@@ -3091,7 +3095,7 @@ Object.assign(F5Gpu.prototype, {
     this.gemm(y2, this.v_head, head, T);
     g.submit();
     const h = await g.read(head, T * 2 * nb);
-    const pcm = istftSame(h, T, V.n_fft, V.hop);
+    const pcm = istftSame(h, T, V.n_fft, V.hop, V.center);
     this.timing.vocos_ms += performance.now() - t0;
     return pcm;
   },
@@ -3490,8 +3494,44 @@ async function sha256Hex(parts) {
 
 // ---------- сборка F5 ----------
 // o: { ckpt: Uint8Array, ckptName, vocab: string, vocos: Uint8Array, vocosName, dtype: "bf16"|"f16"|"f32", quant: ""|"q8",
+//      vocosConfig: text of the vocoder's config.yaml (or vocosPadding: "center"|"same"; default center),
 //      tokenizer: "pinyin"|"char", variant, dimHead, pinyin: {char: syllable}|null, mel, hash: bool, onProgress(stage, frac) }
+// F5TTS_Base / F5TTS_Small (v0): text_mask_padding=false, pe_attn_head=1; F5TTS_v1_*: true / all heads. The weights do not say which, so the
+// config is chosen by opts.modelCfg ("v0" | "v1") or guessed from the file/repo name; unknown -> v1.
+// vocab.txt: one token per line; CRLF/CR are line breaks (as in f5_tts get_tokenizer, which reads the file in text mode).
+function splitVocab(text) {
+  const lines = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+// ISTFT padding of the Vocos head from its config.yaml ("center" for charactr/vocos-mel-24khz, ISTFTHead default "same");
+// no config -> the official F5-TTS vocoder (center).
+function parseVocosPadding(yamlText) {
+  if (yamlText == null) return "center";
+  const lines = String(yamlText).replace(/\r\n/g, "\n").split("\n");
+  const i = lines.findIndex((l) => /^head:\s*$/.test(l));
+  if (i < 0) return "center";
+  let pad = "same";
+  for (let j = i + 1; j < lines.length && (lines[j] === "" || /^[ \t]/.test(lines[j])); j++) {
+    const m = /padding:\s*['"]?(\w+)/.exec(lines[j]);
+    if (m) { pad = m[1]; break; }
+  }
+  if (pad !== "center" && pad !== "same") fail("Vocos: padding '" + pad + "' не поддерживается (center, same)", "unsupported");
+  return pad;
+}
+function guessF5Cfg(...names) {
+  for (const n of names) {
+    const s = String(n || "");
+    if (/F5TTS_v1/i.test(s)) return "v1";
+    if (/F5TTS_(Base|Small)/i.test(s)) return "v0";
+  }
+  return "v1";
+}
 async function convertF5(o) {
+  const modelCfg = o.modelCfg || guessF5Cfg(o.ckptName, o.variant);
+  if (modelCfg !== "v0" && modelCfg !== "v1") fail("modelCfg: v0 или v1", "arg");
+  const maskPadding = o.textMaskPadding != null ? !!o.textMaskPadding : modelCfg === "v1";
+  const peAttnHead = o.peAttnHead != null ? (o.peAttnHead || null) : (modelCfg === "v0" ? 1 : null);
   const dtype = (o.dtype || "bf16").toUpperCase(), quant = o.quant || "", tokenizer = o.tokenizer || "pinyin", dimHead = o.dimHead || 64;
   if (!["F32", "F16", "BF16"].includes(dtype)) fail("dtype: f32, f16 или bf16", "arg");
   if (quant && quant !== "q8") fail("quant: пусто или q8", "arg");
@@ -3519,14 +3559,15 @@ async function convertF5(o) {
     if (k.includes(".q_norm.")) fail("F5-TTS: qk_norm пока не поддерживается", "unsupported");
   }
   if (sh(dit, "input_embed.proj.weight")[1] !== 2 * melDim + textDim) fail("неожиданная форма input_embed.proj", "format");
-  const vocabList = o.vocab.split("\n");
-  if (vocabList.length && vocabList[vocabList.length - 1] === "") vocabList.pop();
+  const vocabList = splitVocab(o.vocab);
   const mel = Object.assign({ sample_rate: 24000, n_fft: 1024, hop: 256, win: 1024, n_mels: melDim }, o.mel || {});
   const vdim = sh(voc, "backbone.embed.weight")[0], vinter = sh(voc, "backbone.convnext.0.pwconv1.weight")[0];
   let vlayers = 0;
   for (const k of voc.keys()) { const m = /^backbone\.convnext\.(\d+)\./.exec(k); if (m) vlayers = Math.max(vlayers, +m[1] + 1); }
   const vout = sh(voc, "head.out.weight")[0];
-  const vocosCfg = { dim: vdim, intermediate: vinter, layers: vlayers, n_fft: vout - 2, hop: mel.hop };
+  const vocosCfg = { dim: vdim, intermediate: vinter, layers: vlayers, n_fft: vout - 2, hop: mel.hop,
+    padding: o.vocosPadding || parseVocosPadding(o.vocosConfig) };
+  if (vocosCfg.padding !== "center" && vocosCfg.padding !== "same") fail("vocosPadding: center или same", "arg");
 
   const blobs = [];
   for (const [k, t] of dit) addBlob(blobs, "dit." + k, t.shape, t.get, dtype, quant === "q8" && F5_BLOCK_LINEAR.test(k));
@@ -3548,7 +3589,7 @@ async function convertF5(o) {
     precision: { weights: o.dtype ? o.dtype.toLowerCase() : "bf16", quant: quant || "none" },
     generation: gen,
     f5: { dim, depth, heads, dim_head: dimHead, ff_mult: ffMult, text_dim: textDim, text_rows: textRows, mel_dim: melDim, conv_layers: convLayers, conv_mult: convMult,
-      text_mask_padding: true, qk_norm: null, mel, vocos: vocosCfg, tokenizer: tok },
+      text_mask_padding: maskPadding, pe_attn_head: peAttnHead, qk_norm: null, mel, vocos: vocosCfg, tokenizer: tok },
   };
   if (vocabList.length + 1 !== textRows && o.onWarn) o.onWarn("словарь: " + vocabList.length + " записей, а в таблице эмбеддингов " + textRows + " строк (ожидалось на одну больше)");
   prog("read", 1);
@@ -3718,16 +3759,20 @@ async function acquireTmod(src, opts = {}, keepSource = false) {
 }
 async function acquireTmodRaw(src, opts = {}) {
   const status = (s) => { if (opts.onStatus) opts.onStatus(s); };
-  const cvtOpts = () => ({ dtype: opts.dtype || "bf16", quant: opts.quant || "", tokenizer: opts.tokenizer, hash: opts.hash });
-  const cacheKeyFor = (parts) => "tmod/1|" + JSON.stringify(parts) + "|" + JSON.stringify(cvtOpts());
+  const cvtOpts = () => ({ dtype: opts.dtype || "bf16", quant: opts.quant || "", tokenizer: opts.tokenizer, hash: opts.hash, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, vocosPadding: opts.vocosPadding });
+  const cacheKeyFor = (parts) => "tmod/2|" + JSON.stringify(parts) + "|" + JSON.stringify(cvtOpts());
   const useCache = opts.cache !== false;
+  // config.yaml вокодера (ради padding головы ISTFT); не нашёлся — конвертер считает, что это charactr/vocos-mel-24khz (center)
+  const vocosConfigAt = async (url) => { try { return await fetchText(url, Object.assign({}, opts, { onProgress: null }), "config.yaml"); } catch (e) { return null; } };
+  let vocosConfig = opts.vocosConfig != null ? opts.vocosConfig : null;
   const convertF5From = async (ckptBytes, ckptName, vocabText, vocosBytes, vocosName, variant) => {
+    vocabText = splitVocab(vocabText).join("\n") + "\n";
     status("конвертация весов в формат vox (в браузере)…");
     const tokenizer = opts.tokenizer || guessTokenizer(vocabText);
     const pinyin = tokenizer === "pinyin" ? await loadPinyin(opts) : null;
     return convertF5({
       ckpt: ckptBytes, ckptName, vocab: vocabText, vocos: vocosBytes, vocosName, dtype: opts.dtype || "bf16", quant: opts.quant || "",
-      tokenizer, variant: opts.variant || variant, pinyin, dimHead: opts.dimHead, mel: opts.mel, hash: opts.hash, onWarn: status,
+      tokenizer, variant: opts.variant || variant, vocosConfig, vocosPadding: opts.vocosPadding, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, pinyin, dimHead: opts.dimHead, mel: opts.mel, hash: opts.hash, onWarn: status,
       onProgress: (st, f) => { if (opts.onProgress && st === "convert") opts.onProgress(f, 0, 0, "convert"); },
     });
   };
@@ -3746,6 +3791,7 @@ async function acquireTmodRaw(src, opts = {}) {
         const ref = { repo: DEFAULT_VOCOS, rev: "main", path: "pytorch_model.bin", kind: "file" };
         status("скачиваю вокодер Vocos (" + DEFAULT_VOCOS + ")…");
         vocosBytes = await fetchAny(hfUrl(ref, "pytorch_model.bin", opts), opts, "vocos");
+        if (vocosConfig == null && !opts.vocosPadding) vocosConfig = await vocosConfigAt(hfUrl(ref, "config.yaml", opts));
       }
       return convertF5From(bytes, opts.ckptName || label || "model.safetensors", vocabText, vocosBytes, opts.vocosName || "pytorch_model.bin", opts.variant || "f5-tts");
     }
@@ -3784,10 +3830,13 @@ async function acquireTmodRaw(src, opts = {}) {
         const vt = opts.vocab != null ? await fetchText(opts.vocab, opts, "vocab.txt") : await fetchText(hfUrl(ref, plan.vocab, opts), opts, "vocab.txt");
         let vb;
         if (opts.vocos != null) vb = await fetchAny(opts.vocos, opts, "vocos");
-        else if (plan.vocos) vb = await fetchAny(hfUrl(ref, plan.vocos, opts), opts, "vocos");
-        else {
+        else if (plan.vocos) {
+          vb = await fetchAny(hfUrl(ref, plan.vocos, opts), opts, "vocos");
+          if (vocosConfig == null && !opts.vocosPadding) vocosConfig = await vocosConfigAt(hfUrl(ref, (dirOf(plan.vocos) ? dirOf(plan.vocos) + "/" : "") + "config.yaml", opts));
+        } else {
           status("скачиваю вокодер Vocos (" + DEFAULT_VOCOS + ")…");
           vb = await fetchAny(hfUrl({ repo: DEFAULT_VOCOS, rev: "main" }, "pytorch_model.bin", opts), opts, "vocos");
+          if (vocosConfig == null && !opts.vocosPadding) vocosConfig = await vocosConfigAt(hfUrl({ repo: DEFAULT_VOCOS, rev: "main" }, "config.yaml", opts));
         }
         out = await convertF5From(cb, baseOf(plan.ckpt), vt, vb, opts.vocosName || (plan.vocos ? baseOf(plan.vocos) : "pytorch_model.bin"), plan.variant);
       } else if (plan.kind === "qwen3") {
@@ -4499,6 +4548,7 @@ class VoxModel {
     this.info = {
       name: m.name || "", family: m.family || "f5-tts", variant: m.variant || (tm.manifest.f5 && tm.manifest.f5.variant) || "",
       sampleRate: this.sampleRate, weightBytes: f5.wbytes, device: gpu.info, backend: gpu.isCpu ? "cpu" : "webgpu", precision: tm.manifest.precision || {},
+      f5: { text_mask_padding: f5.cfg.mask_padding, pe_attn_head: f5.cfg.pe_attn_head || null },
     };
   }
 
@@ -5140,7 +5190,7 @@ const Vox = {
   config: (c) => { if (c && c.baseUrl != null) VOX_BASE_URL = c.baseUrl; return { baseUrl: VOX_BASE_URL }; },
   Voice, QVoice, VoxError, decodeAudio, wav: wavBlob, play: playPcm, StreamPlayer,
   splitText: chunkText,
-  _internal: { QwenVoiceEncoder, Yielder, openQwenSource, qwenFsFromHf, qwenFsFromMap, qwenSourceToTmod, QwenTokenizer, qwenPretokenize, QwenGpu, QwenModel, QwenSession, qSample, qUniform, unpickle, readTorchArchive, parseSafetensors, convertF5, melFilterbank, planFromFiles, f32ToF16Bits, f32ToBf16Bits, sniffKind, Gpu, CpuGpu, createDevice, Tmod, F5Gpu, F5Tokenizer, f5Noise, f5Timesteps, melLogSpectrogram, istftSame, resampleSinc, blen },
+  _internal: { QwenVoiceEncoder, Yielder, openQwenSource, qwenFsFromHf, qwenFsFromMap, qwenSourceToTmod, QwenTokenizer, qwenPretokenize, QwenGpu, QwenModel, QwenSession, qSample, qUniform, unpickle, readTorchArchive, parseSafetensors, convertF5, splitVocab, parseVocosPadding, melFilterbank, planFromFiles, f32ToF16Bits, f32ToBf16Bits, sniffKind, Gpu, CpuGpu, createDevice, Tmod, F5Gpu, F5Tokenizer, f5Noise, f5Timesteps, melLogSpectrogram, istftSame, resampleSinc, blen },
 };
 
 // ============================================================================

@@ -37,7 +37,7 @@ code { font-size: .9em; background: var(--panel); padding: .1em .4em; border-rad
 .nav nav a:hover { color: var(--text); }
 .nav .gh { border: 1px solid var(--line); padding: 6px 14px; border-radius: 99px; font-size: 14px; text-decoration: none; }
 .nav .gh:hover { border-color: var(--accent); }
-@media (max-width: 760px) { .nav nav a:not(.gh) { display: none; } .nav nav { margin-left: auto; } }
+@media (max-width: 760px) { .nav nav a:not(.gh):not(.lang) { display: none; } .nav nav { margin-left: auto; } }
 
 /* кнопки */
 .btn { display: inline-flex; align-items: center; gap: 8px; font: 600 15px var(--body); padding: 12px 20px; border-radius: 99px; border: 1px solid var(--line); background: transparent; color: var(--text); cursor: pointer; text-decoration: none; transition: border-color .15s, background .15s; }

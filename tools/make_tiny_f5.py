@@ -90,6 +90,10 @@ def main():
     ap.add_argument("--dim-head", type=int, default=32)
     ap.add_argument("--text-dim", type=int, default=32)
     ap.add_argument("--conv-layers", type=int, default=2)
+    ap.add_argument("--v0", action="store_true", help="config F5TTS_Base (v0): text_mask_padding=False, pe_attn_head=1 (default: v1 config)")
+    ap.add_argument("--vocos-center", action="store_true",
+                    help="ISTFT head with padding=center, as in the real charactr/vocos-mel-24khz (default: same)")
+    ap.add_argument("--crlf-vocab", action="store_true", help="write vocab.txt with CRLF line endings (as some fine-tunes do)")
     a = ap.parse_args()
     os.makedirs(os.path.join(a.out, "ckpt"), exist_ok=True)
     os.makedirs(os.path.join(a.out, "vocos"), exist_ok=True)
@@ -114,8 +118,8 @@ def main():
     vmap = {c: i for i, c in enumerate(vocab)}
     mel_dim = 100
     transformer = DiT(dim=a.dim, depth=a.depth, heads=a.heads, dim_head=a.dim_head, ff_mult=2, mel_dim=mel_dim,
-                      text_num_embeds=len(vocab), text_dim=a.text_dim, text_mask_padding=True, conv_layers=a.conv_layers,
-                      qk_norm=None, pe_attn_head=None, attn_backend="torch", attn_mask_enabled=False)
+                      text_num_embeds=len(vocab), text_dim=a.text_dim, text_mask_padding=not a.v0, conv_layers=a.conv_layers,
+                      qk_norm=None, pe_attn_head=1 if a.v0 else None, attn_backend="torch", attn_mask_enabled=False)
     model = CFM(transformer=transformer, odeint_kwargs=dict(method="euler"), vocab_char_map=vmap,
                 mel_spec_kwargs=dict(n_fft=1024, hop_length=256, win_length=1024, n_mel_channels=mel_dim, target_sample_rate=24000,
                                      mel_spec_type="vocos"))
@@ -126,7 +130,7 @@ def main():
     from vocos.feature_extractors import MelSpectrogramFeatures
     voc = Vocos(MelSpectrogramFeatures(sample_rate=24000, n_fft=1024, hop_length=256, n_mels=mel_dim, padding="center"),
                 VocosBackbone(input_channels=mel_dim, dim=48, intermediate_dim=96, num_layers=2),
-                ISTFTHead(dim=48, n_fft=1024, hop_length=256, padding="same"))
+                ISTFTHead(dim=48, n_fft=1024, hop_length=256, padding="center" if a.vocos_center else "same"))
     rand_init(voc, a.seed + 2, 0.8)
     with torch.no_grad():
         for blk in voc.backbone.convnext:
@@ -140,7 +144,8 @@ def main():
     ck = {("ema_model.transformer." + k): v.detach().float().numpy() for k, v in model.transformer.state_dict().items()}
     save_file(ck, os.path.join(a.out, "ckpt", "model.safetensors"))
     with open(os.path.join(a.out, "ckpt", "vocab.txt"), "w", encoding="utf-8", newline="") as f:
-        f.write("\n".join(vocab) + "\n")
+        nl = "\r\n" if a.crlf_vocab else "\n"
+        f.write(nl.join(vocab) + nl)
     # папка вокодера как у charactr/vocos-mel-24khz: config.yaml + pytorch_model.bin (полный state_dict)
     torch.save(voc.state_dict(), os.path.join(a.out, "vocos", "pytorch_model.bin"))
     with open(os.path.join(a.out, "vocos", "config.yaml"), "w") as f:
@@ -152,8 +157,12 @@ backbone:
   init_args: {input_channels: %d, dim: 48, intermediate_dim: 96, num_layers: 2}
 head:
   class_path: vocos.heads.ISTFTHead
-  init_args: {dim: 48, n_fft: 1024, hop_length: 256, padding: same}
-""" % (mel_dim, mel_dim))
+  init_args:
+    dim: 48
+    n_fft: 1024
+    hop_length: 256
+    padding: %s
+""" % (mel_dim, mel_dim, "center" if a.vocos_center else "same"))
 
     # --- образец: тихая смесь синусоид, 24 кГц ---
     rng = np.random.default_rng(a.seed)

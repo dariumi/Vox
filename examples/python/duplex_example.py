@@ -1,9 +1,9 @@
-"""Двусторонний стриминг: текст приходит кусками (как токены из LLM), звук забирается по мере готовности.
+"""Duplex streaming: text arrives in pieces (like tokens from an LLM) and audio is taken as it becomes ready.
 
     python examples/python/duplex_example.py model.tmod voice.tvoice out.wav
 
-Запись в одном потоке, чтение — в основном; commit="auto": модель сама решает, сколько текста ей нужно
-(Qwen3-TTS читает по словам и начинает говорить сразу, F5-TTS озвучивает законченные куски)."""
+Writing happens in one thread, reading in the main one; commit="auto": the model decides how much text it needs
+(Qwen3-TTS reads word by word and starts speaking at once, F5-TTS speaks finished chunks)."""
 import sys
 import threading
 import time
@@ -14,24 +14,24 @@ import vox
 
 model, voice_path, out = sys.argv[1:4]
 eng = vox.Engine(model)
-print("модель принимает текст так:", eng.capabilities.get("stream"))
+print("the model takes text like this:", eng.capabilities.get("stream"))
 
-pieces = ["Здравствуйте! ", "Это двусторонний ", "стриминг: текст приходит ", "по кусочкам, ", "а звук идёт сразу."]
+pieces = ["Hello! ", "This is duplex ", "streaming: the text arrives ", "in small pieces, ", "and the audio starts at once."]
 with eng.duplex(voice_path, commit="auto", idle_ms=600, seed=42) as d:
-    def typist():                       # откуда угодно: другой поток, корутина, сокет
+    def typist():                       # from anywhere: another thread, a coroutine, a socket
         for p in pieces:
             d.write(p)
             time.sleep(0.05)
-        d.end()                         # текст закончился
+        d.end()                         # the text has ended
     threading.Thread(target=typist, daemon=True).start()
     chunks = []
-    for chunk in d.audio():             # блокирующий итератор: звук приходит, пока текст ещё пишется
+    for chunk in d.audio():             # blocking iterator: audio arrives while the text is still being written
         chunks.append(chunk)
-        print(f"звук: +{len(chunk) / eng.sample_rate:.2f} с")
-    print("до первого звука, с:", d.stats["first_audio_s"])
+        print(f"audio: +{len(chunk) / eng.sample_rate:.2f} s")
+    print("seconds to first audio:", d.stats["first_audio_s"])
 
 pcm = np.concatenate(chunks) if chunks else np.zeros(0, np.float32)
 with wave.open(out, "wb") as w:
     w.setnchannels(1); w.setsampwidth(2); w.setframerate(eng.sample_rate)
     w.writeframes((np.clip(pcm, -1, 1) * 32767).astype("<i2").tobytes())
-print("записано:", out, f"{len(pcm) / eng.sample_rate:.1f} с")
+print("written:", out, f"{len(pcm) / eng.sample_rate:.1f} s")

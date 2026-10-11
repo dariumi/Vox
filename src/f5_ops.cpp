@@ -146,9 +146,9 @@ void Conv1d::forward(const float *x, int T, float *y) const {
     }
 }
 
-void istft_same(const float *mag, const float *phase, int T, int n_fft, int hop, std::vector<float> &out) {
+void istft_same(const float *mag, const float *phase, int T, int n_fft, int hop, std::vector<float> &out, bool center) {
     if (!is_pow2(n_fft)) fail(VOX_ERR_ARG, "n_fft must be a power of two");
-    const int nb = n_fft / 2 + 1, pad = (n_fft - hop) / 2;
+    const int nb = n_fft / 2 + 1, pad = center ? n_fft / 2 : (n_fft - hop) / 2;
     const size_t total = size_t(T - 1) * size_t(hop) + size_t(n_fft);
     const auto win = hann_periodic(n_fft);
     std::vector<double> y(total, 0.0), env(total, 0.0);
@@ -176,7 +176,7 @@ void istft_same(const float *mag, const float *phase, int T, int n_fft, int hop,
             y[size_t(t) * size_t(hop) + size_t(i)] += double(frames[size_t(t)][size_t(i)]) * win[size_t(i)];
             env[size_t(t) * size_t(hop) + size_t(i)] += win[size_t(i)] * win[size_t(i)];
         }
-    out.resize(total - 2 * size_t(pad));
+    out.resize(total > 2 * size_t(pad) ? total - 2 * size_t(pad) : 0);
     for (size_t i = 0; i < out.size(); ++i) out[i] = float(y[i + size_t(pad)] / env[i + size_t(pad)]);
 }
 

@@ -1,6 +1,6 @@
-// C++ поверх C ABI: RAII-обёртки и синтез в stdout (сырой float32 PCM, mono).
+// C++ over the C ABI: RAII wrappers and synthesis to stdout (raw float32 PCM, mono).
 //   c++ -std=c++17 examples/minimal.cpp -Iinclude -Lbuild -lvox -o minimal_cpp
-//   LD_LIBRARY_PATH=build ./minimal_cpp model.tmod voice.tvoice "Привет!" > out.f32
+//   LD_LIBRARY_PATH=build ./minimal_cpp model.tmod voice.tvoice "Hello!" > out.f32
 #include <cstdio>
 #include <memory>
 #include <stdexcept>

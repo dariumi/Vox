@@ -19,8 +19,10 @@ struct F5Cfg {
     int dim = 1024, depth = 22, heads = 16, dim_head = 64, ff_mult = 2;
     int text_dim = 512, text_rows = 2546, mel_dim = 100, conv_layers = 4, conv_mult = 2;
     bool mask_padding = true;
+    int pe_attn_head = 0;   // >0: RoPE only on the first N heads (F5TTS_Base v0 uses 1); 0: all heads
     MelCfg mel;
     int vocos_dim = 512, vocos_inter = 1536, vocos_layers = 8, vocos_n_fft = 1024, vocos_hop = 256;
+    bool vocos_center = false;   // ISTFT padding "center" (charactr/vocos-mel-24khz); old .tmod without the field: "same"
     uint32_t sample_rate = 24000;
 };
 

@@ -1,22 +1,22 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vox — движок синтеза речи для любых моделей</title>
-<meta name="description" content="vox запускает Qwen3-TTS и F5-TTS из одного файла .tmod: на процессоре, через Vulkan и в браузере через WebGPU. Библиотека на C ABI, CLI, Python и vox.js.">
+<title>vox — a speech synthesis engine for any model</title>
+<meta name="description" content="vox runs Qwen3-TTS and F5-TTS from a single .tmod file: on the CPU, through Vulkan and in the browser through WebGPU. C ABI library, CLI, Python and vox.js.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23170f2b'/%3E%3Cpath d='M5 16h3l2-7 4 14 4-18 3 11h6' fill='none' stroke='%23ff6b8f' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Unbounded:wght@600;700&display=swap&subset=cyrillic" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Unbounded:wght@600;700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header class="nav">
   <div class="wrap">
     <a class="logo" href="#top" aria-label="vox"><svg viewBox="0 0 28 20" aria-hidden="true"><path d="M1 10h3l2-6 3.5 12L13 1l3.4 15L19 7l2 3h6" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>vox</a>
-    <nav aria-label="Разделы">
-      <a href="#models">Модели</a><a href="#download">Скачать</a><a href="#languages">Языки</a><a href="#demo">Демо</a>
-      <a class="gh" href="https://github.com/dariumi/Vox">GitHub</a>
+    <nav aria-label="Sections">
+      <a href="#models">Models</a><a href="#download">Download</a><a href="#languages">Languages</a><a href="#demo">Demo</a>
+      <a class="lang" href="index.ru.html" hreflang="ru" lang="ru">Русский</a><a class="gh" href="https://github.com/dariumi/Vox">GitHub</a>
     </nav>
   </div>
 </header>
@@ -25,31 +25,31 @@
 <section class="hero">
   <div class="wrap">
     <div>
-      <h1>Движок речи, который не привязан к одной модели</h1>
-      <p class="lead">vox запускает Qwen3-TTS и F5-TTS из одного файла <code>.tmod</code>: на процессоре, на видеокарте через Vulkan и прямо в браузере через WebGPU. Один <code>seed</code> — один звук.</p>
+      <h1>A speech engine that is not tied to one model</h1>
+      <p class="lead">vox runs Qwen3-TTS and F5-TTS from a single <code>.tmod</code> file: on the CPU, on a GPU through Vulkan and right in the browser through WebGPU. One <code>seed</code>, one sound.</p>
       <div class="actions">
-        <a class="btn primary" href="#demo">Попробовать в браузере</a>
-        <a class="btn" href="#download">Скачать</a>
+        <a class="btn primary" href="#demo">Try it in the browser</a>
+        <a class="btn" href="#download">Download</a>
       </div>
       <ul class="facts">
-        <li>Подключается как библиотека (C ABI), как CLI, как Python-пакет и как один скрипт <code>vox.js</code></li>
-        <li>F5-TTS в тестовом прогоне отличается от официального <code>f5_tts</code> меньше чем на 1e-6 от амплитуды сигнала</li>
-        <li>Шум не зависит от числа потоков, видеокарты и размера чанка</li>
+        <li>Use it as a library (C ABI), a CLI, a Python package or a single <code>vox.js</code> script</li>
+        <li>On the test model, F5-TTS differs from the official <code>f5_tts</code> by less than 1e-6 of the signal amplitude</li>
+        <li>The noise does not depend on the thread count, the GPU or the chunk size</li>
       </ul>
     </div>
-    <div class="console" aria-label="Проверка WebGPU">
+    <div class="console" aria-label="WebGPU check">
       <header>
-        <span><span id="gpuDot" class="dot"></span><b id="gpuName">проверяю WebGPU…</b></span>
+        <span><span id="gpuDot" class="dot"></span><b id="gpuName">checking WebGPU…</b></span>
         <span id="gpuNote"></span>
       </header>
       <div class="scope">
         <canvas id="heroScope" width="800" height="350"></canvas>
-        <div class="hint" id="heroHint">Здесь появится спектрограмма голоса, посчитанного на вашей видеокарте</div>
+        <div class="hint" id="heroHint">The spectrogram of a voice computed on your GPU will appear here</div>
         <div class="bar" id="heroBar"></div>
       </div>
       <footer>
-        <span class="stat" id="heroStat">Тест берёт крошечную модель на 2 МБ со случайными весами: звук будет шумом, зато проверит весь путь.</span>
-        <button class="btn primary small" id="heroRun" type="button" disabled>Запустить тест</button>
+        <span class="stat" id="heroStat">The test uses a tiny 2 MB model with random weights: the sound will be noise, but it exercises the whole path.</span>
+        <button class="btn primary small" id="heroRun" type="button" disabled>Run test</button>
       </footer>
     </div>
   </div>
@@ -57,27 +57,27 @@
 
 <section class="block" id="about">
   <div class="wrap">
-    <h2>Модель — это файл, а движок — всегда один</h2>
-    <p class="sub">Веса лежат в одном <code>.tmod</code>, голос — в <code>.tvoice</code>. Новая модель подключается как «семейство» поверх того же рантайма, поэтому планировщик ресурсов, стриминг и тесты общие.</p>
+    <h2>A model is a file, the engine is always the same</h2>
+    <p class="sub">Weights live in one <code>.tmod</code>, a voice in a <code>.tvoice</code>. A new model plugs in as a “family” on top of the same runtime, so the resource planner, streaming and tests are shared.</p>
     <div class="cols3">
-      <div><h3>Ресурсы под контролем</h3><p>Выбор устройства, лимиты RAM и VRAM, число потоков и режим работы. План размещения можно посмотреть, ничего не загружая: <code>vox plan</code>.</p></div>
-      <div><h3>Стриминг без швов</h3><p>Текст подаётся кусками, звук забирается по мере готовности. У F5-TTS куски склеиваются кроссфейдом 0,15 с, как в официальном инференсе.</p></div>
-      <div><h3>Проверка против эталона</h3><p>Каждое семейство сверяется с официальным пакетом на тестовой модели со случайными весами. Что не проверено — написано в README и ниже на этой странице.</p></div>
+      <div><h3>Resources under control</h3><p>Device choice, RAM and VRAM limits, thread count and run mode. You can see the placement plan without loading anything: <code>vox plan</code>.</p></div>
+      <div><h3>Seamless streaming</h3><p>Text goes in piece by piece and audio comes out as it is ready. F5-TTS chunks are joined with a 0.15 s crossfade, as in the official inference.</p></div>
+      <div><h3>Checked against a reference</h3><p>Every family is compared with the official package on a test model with random weights. What is not verified is stated in the README and further down this page.</p></div>
     </div>
   </div>
 </section>
 
 <section class="block" id="models">
   <div class="wrap">
-    <h2>Какие модели уже работают</h2>
-    <p class="sub">Один движок, разные семейства. Следующие модели добавляются по одной за итерацию, каждая со своими тестами.</p>
+    <h2>Which models already work</h2>
+    <p class="sub">One engine, different families. More models are added one per iteration, each with its own tests.</p>
     <div class="tablewrap">
       <table>
-        <thead><tr><th>Модель</th><th>Процессор</th><th>Vulkan</th><th>Браузер (WebGPU)</th><th>Что проверено</th></tr></thead>
+        <thead><tr><th>Model</th><th>CPU</th><th>Vulkan</th><th>Browser (WebGPU)</th><th>What is verified</th></tr></thead>
         <tbody>
-          <tr><td><b>Qwen3-TTS 12Hz</b><small>Base, CustomVoice, VoiceDesign; 0,6B и 1,7B</small></td><td class="y">да</td><td class="y">да</td><td class="y">да</td><td>Ядро сверено с официальным <code>qwen_tts</code>, в том числе на настоящей 1,7B-Base; замеры скорости на RTX 3050 есть в README. В браузере: загрузка по ссылке HF и синтез сверены с ядром на крошечной модели; на настоящих весах и на реальной видеокарте не измерялось. Голос из записи в браузере пока не создаётся: нужен готовый .tvoice, диктор или описание</td></tr>
-          <tr><td><b>F5-TTS</b><small>DiT + flow matching + Vocos, клонирование по образцу</small></td><td class="y">да</td><td class="p">линейные слои</td><td class="y">да</td><td>Сверена с <code>f5_tts</code> и <code>vocos</code> на тестовой модели, в браузере тоже. На настоящих весах и на реальной видеокарте скорость не измерялась</td></tr>
-          <tr><td><b>XTTS, CosyVoice, Chatterbox</b></td><td class="n" colspan="3">в очереди</td><td>Будут подключены по одной модели за итерацию</td></tr>
+          <tr><td><b>Qwen3-TTS 12Hz</b><small>Base, CustomVoice, VoiceDesign; 0.6B and 1.7B</small></td><td class="y">yes</td><td class="y">yes</td><td class="y">yes</td><td>The core is compared with the official <code>qwen_tts</code>, including on a real 1.7B Base; RTX 3050 timings are in the README. In the browser: loading from an HF link and synthesis are compared with the core on a tiny model; real weights and a real GPU have not been measured. Base voice cloning from a recording runs in the browser (compared with the core on a tiny model)</td></tr>
+          <tr><td><b>F5-TTS</b><small>DiT + flow matching + Vocos, cloning from a sample</small></td><td class="y">yes</td><td class="p">linear layers</td><td class="y">yes</td><td>Compared with <code>f5_tts</code> and <code>vocos</code> on a test model, in the browser too. Speed on real weights and a real GPU has not been measured</td></tr>
+          <tr><td><b>XTTS, CosyVoice, Chatterbox</b></td><td class="n" colspan="3">queued</td><td>To be added one model per iteration</td></tr>
         </tbody>
       </table>
     </div>
@@ -86,46 +86,46 @@
 
 <section class="block" id="how">
   <div class="wrap">
-    <h2>Путь от текста до звука</h2>
-    <p class="sub">Все клиенты ходят через один и тот же контракт. Различается только то, где считается модель.</p>
+    <h2>From text to sound</h2>
+    <p class="sub">All clients go through the same contract. Only the place where the model runs differs.</p>
     <div class="flow">
-      <div><h3>Конвертер</h3><p>Веса из Hugging Face превращаются в <code>.tmod</code>: f32, f16, bf16, q8 или q4.</p><ul><li><code>python -m vox build</code></li><li><code>python -m vox.build_f5</code></li></ul></div>
-      <div><h3>Семейство</h3><p>Описывает стадии модели и умеет клонировать голос. Авторегрессионные модели идут через кодеки, остальные — через «прямой» режим.</p></div>
-      <div><h3>Устройство</h3><p>Планировщик раскладывает стадии по железу.</p><ul><li>процессор: AVX2, aarch64</li><li>Vulkan: NVIDIA, AMD, Intel</li><li>WebGPU: браузер (<code>vox.js</code>)</li></ul></div>
-      <div><h3>Клиент</h3><p>Звук — float32, mono. Забирайте его одним куском или потоком.</p><ul><li>C ABI, C++, Rust, Go</li><li>Python, Node.js</li><li>HTTP-сервер, браузер</li></ul></div>
+      <div><h3>Converter</h3><p>Hugging Face weights become a <code>.tmod</code>: f32, f16, bf16, q8 or q4.</p><ul><li><code>python -m vox build</code></li><li><code>python -m vox.build_f5</code></li></ul></div>
+      <div><h3>Family</h3><p>Describes the model stages and knows how to clone a voice. Autoregressive models go through codecs, the rest through the “direct” mode.</p></div>
+      <div><h3>Device</h3><p>The planner places the stages on the hardware.</p><ul><li>CPU: AVX2, aarch64</li><li>Vulkan: NVIDIA, AMD, Intel</li><li>WebGPU: browser (<code>vox.js</code>)</li></ul></div>
+      <div><h3>Client</h3><p>Audio is float32, mono. Take it in one piece or as a stream.</p><ul><li>C ABI, C++, Rust, Go</li><li>Python, Node.js</li><li>HTTP server, browser</li></ul></div>
     </div>
   </div>
 </section>
 
 <section class="block" id="download">
   <div class="wrap">
-    <h2>Как скачать</h2>
-    <p class="sub">Репозиторий: <a href="https://github.com/dariumi/Vox">github.com/dariumi/Vox</a>. Лицензия Apache-2.0. Веса моделей в репозиторий не входят: у каждой модели своя лицензия.</p>
+    <h2>How to get it</h2>
+    <p class="sub">Repository: <a href="https://github.com/dariumi/Vox">github.com/dariumi/Vox</a>. License: Apache-2.0. Model weights are not part of the repository: each model has its own license.</p>
     <div class="steps">
       <div>
-        <h3>Сборка из исходников</h3>
+        <h3>Build from source</h3>
         <pre>git clone https://github.com/dariumi/Vox.git
 cd Vox
 cmake -S . -B build -DVOX_NATIVE=ON
 cmake --build build -j</pre>
-        <p>Получатся <code>build/vox</code> (CLI) и <code>build/libvox.so</code> (библиотека; на macOS и Windows — .dylib и .dll). Vulkan включится сам, если найдёт заголовки.</p>
+        <p>This produces <code>build/vox</code> (the CLI) and <code>build/libvox.so</code> (the library; .dylib and .dll on macOS and Windows). Vulkan turns on by itself if the headers are found.</p>
       </div>
       <div>
-        <h3>Python-пакет</h3>
+        <h3>Python package</h3>
         <pre>pip install .</pre>
-        <p>Собирает нативный модуль (нужны CMake и компилятор). Дальше: <code>import vox</code>. Сервер: <code>python -m vox serve</code>.</p>
+        <p>Builds the native module (CMake and a compiler are required). Then: <code>import vox</code>. Server: <code>python -m vox serve</code>.</p>
       </div>
       <div>
-        <h3>Для браузера: один файл</h3>
+        <h3>For the browser: one file</h3>
         <div class="dl-links">
           <a class="btn small" href="vox.js" download>vox.js</a>
-          <a class="btn small" href="vox.mjs" download>vox.mjs (ES-модуль)</a>
+          <a class="btn small" href="vox.mjs" download>vox.mjs (ES module)</a>
         </div>
         <pre>&lt;script src="vox.js"&gt;&lt;/script&gt;</pre>
-        <p>Без сборки и зависимостей, около 75 КБ. Лучше всего с WebGPU (иначе считает процессор, в разы медленнее): Chrome и Edge 113+ (Windows, macOS; на Linux WebGPU пока включается флагами), Firefox 141+ (Windows), Safari 26. Страница должна открываться по HTTPS или с localhost.</p>
+        <p>No build step, no dependencies, about 300 KB. Best with WebGPU (otherwise the CPU does the work, several times slower): Chrome and Edge 113+ (Windows, macOS; on Linux WebGPU still needs flags), Firefox 141+ (Windows), Safari 26. The page must be served over HTTPS or from localhost.</p>
       </div>
       <div>
-        <h3>Файл модели .tmod</h3>
+        <h3>The .tmod model file</h3>
         <pre># Qwen3-TTS
 python -m vox build --model ./Qwen3-TTS-12Hz-1.7B-Base \
     --dtype bf16 --quant q8 -o model.q8.tmod
@@ -134,7 +134,7 @@ python -m vox build --model ./Qwen3-TTS-12Hz-1.7B-Base \
 python -m vox.build_f5 --ckpt model_1250000.safetensors \
     --vocab vocab.txt --vocos ./vocos-mel-24khz \
     --dtype bf16 -o f5.bf16.tmod</pre>
-        <p>Для браузера берите <code>bf16</code> или <code>q8</code>: файл F5 в f32 весит больше 1 ГБ.</p>
+        <p>For the browser use <code>bf16</code> or <code>q8</code>: an F5 file in f32 is over 1 GB.</p>
       </div>
     </div>
   </div>
@@ -142,37 +142,37 @@ python -m vox.build_f5 --ckpt model_1250000.safetensors \
 
 <section class="block" id="languages">
   <div class="wrap">
-    <h2>Как использовать из разных языков</h2>
-    <p class="sub">Все привязки идут через C ABI. Примеры из репозитория проверены автоматически: на тестовой модели каждый выдаёт ровно те же отсчёты, что и <code>vox say</code> с тем же seed.</p>
-    <div class="tabs" role="tablist" aria-label="Язык"><button role="tab" id="tab-cli" aria-controls="panel-cli" aria-selected="true" tabindex="0">CLI</button><button role="tab" id="tab-py" aria-controls="panel-py" aria-selected="false" tabindex="-1">Python</button><button role="tab" id="tab-c" aria-controls="panel-c" aria-selected="false" tabindex="-1">C</button><button role="tab" id="tab-cpp" aria-controls="panel-cpp" aria-selected="false" tabindex="-1">C++</button><button role="tab" id="tab-rust" aria-controls="panel-rust" aria-selected="false" tabindex="-1">Rust</button><button role="tab" id="tab-go" aria-controls="panel-go" aria-selected="false" tabindex="-1">Go</button><button role="tab" id="tab-node" aria-controls="panel-node" aria-selected="false" tabindex="-1">Node.js</button><button role="tab" id="tab-ctypes" aria-controls="panel-ctypes" aria-selected="false" tabindex="-1">Python ctypes</button><button role="tab" id="tab-web" aria-controls="panel-web" aria-selected="false" tabindex="-1">Браузер</button><button role="tab" id="tab-http" aria-controls="panel-http" aria-selected="false" tabindex="-1">HTTP</button></div>
-    <div class="tabpanel" role="tabpanel" id="panel-cli" aria-labelledby="tab-cli"><div class="meta"><span>vox say / vox voice create</span><button class="copy" data-target="code-cli" type="button">Копировать</button></div><pre id="code-cli"><code># голос из записи (лучше WAV 24 кГц, 5–15 секунд чистой речи)
-vox voice create ref.wav --model model.tmod --text &quot;Текст, который сказан в записи&quot; -o me.tvoice
+    <h2>Using it from different languages</h2>
+    <p class="sub">All bindings go through the C ABI. The examples in the repository are checked automatically: on the test model each one produces exactly the same samples as <code>vox say</code> with the same seed.</p>
+    <div class="tabs" role="tablist" aria-label="Language"><button role="tab" id="tab-cli" aria-controls="panel-cli" aria-selected="true" tabindex="0">CLI</button><button role="tab" id="tab-py" aria-controls="panel-py" aria-selected="false" tabindex="-1">Python</button><button role="tab" id="tab-c" aria-controls="panel-c" aria-selected="false" tabindex="-1">C</button><button role="tab" id="tab-cpp" aria-controls="panel-cpp" aria-selected="false" tabindex="-1">C++</button><button role="tab" id="tab-rust" aria-controls="panel-rust" aria-selected="false" tabindex="-1">Rust</button><button role="tab" id="tab-go" aria-controls="panel-go" aria-selected="false" tabindex="-1">Go</button><button role="tab" id="tab-node" aria-controls="panel-node" aria-selected="false" tabindex="-1">Node.js</button><button role="tab" id="tab-ctypes" aria-controls="panel-ctypes" aria-selected="false" tabindex="-1">Python ctypes</button><button role="tab" id="tab-web" aria-controls="panel-web" aria-selected="false" tabindex="-1">Browser</button><button role="tab" id="tab-http" aria-controls="panel-http" aria-selected="false" tabindex="-1">HTTP</button></div>
+    <div class="tabpanel" role="tabpanel" id="panel-cli" aria-labelledby="tab-cli"><div class="meta"><span>vox say / vox voice create</span><button class="copy" data-target="code-cli" type="button">Copy</button></div><pre id="code-cli"><code># a voice from a recording (best: 24 kHz WAV, 5-15 seconds of clean speech)
+vox voice create ref.wav --model model.tmod --text &quot;The text spoken in the recording&quot; -o me.tvoice
 
-# синтез в файл
-vox say &quot;Привет! Это проверка.&quot; --model model.tmod --voice me.tvoice -o out.wav
+# synthesize to a file
+vox say &quot;Hello! This is a check.&quot; --model model.tmod --voice me.tvoice -o out.wav
 
-# потоком в плеер
+# stream into a player
 vox say --stdin --stream --model model.tmod --voice me.tvoice | ffplay -f f32le -ar 24000 -i -
 
-# F5-TTS: параметры называются как в официальном коде
-vox say &quot;Привет!&quot; --model f5.tmod --voice me.tvoice --nfe 16 --cfg 2 --sway -1 --speed 1 -o out.wav</code></pre><div class="note">Список устройств и план без загрузки весов: <code>vox devices</code>, <code>vox plan --model model.tmod</code>.</div></div>
-<div class="tabpanel" role="tabpanel" id="panel-py" aria-labelledby="tab-py" hidden><div class="meta"><span>import vox</span><button class="copy" data-target="code-py" type="button">Копировать</button></div><pre id="code-py"><code>import vox
+# F5-TTS: the parameters are named as in the official code
+vox say &quot;Hello!&quot; --model f5.tmod --voice me.tvoice --nfe 16 --cfg 2 --sway -1 --speed 1 -o out.wav</code></pre><div class="note">Device list and the placement plan without loading weights: <code>vox devices</code>, <code>vox plan --model model.tmod</code>.</div></div>
+<div class="tabpanel" role="tabpanel" id="panel-py" aria-labelledby="tab-py" hidden><div class="meta"><span>import vox</span><button class="copy" data-target="code-py" type="button">Copy</button></div><pre id="code-py"><code>import vox
 
 eng = vox.Engine(&quot;model.tmod&quot;, device=&quot;auto&quot;)          # &quot;cpu&quot;, &quot;vulkan:0&quot;, &quot;auto&quot;
-voice = eng.clone_voice(&quot;ref.wav&quot;, &quot;Текст, который сказан в записи&quot;, name=&quot;me&quot;, seed=42)
+voice = eng.clone_voice(&quot;ref.wav&quot;, &quot;The text spoken in the recording&quot;, name=&quot;me&quot;, seed=42)
 voice.save(&quot;me.tvoice&quot;)
 
-audio = eng.synthesize(&quot;Привет!&quot;, voice, seed=42)       # numpy float32, mono, eng.sample_rate
+audio = eng.synthesize(&quot;Hello!&quot;, voice, seed=42)        # numpy float32, mono, eng.sample_rate
 
-# текст приходит по кускам, звук забирается по мере готовности
+# text arrives in pieces, audio is taken as it becomes ready
 with eng.session(voice, seed=42) as s:
-    s.feed(&quot;Первая фраза. &quot;)
+    s.feed(&quot;The first sentence. &quot;)
     chunks = list(s.ready())
     s.end()
-    chunks += list(s)</code></pre><div class="note">Установка: <code>pip install .</code> из корня репозитория. Ошибки — <code>vox.VoxError</code>, нехватка памяти — <code>vox.OutOfMemory</code>.</div></div>
-<div class="tabpanel" role="tabpanel" id="panel-c" aria-labelledby="tab-c" hidden><div class="meta"><span>examples/minimal.c</span><span class="tag">проверено: звук совпадает с CLI до бита</span><button class="copy" data-target="code-c" type="button">Копировать</button></div><pre id="code-c"><code>/* Минимальный пример C ABI на чистом C: синтез фразы в сырой float32 PCM.
+    chunks += list(s)</code></pre><div class="note">Install: <code>pip install .</code> from the repository root. Errors are <code>vox.VoxError</code>, running out of memory is <code>vox.OutOfMemory</code>.</div></div>
+<div class="tabpanel" role="tabpanel" id="panel-c" aria-labelledby="tab-c" hidden><div class="meta"><span>examples/minimal.c</span><span class="tag">verified: the audio matches the CLI bit for bit</span><button class="copy" data-target="code-c" type="button">Copy</button></div><pre id="code-c"><code>/* Minimal C ABI example in plain C: synthesize a phrase to raw float32 PCM.
  *   cc examples/minimal.c -Iinclude -Lbuild -lvox -o minimal
- *   ./minimal model.tmod voice.tvoice &quot;Привет!&quot; &gt; out.f32
+ *   ./minimal model.tmod voice.tvoice &quot;Hello!&quot; &gt; out.f32
  */
 #include &lt;stdio.h&gt;
 #include &quot;vox.h&quot;
@@ -205,10 +205,10 @@ int main(int argc, char **argv) {
     vox_voice_free(v);
     vox_engine_close(e);
     return 0;
-}</code></pre><div class="note">Сборка: <code>cc examples/minimal.c -Iinclude -Lbuild -lvox -o minimal</code>. Контракт — <code>include/vox.h</code>.</div></div>
-<div class="tabpanel" role="tabpanel" id="panel-cpp" aria-labelledby="tab-cpp" hidden><div class="meta"><span>examples/minimal.cpp</span><span class="tag">проверено: звук совпадает с CLI до бита</span><button class="copy" data-target="code-cpp" type="button">Копировать</button></div><pre id="code-cpp"><code>// C++ поверх C ABI: RAII-обёртки и синтез в stdout (сырой float32 PCM, mono).
+}</code></pre><div class="note">Build: <code>cc examples/minimal.c -Iinclude -Lbuild -lvox -o minimal</code>. The contract is <code>include/vox.h</code>.</div></div>
+<div class="tabpanel" role="tabpanel" id="panel-cpp" aria-labelledby="tab-cpp" hidden><div class="meta"><span>examples/minimal.cpp</span><span class="tag">verified: the audio matches the CLI bit for bit</span><button class="copy" data-target="code-cpp" type="button">Copy</button></div><pre id="code-cpp"><code>// C++ over the C ABI: RAII wrappers and synthesis to stdout (raw float32 PCM, mono).
 //   c++ -std=c++17 examples/minimal.cpp -Iinclude -Lbuild -lvox -o minimal_cpp
-//   LD_LIBRARY_PATH=build ./minimal_cpp model.tmod voice.tvoice &quot;Привет!&quot; &gt; out.f32
+//   LD_LIBRARY_PATH=build ./minimal_cpp model.tmod voice.tvoice &quot;Hello!&quot; &gt; out.f32
 #include &lt;cstdio&gt;
 #include &lt;memory&gt;
 #include &lt;stdexcept&gt;
@@ -259,8 +259,8 @@ int main(int argc, char **argv) {
     }
     return 0;
 }</code></pre></div>
-<div class="tabpanel" role="tabpanel" id="panel-rust" aria-labelledby="tab-rust" hidden><div class="meta"><span>examples/rust/src/main.rs</span><span class="tag">проверено: звук совпадает с CLI до бита</span><button class="copy" data-target="code-rust" type="button">Копировать</button></div><pre id="code-rust"><code>//! Rust через C ABI (без зависимостей): синтез в stdout — сырой float32 PCM.
-//!   cd examples/rust &amp;&amp; cargo build --release &amp;&amp; LD_LIBRARY_PATH=../../build ./target/release/vox-example model.tmod voice.tvoice &quot;Привет!&quot; &gt; out.f32
+<div class="tabpanel" role="tabpanel" id="panel-rust" aria-labelledby="tab-rust" hidden><div class="meta"><span>examples/rust/src/main.rs</span><span class="tag">verified: the audio matches the CLI bit for bit</span><button class="copy" data-target="code-rust" type="button">Copy</button></div><pre id="code-rust"><code>//! Rust over the C ABI (no dependencies): synthesis to stdout as raw float32 PCM.
+//!   cd examples/rust &amp;&amp; cargo build --release &amp;&amp; LD_LIBRARY_PATH=../../build ./target/release/vox-example model.tmod voice.tvoice &quot;Hello!&quot; &gt; out.f32
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io::Write;
 use std::ptr;
@@ -332,7 +332,7 @@ fn run() -&gt; Result&lt;(), String&gt; {
             let st = vox_session_pull(s, buf.as_mut_ptr(), buf.len(), &amp;mut n);
             if st != VOX_OK {
                 check(st, &quot;pull&quot;)?;
-                break; // VOX_DONE (2) или VOX_AGAIN (1) для синхронного режима здесь означает конец
+                break; // VOX_DONE (2) or VOX_AGAIN (1) in synchronous mode means the end here
             }
             let bytes = std::slice::from_raw_parts(buf.as_ptr() as *const u8, n * 4);
             out.write_all(bytes).map_err(|e| e.to_string())?;
@@ -351,10 +351,10 @@ fn main() {
         eprintln!(&quot;{e}&quot;);
         std::process::exit(1);
     }
-}</code></pre><div class="note">Без зависимостей. Путь к библиотеке — переменная <code>VOX_LIB_DIR</code> при сборке, при запуске нужен <code>LD_LIBRARY_PATH</code>.</div></div>
-<div class="tabpanel" role="tabpanel" id="panel-go" aria-labelledby="tab-go" hidden><div class="meta"><span>examples/go/main.go</span><span class="tag">проверено: звук совпадает с CLI до бита</span><button class="copy" data-target="code-go" type="button">Копировать</button></div><pre id="code-go"><code>// Go через cgo (C ABI): синтез в stdout — сырой float32 PCM.
+}</code></pre><div class="note">No dependencies. Set <code>VOX_LIB_DIR</code> to the library path at build time and <code>LD_LIBRARY_PATH</code> at run time.</div></div>
+<div class="tabpanel" role="tabpanel" id="panel-go" aria-labelledby="tab-go" hidden><div class="meta"><span>examples/go/main.go</span><span class="tag">verified: the audio matches the CLI bit for bit</span><button class="copy" data-target="code-go" type="button">Copy</button></div><pre id="code-go"><code>// Go via cgo (C ABI): synthesis to stdout as raw float32 PCM.
 //
-//	cd examples/go &amp;&amp; go build -o vox-go . &amp;&amp; LD_LIBRARY_PATH=../../build ./vox-go model.tmod voice.tvoice &quot;Привет!&quot; &gt; out.f32
+//	cd examples/go &amp;&amp; go build -o vox-go . &amp;&amp; LD_LIBRARY_PATH=../../build ./vox-go model.tmod voice.tvoice &quot;Hello!&quot; &gt; out.f32
 package main
 
 /*
@@ -417,10 +417,10 @@ func main() {
 		total += int(n)
 	}
 	fmt.Fprintf(os.Stderr, &quot;%d samples @ %d Hz\n&quot;, total, uint32(C.vox_engine_sample_rate(e)))
-}</code></pre><div class="note">cgo, поэтому нужен компилятор C.</div></div>
-<div class="tabpanel" role="tabpanel" id="panel-node" aria-labelledby="tab-node" hidden><div class="meta"><span>examples/node/vox.mjs</span><span class="tag">проверено: звук совпадает с CLI до бита</span><button class="copy" data-target="code-node" type="button">Копировать</button></div><pre id="code-node"><code>// Node.js через koffi (FFI к C ABI): синтез в stdout — сырой float32 PCM.
-//   cd examples/node &amp;&amp; npm install &amp;&amp; node vox.mjs model.tmod voice.tvoice &quot;Привет!&quot; &gt; out.f32
-// Путь к библиотеке: VOX_LIB (по умолчанию ../../build/libvox.so; macOS — libvox.dylib, Windows — vox.dll).
+}</code></pre><div class="note">Uses cgo, so a C compiler is required.</div></div>
+<div class="tabpanel" role="tabpanel" id="panel-node" aria-labelledby="tab-node" hidden><div class="meta"><span>examples/node/vox.mjs</span><span class="tag">verified: the audio matches the CLI bit for bit</span><button class="copy" data-target="code-node" type="button">Copy</button></div><pre id="code-node"><code>// Node.js via koffi (FFI to the C ABI): synthesis to stdout as raw float32 PCM.
+//   cd examples/node &amp;&amp; npm install &amp;&amp; node vox.mjs model.tmod voice.tvoice &quot;Hello!&quot; &gt; out.f32
+// Library path: VOX_LIB (default ../../build/libvox.so; macOS: libvox.dylib, Windows: vox.dll).
 import koffi from &quot;koffi&quot;;
 
 const lib = koffi.load(process.env.VOX_LIB || new URL(&quot;../../build/libvox.so&quot;, import.meta.url).pathname);
@@ -447,7 +447,7 @@ check(vox_engine_open(model, null, out), &quot;open&quot;);
 const engine = out[0];
 check(vox_voice_load(engine, voicePath, voice), &quot;voice&quot;);
 
-// vox_gen_params: struct_size заполняет vox_gen_params_default; seed — uint64 по смещению 32
+// vox_gen_params: vox_gen_params_default fills struct_size; seed is a uint64 at offset 32
 const params = Buffer.alloc(72);
 vox_gen_params_default(params);
 params.writeBigUInt64LE(42n, 32);
@@ -465,11 +465,11 @@ for (;;) {
   total += n;
 }
 console.error(`${total} samples @ ${vox_engine_sample_rate(engine)} Hz`);
-vox_session_free(sess[0]); vox_voice_free(voice[0]); vox_engine_close(engine);</code></pre><div class="note">Через FFI-библиотеку <code>koffi</code> (<code>npm install</code> в папке примера).</div></div>
-<div class="tabpanel" role="tabpanel" id="panel-ctypes" aria-labelledby="tab-ctypes" hidden><div class="meta"><span>examples/python/ctypes_example.py</span><span class="tag">проверено: звук совпадает с CLI до бита</span><button class="copy" data-target="code-ctypes" type="button">Копировать</button></div><pre id="code-ctypes"><code>&quot;&quot;&quot;Чистый ctypes поверх C ABI (без установки пакета vox): синтез в stdout — сырой float32 PCM.
-    python examples/python/ctypes_example.py model.tmod voice.tvoice &quot;Привет!&quot; &gt; out.f32
-Путь к библиотеке: VOX_LIB (по умолчанию build/libvox.so; macOS — libvox.dylib, Windows — vox.dll).
-Обычно удобнее готовый пакет: `import vox; vox.Engine(...)` (см. README).&quot;&quot;&quot;
+vox_session_free(sess[0]); vox_voice_free(voice[0]); vox_engine_close(engine);</code></pre><div class="note">Through the <code>koffi</code> FFI library (<code>npm install</code> in the example folder).</div></div>
+<div class="tabpanel" role="tabpanel" id="panel-ctypes" aria-labelledby="tab-ctypes" hidden><div class="meta"><span>examples/python/ctypes_example.py</span><span class="tag">verified: the audio matches the CLI bit for bit</span><button class="copy" data-target="code-ctypes" type="button">Copy</button></div><pre id="code-ctypes"><code>&quot;&quot;&quot;Plain ctypes over the C ABI (no vox package needed): synthesis to stdout as raw float32 PCM.
+    python examples/python/ctypes_example.py model.tmod voice.tvoice &quot;Hello!&quot; &gt; out.f32
+Library path: VOX_LIB (default build/libvox.so; macOS: libvox.dylib, Windows: vox.dll).
+The ready-made package is usually more convenient: `import vox; vox.Engine(...)` (see the README).&quot;&quot;&quot;
 import ctypes as C
 import os
 import struct
@@ -494,9 +494,9 @@ def main(model, voice_path, text):
     e, v, s = C.c_void_p(), C.c_void_p(), C.c_void_p()
     check(lib.vox_engine_open(model.encode(), None, C.byref(e)), &quot;open&quot;)
     check(lib.vox_voice_load(e, voice_path.encode(), C.byref(v)), &quot;voice&quot;)
-    params = C.create_string_buffer(72)               # vox_gen_params; struct_size проставит vox_gen_params_default
+    params = C.create_string_buffer(72)               # vox_gen_params; vox_gen_params_default sets struct_size
     lib.vox_gen_params_default(params)
-    struct.pack_into(&quot;&lt;Q&quot;, params, 32, 42)            # seed: uint64 по смещению 32
+    struct.pack_into(&quot;&lt;Q&quot;, params, 32, 42)            # seed: uint64 at offset 32
     check(lib.vox_session_create(e, v, params, C.byref(s)), &quot;session&quot;)
     check(lib.vox_session_feed_text(s, text.encode()), &quot;feed&quot;)
     check(lib.vox_session_end_text(s), &quot;end&quot;)
@@ -518,125 +518,126 @@ def main(model, voice_path, text):
 if __name__ == &quot;__main__&quot;:
     if len(sys.argv) &lt; 4:
         sys.exit(&quot;usage: ctypes_example.py model.tmod voice.tvoice text&quot;)
-    main(*sys.argv[1:4])</code></pre><div class="note">Если не хотите собирать Python-модуль: чистый <code>ctypes</code> поверх той же библиотеки.</div></div>
-<div class="tabpanel" role="tabpanel" id="panel-web" aria-labelledby="tab-web" hidden><div class="meta"><span>vox.js</span><span class="tag">проверено в Chromium (WebGPU через SwiftShader) на тестовых моделях</span><button class="copy" data-target="code-web" type="button">Копировать</button></div><pre id="code-web"><code>&lt;script src=&quot;vox.js&quot;&gt;&lt;/script&gt;
+    main(*sys.argv[1:4])</code></pre><div class="note">If you do not want to build the Python module: plain <code>ctypes</code> over the same library.</div></div>
+<div class="tabpanel" role="tabpanel" id="panel-web" aria-labelledby="tab-web" hidden><div class="meta"><span>vox.js</span><span class="tag">verified in Chromium (WebGPU via SwiftShader) on test models</span><button class="copy" data-target="code-web" type="button">Copy</button></div><pre id="code-web"><code>&lt;script src=&quot;vox.js&quot;&gt;&lt;/script&gt;
 &lt;script type=&quot;module&quot;&gt;
-  // 1. модель: что угодно — репозиторий HF, прямая ссылка, .tmod, File/Blob. Чекпойнт (safetensors) качается и
-  //    конвертируется в браузере сам; Qwen3-TTS читается по тензорам (HTTP Range), целиком в память не попадает.
+  // 1. The model: a Hugging Face repo, a direct link, a .tmod, a File/Blob. A checkpoint (safetensors) is downloaded and
+  //    converted in the browser; Qwen3-TTS is read tensor by tensor (HTTP Range) and never sits in memory as a whole.
+  //    backend: &quot;auto&quot; (default) uses WebGPU and falls back to the CPU; load: &quot;balanced&quot; | &quot;gentle&quot; | &quot;full&quot; paces the GPU.
   const model = await Vox.load(&quot;hf:Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice&quot;, {
-    dtype: &quot;bf16&quot;, quant: &quot;&quot;,             // &quot;q8&quot; — вчетверо меньше f32
+    dtype: &quot;bf16&quot;, quant: &quot;&quot;,             // &quot;q8&quot; is four times smaller than f32
     onProgress: (p) =&gt; console.log(Math.round(p * 100) + &quot;%&quot;), onStatus: console.log,
   });
-  // F5-TTS так же: Vox.load(&quot;hf:SWivid/F5-TTS&quot;) или Vox.load(&quot;https://…/model_1250000.safetensors&quot;, { vocab: &quot;https://…/vocab.txt&quot; })
+  // F5-TTS the same way: Vox.load(&quot;hf:SWivid/F5-TTS&quot;) or Vox.load(&quot;https://.../model_1250000.safetensors&quot;, { vocab: &quot;https://.../vocab.txt&quot; })
 
-  // 2. голос. F5-TTS: из записи (File, Blob, URL или Float32Array + sampleRate) и текста записи.
-  //    Qwen3-TTS: готовый диктор / описание голоса или .tvoice (создаётся командой vox voice create)
-  const voice = model.family === &quot;qwen3-tts&quot;
+  // 2. The voice. F5-TTS and Qwen3-TTS Base: from a recording (File, Blob, URL or Float32Array + sampleRate) and its text.
+  //    Qwen3-TTS CustomVoice/VoiceDesign: a ready speaker / voice description, or a .tvoice (vox voice create or voice.toTvoice())
+  const voice = model.family === &quot;qwen3-tts&quot; &amp;&amp; !model.capabilities.clone_from_audio
     ? model.speakerVoice(&quot;aiden&quot;, &quot;Speak slowly and calmly&quot;, { language: &quot;english&quot; })
-    : await model.cloneVoice(refFile, &quot;Текст, который сказан в записи&quot;);
+    : await model.cloneVoice(refFile, &quot;The text spoken in the recording&quot;);
 
-  // 3. синтез целиком или потоком
-  const { pcm, sampleRate } = await model.synthesize(&quot;Привет, мир!&quot;, { voice, seed: 1 });
-  Vox.play(pcm, sampleRate);            // или Vox.wav(pcm, sampleRate) → Blob для скачивания
+  // 3. Synthesize in one piece or as a stream
+  const { pcm, sampleRate } = await model.synthesize(&quot;Hello, world!&quot;, { voice, seed: 1 });
+  Vox.play(pcm, sampleRate);            // or Vox.wav(pcm, sampleRate) -&gt; a Blob to download
 
-  // 4. двусторонний стриминг: текст подаётся на лету, звук забирается на лету
+  // 4. Duplex streaming: text goes in on the fly, audio comes out on the fly
   const player = new Vox.StreamPlayer(model.sampleRate);
   const d = model.duplex({ voice, commit: &quot;auto&quot;, idle_ms: 600 });   // auto | sentence | manual
-  input.addEventListener(&quot;input&quot;, () =&gt; d.setText(input.value));     // поле ввода; можно и d.write(токен из LLM)
+  input.addEventListener(&quot;input&quot;, () =&gt; d.setText(input.value));     // a text field; d.write(token from an LLM) works too
   (async () =&gt; { for await (const piece of d.audio()) player.push(piece); })();
-  // d.flush() — озвучить накопленное сейчас; d.end() — текст закончился; d.cancel() — оборвать
-&lt;/script&gt;</code></pre><div class="note">Qwen3-TTS читает текст по словам и говорит на полуслове, F5-TTS озвучивает целыми кусками (<code>d.caps</code> показывает, как модель принимает текст). Параметры F5 называются как в официальном коде: <code>nfe_step</code>, <code>cfg_strength</code>, <code>sway_sampling_coef</code>, <code>speed</code>. Отмена — <code>signal</code> (AbortSignal).</div></div>
-<div class="tabpanel" role="tabpanel" id="panel-http" aria-labelledby="tab-http" hidden><div class="meta"><span>python -m vox serve</span><button class="copy" data-target="code-http" type="button">Копировать</button></div><pre id="code-http"><code>python -m vox serve --model model.tmod --voices ./voices --port 8080 --device vulkan
+  // d.flush() speaks what has accumulated now; d.end() means the text is finished; d.cancel() aborts
+&lt;/script&gt;</code></pre><div class="note">Qwen3-TTS reads text word by word and can speak mid-sentence, F5-TTS speaks whole chunks (<code>d.caps</code> shows how the model takes text). F5 parameters are named as in the official code: <code>nfe_step</code>, <code>cfg_strength</code>, <code>sway_sampling_coef</code>, <code>speed</code>. Cancel with <code>signal</code> (AbortSignal).</div></div>
+<div class="tabpanel" role="tabpanel" id="panel-http" aria-labelledby="tab-http" hidden><div class="meta"><span>python -m vox serve</span><button class="copy" data-target="code-http" type="button">Copy</button></div><pre id="code-http"><code>python -m vox serve --model model.tmod --voices ./voices --port 8080 --device vulkan
 
 curl localhost:8080/v1/voices
-curl -X POST localhost:8080/v1/tts -d &#x27;{&quot;text&quot;:&quot;Привет!&quot;,&quot;voice&quot;:&quot;me&quot;,&quot;seed&quot;:42}&#x27; | ffplay -i -
-curl -X POST localhost:8080/v1/voices -d &#x27;{&quot;name&quot;:&quot;me&quot;,&quot;audio_b64&quot;:&quot;&lt;WAV в base64&gt;&quot;,&quot;ref_text&quot;:&quot;Текст записи&quot;}&#x27;</code></pre><div class="note">Звук отдаётся потоком по мере готовности. Форматы ответа: <code>wav</code>, <code>pcm16</code>, <code>f32</code>.</div></div>
+curl -X POST localhost:8080/v1/tts -d &#x27;{&quot;text&quot;:&quot;Hello!&quot;,&quot;voice&quot;:&quot;me&quot;,&quot;seed&quot;:42}&#x27; | ffplay -i -
+curl -X POST localhost:8080/v1/voices -d &#x27;{&quot;name&quot;:&quot;me&quot;,&quot;audio_b64&quot;:&quot;&lt;WAV in base64&gt;&quot;,&quot;ref_text&quot;:&quot;The recording text&quot;}&#x27;</code></pre><div class="note">Audio is streamed as it becomes ready. Response formats: <code>wav</code>, <code>pcm16</code>, <code>f32</code>.</div></div>
   </div>
 </section>
 
 <section class="block" id="demo">
   <div class="wrap">
-    <h2>Демо: F5-TTS и Qwen3-TTS на WebGPU</h2>
-    <p class="sub">Всё считается у вас в браузере: на видеокарте (WebGPU), а если её нет — на процессоре. Ничего не отправляется на сервер: модель и запись голоса остаются на странице.</p>
+    <h2>Demo: F5-TTS and Qwen3-TTS on WebGPU</h2>
+    <p class="sub">Everything is computed in your browser: on the GPU (WebGPU), or on the CPU if there is none. Nothing is sent to a server: the model and the voice recording stay on the page.</p>
     <div id="noGpu" class="notice" hidden></div>
     <div class="demo">
       <div>
         <div class="stepbox">
-          <h3>1. Модель <span class="state" id="stModel">не загружена</span></h3>
-          <div class="row"><button class="btn small" id="loadTiny" type="button" disabled>Тестовая модель (2 МБ)</button></div>
-          <label class="f" for="modelFile">Или свой файл F5-TTS в формате .tmod</label>
+          <h3>1. Model <span class="state" id="stModel">not loaded</span></h3>
+          <div class="row"><button class="btn small" id="loadTiny" type="button" disabled>Test model (2 MB)</button></div>
+          <label class="f" for="modelFile">Or your own F5-TTS file in .tmod format</label>
           <input id="modelFile" type="file" accept=".tmod">
-          <label class="f" for="modelUrl">Или ссылка на файл (сервер должен разрешать CORS)</label>
-          <div class="row" style="margin-top:0"><input id="modelUrl" type="url" placeholder="https://…/f5.bf16.tmod" style="flex:1"><button class="btn small" id="loadUrl" type="button" disabled>Загрузить</button></div>
-          <label class="f" for="hfLink">Или репозиторий Hugging Face — движок сам скачает веса и сконвертирует их в браузере</label>
-          <div class="row" style="margin-top:0"><input id="hfLink" type="text" placeholder="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice" list="hfPresets" style="flex:1"><button class="btn small" id="loadHf" type="button" disabled>Загрузить</button></div>
+          <label class="f" for="modelUrl">Or a link to a file (the server must allow CORS)</label>
+          <div class="row" style="margin-top:0"><input id="modelUrl" type="url" placeholder="https://…/f5.bf16.tmod" style="flex:1"><button class="btn small" id="loadUrl" type="button" disabled>Load</button></div>
+          <label class="f" for="hfLink">Or a Hugging Face repository: the engine downloads the weights and converts them in the browser</label>
+          <div class="row" style="margin-top:0"><input id="hfLink" type="text" placeholder="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice" list="hfPresets" style="flex:1"><button class="btn small" id="loadHf" type="button" disabled>Load</button></div>
           <datalist id="hfPresets"><option value="Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"><option value="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"><option value="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"><option value="SWivid/F5-TTS"></datalist>
           <div class="grid2">
-            <div><label class="f" for="hfDtype">Точность весов</label><select id="hfDtype"><option value="bf16" selected>bf16 (меньше памяти)</option><option value="f16">f16</option><option value="f32">f32 (точнее, вдвое больше)</option></select></div>
-            <div><label class="f" for="hfQuant">Квантование</label><select id="hfQuant"><option value="" selected>нет</option><option value="q8">q8 (вчетверо меньше f32)</option></select></div>
+            <div><label class="f" for="hfDtype">Weight precision</label><select id="hfDtype"><option value="bf16" selected>bf16 (less memory)</option><option value="f16">f16</option><option value="f32">f32 (more precise, twice the size)</option></select></div>
+            <div><label class="f" for="hfQuant">Quantization</label><select id="hfQuant"><option value="" selected>none</option><option value="q8">q8 (four times smaller than f32)</option></select></div>
           </div>
           <div class="grid2">
-            <div><label class="f" for="backend">Чем считать</label><select id="backend"><option value="auto" selected>Автоматически (WebGPU, иначе процессор)</option><option value="webgpu">Видеокарта (WebGPU)</option><option value="cpu">Процессор (медленно, но без видеокарты)</option></select></div>
-            <div><label class="f" for="loadMode">Нагрузка на машину</label><select id="loadMode"><option value="balanced" selected>Сбалансированная</option><option value="gentle">Щадящая (ноутбук, слабая видеокарта)</option><option value="full">Полная скорость</option></select></div>
+            <div><label class="f" for="backend">Compute on</label><select id="backend"><option value="auto" selected>Automatic (WebGPU, otherwise CPU)</option><option value="webgpu">GPU (WebGPU)</option><option value="cpu">CPU (slow, but needs no GPU)</option></select></div>
+            <div><label class="f" for="loadMode">Load on the machine</label><select id="loadMode"><option value="balanced" selected>Balanced</option><option value="gentle">Gentle (laptop, weak GPU)</option><option value="full">Full speed</option></select></div>
           </div>
           <div class="progress" id="loadProg" hidden><i></i></div>
         </div>
         <div class="stepbox" id="qwenVoice" hidden>
-          <h3>2. Диктор <span class="state" id="stQVoice">не выбран</span></h3>
+          <h3>2. Speaker <span class="state" id="stQVoice">not selected</span></h3>
           <div class="grid2">
-            <div><label class="f" for="qSpk">Диктор</label><select id="qSpk"></select></div>
-            <div><label class="f" for="qLang">Язык</label><select id="qLang"></select></div>
+            <div><label class="f" for="qSpk">Speaker</label><select id="qSpk"></select></div>
+            <div><label class="f" for="qLang">Language</label><select id="qLang"></select></div>
           </div>
-          <label class="f" for="qIns">Описание голоса или стиля (VoiceDesign и CustomVoice 1.7B), по-английски или по-китайски</label>
+          <label class="f" for="qIns">Voice or style description (VoiceDesign and CustomVoice 1.7B), in English or Chinese</label>
           <input id="qIns" type="text" placeholder="A calm, deep narrator voice">
         </div>
         <div class="stepbox" id="f5Voice">
-          <h3>2. Голос <span class="state" id="stVoice">нет</span></h3>
-          <label class="f" for="refFile">Запись голоса, 5–12 секунд чистой речи</label>
+          <h3>2. Voice <span class="state" id="stVoice">none</span></h3>
+          <label class="f" for="refFile">Voice recording, 5–12 seconds of clean speech</label>
           <input id="refFile" type="file" accept="audio/*">
-          <div class="row"><button class="btn small" id="recBtn" type="button" disabled>Записать с микрофона</button><button class="btn small" id="refTiny" type="button" disabled>Взять запись тестовой модели</button></div>
-          <label class="f" for="refText">Что произносится в записи (слово в слово)</label>
-          <input id="refText" type="text" placeholder="Текст, который сказан в записи">
+          <div class="row"><button class="btn small" id="recBtn" type="button" disabled>Record from microphone</button><button class="btn small" id="refTiny" type="button" disabled>Use the test model's recording</button></div>
+          <label class="f" for="refText">What is said in the recording (word for word)</label>
+          <input id="refText" type="text" placeholder="The text spoken in the recording">
           <div id="qBaseOnly" hidden>
-            <label class="f"><input id="xvOnly" type="checkbox"> Только вектор диктора (быстрее, текст записи не нужен; сходство чуть хуже)</label>
-            <label class="f" for="qTvoice">Или готовый голос .tvoice (созданный здесь или командой <code>vox voice create</code>)</label>
+            <label class="f"><input id="xvOnly" type="checkbox"> Speaker vector only (faster, no recording text needed; slightly lower similarity)</label>
+            <label class="f" for="qTvoice">Or a ready-made .tvoice voice (created here or with <code>vox voice create</code>)</label>
             <input id="qTvoice" type="file" accept=".tvoice">
           </div>
-          <div class="row"><button class="btn small" id="makeVoice" type="button" disabled>Создать голос</button><a class="btn small" id="dlVoice" href="#" download="voice.tvoice" hidden>Скачать голос (.tvoice)</a></div>
+          <div class="row"><button class="btn small" id="makeVoice" type="button" disabled>Create voice</button><a class="btn small" id="dlVoice" href="#" download="voice.tvoice" hidden>Download voice (.tvoice)</a></div>
           <div class="progress" id="voiceProg" hidden><i></i></div>
         </div>
         <div class="stepbox">
-          <h3>3. Текст</h3>
-          <label class="f" for="text">Что сказать</label>
-          <textarea id="text">Привет! Это проверка синтеза речи прямо в браузере.</textarea>
+          <h3>3. Text</h3>
+          <label class="f" for="text">What to say</label>
+          <textarea id="text">Hello! This is a speech synthesis check right in the browser.</textarea>
           <div class="grid2">
-            <div id="nfeBox"><label class="f" for="nfe">Качество</label>
-              <select id="nfe"><option value="7">Быстро: 7 шагов</option><option value="16" selected>Баланс: 16 шагов</option><option value="32">Качество: 32 шага</option></select></div>
+            <div id="nfeBox"><label class="f" for="nfe">Quality</label>
+              <select id="nfe"><option value="7">Fast: 7 steps</option><option value="16" selected>Balanced: 16 steps</option><option value="32">Quality: 32 steps</option></select></div>
             <div><label class="f" for="seed">Seed</label><input id="seed" type="number" value="1" min="0" step="1"></div>
           </div>
           <div id="f5Only">
-          <label class="f" for="speed">Скорость речи: <span id="speedVal">1.0</span></label>
+          <label class="f" for="speed">Speech speed: <span id="speedVal">1.0</span></label>
           <input id="speed" type="range" min="0.5" max="1.5" step="0.05" value="1">
           </div>
-          <div class="row"><button class="btn primary" id="speak" type="button" disabled>Сказать</button><button class="btn" id="stop" type="button" disabled>Остановить</button></div>
+          <div class="row"><button class="btn primary" id="speak" type="button" disabled>Speak</button><button class="btn" id="stop" type="button" disabled>Stop</button></div>
         </div>
       </div>
       <div>
         <div class="console">
-          <header><span><span class="dot" id="demoDot"></span><b id="demoModel">модель не загружена</b></span><span id="demoVoice"></span></header>
-          <div class="scope"><canvas id="scope" width="1000" height="440"></canvas><div class="hint" id="scopeHint">Спектрограмма появится после первого синтеза</div><div class="bar" id="scopeBar"></div></div>
-          <footer><span class="stat" id="demoStat">&nbsp;</span><a class="btn small" id="dlWav" href="#" download="vox.wav" hidden>Скачать WAV</a></footer>
+          <header><span><span class="dot" id="demoDot"></span><b id="demoModel">no model loaded</b></span><span id="demoVoice"></span></header>
+          <div class="scope"><canvas id="scope" width="1000" height="440"></canvas><div class="hint" id="scopeHint">The spectrogram will appear after the first synthesis</div><div class="bar" id="scopeBar"></div></div>
+          <footer><span class="stat" id="demoStat">&nbsp;</span><a class="btn small" id="dlWav" href="#" download="vox.wav" hidden>Download WAV</a></footer>
           <audio id="player" controls preload="auto" style="width:100%;margin-top:10px" hidden></audio>
         </div>
-        <p class="status" id="status" role="status" aria-live="polite">Загрузите модель, чтобы начать.</p>
+        <p class="status" id="status" role="status" aria-live="polite">Load a model to start.</p>
         <div class="stats" id="stats" hidden>
-          <div><b id="sAudio">–</b><span>длина звука, с</span></div>
-          <div><b id="sWall">–</b><span>время расчёта, с</span></div>
-          <div><b id="sRtf">–</b><span>RTF (меньше 1 — быстрее речи)</span></div>
-          <div><b id="sDit">–</b><span>DiT, с</span></div>
-          <div><b id="sVoc">–</b><span>Vocos, с</span></div>
+          <div><b id="sAudio">–</b><span>audio length, s</span></div>
+          <div><b id="sWall">–</b><span>compute time, s</span></div>
+          <div><b id="sRtf">–</b><span>RTF (below 1 is faster than speech)</span></div>
+          <div><b id="sDit">–</b><span>DiT, s</span></div>
+          <div><b id="sVoc">–</b><span>Vocos, s</span></div>
         </div>
-        <p class="status" style="margin-top:20px">Скорость зависит от видеокарты и числа шагов. F5-TTS тяжёлая: на слабых встроенных видеокартах берите «Быстро». Замеров на реальных видеокартах у автора страницы пока нет.</p>
+        <p class="status" style="margin-top:20px">Speed depends on the GPU and the number of steps. F5-TTS is heavy: on weak integrated GPUs choose “Fast”. The author has no measurements on real GPUs yet.</p>
       </div>
     </div>
   </div>
@@ -644,30 +645,30 @@ curl -X POST localhost:8080/v1/voices -d &#x27;{&quot;name&quot;:&quot;me&quot;,
 
 <section class="block" id="live">
   <div class="wrap">
-    <h2>Живой ввод: печатаете — звучит</h2>
-    <p class="sub">Двусторонний стриминг. Текст подаётся на лету, звук идёт сразу, пока модель читает дальше. Модели разные: Qwen3-TTS читает текст по словам и начинает говорить на полуслове, F5-TTS озвучивает целыми кусками (по предложению или по паузе в наборе). Движок сам подбирает, как кормить выбранную модель. Нужна загруженная выше модель и голос.</p>
+    <h2>Live input: type and it speaks</h2>
+    <p class="sub">Duplex streaming. Text goes in on the fly and audio comes out right away while the model keeps reading. Models differ: Qwen3-TTS reads word by word and starts speaking mid-sentence, F5-TTS speaks whole chunks (per sentence or after a typing pause). The engine picks how to feed the chosen model. You need a model loaded above and a voice.</p>
     <div class="demo">
       <div>
         <div class="stepbox">
-          <h3>Ввод <span class="state" id="stLive">остановлено</span></h3>
-          <label class="f" for="liveText">Печатайте здесь</label>
-          <textarea id="liveText" placeholder="Начните печатать. Предложение озвучится, как только вы поставите точку или сделаете паузу." disabled></textarea>
+          <h3>Input <span class="state" id="stLive">stopped</span></h3>
+          <label class="f" for="liveText">Type here</label>
+          <textarea id="liveText" placeholder="Start typing. A sentence is spoken as soon as you add a full stop or pause." disabled></textarea>
           <div class="grid2">
-            <div><label class="f" for="liveCommit">Когда отдавать текст модели</label>
-              <select id="liveCommit"><option value="auto">auto — как только модели хватает текста</option><option value="sentence">sentence — по законченному предложению</option><option value="manual">manual — только по кнопке</option></select></div>
-            <div><label class="f" for="liveIdle">Пауза в наборе, мс (0 — выкл.)</label><input id="liveIdle" type="number" value="700" min="0" step="100"></div>
+            <div><label class="f" for="liveCommit">When to hand text to the model</label>
+              <select id="liveCommit"><option value="auto">auto: as soon as the model has enough text</option><option value="sentence">sentence: per finished sentence</option><option value="manual">manual: only on the button</option></select></div>
+            <div><label class="f" for="liveIdle">Typing pause, ms (0 = off)</label><input id="liveIdle" type="number" value="700" min="0" step="100"></div>
           </div>
-          <div class="row"><button class="btn primary" id="liveStart" type="button" disabled>Начать</button><button class="btn" id="liveFlush" type="button" disabled>Озвучить сейчас</button><button class="btn" id="liveStop" type="button" disabled>Закончить</button></div>
+          <div class="row"><button class="btn primary" id="liveStart" type="button" disabled>Start</button><button class="btn" id="liveFlush" type="button" disabled>Speak now</button><button class="btn" id="liveStop" type="button" disabled>Finish</button></div>
         </div>
       </div>
       <div>
         <div class="stats">
-          <div><b id="lvFirst">–</b><span>до первого звука, с</span></div>
-          <div><b id="lvAudio">–</b><span>звука, с</span></div>
-          <div><b id="lvSpoken">0</b><span>знаков передано модели</span></div>
+          <div><b id="lvFirst">–</b><span>to first audio, s</span></div>
+          <div><b id="lvAudio">–</b><span>audio, s</span></div>
+          <div><b id="lvSpoken">0</b><span>characters sent to the model</span></div>
         </div>
-        <p class="status" id="liveStatus" role="status" aria-live="polite">Загрузите модель и выберите голос, потом нажмите «Начать».</p>
-        <p class="status" style="margin-top:20px">Режим <b>manual</b> собирает всё набранное в одну запись: нажмите «Закончить» и дождитесь звука. Правка уже озвученного не переозвучивается.</p>
+        <p class="status" id="liveStatus" role="status" aria-live="polite">Load a model and choose a voice, then press “Start”.</p>
+        <p class="status" style="margin-top:20px"><b>manual</b> mode collects everything you type into one recording: press “Finish” and wait for the audio. Text that has already been spoken is not re-spoken after an edit.</p>
       </div>
     </div>
   </div>
@@ -676,10 +677,12 @@ curl -X POST localhost:8080/v1/voices -d &#x27;{&quot;name&quot;:&quot;me&quot;,
 
 <footer class="site">
   <div class="wrap">
-    <div>vox 0.12.0 · Apache-2.0 · <a href="https://github.com/dariumi/Vox">исходный код</a></div>
-    <ul><li><a href="https://github.com/dariumi/Vox/blob/main/README.md">README</a></li><li><a href="https://github.com/dariumi/Vox/blob/main/CHANGELOG.md">Список изменений</a></li><li><a href="https://github.com/dariumi/Vox/issues">Сообщить о проблеме</a></li></ul>
+    <div>vox 0.12.2 · Apache-2.0 · <a href="https://github.com/dariumi/Vox">source code</a></div>
+    <ul><li><a href="https://github.com/dariumi/Vox/blob/main/README.md">README</a></li><li><a href="https://github.com/dariumi/Vox/blob/main/CHANGELOG.md">Changelog</a></li><li><a href="https://github.com/dariumi/Vox/issues">Report an issue</a></li></ul>
   </div>
 </footer>
+<script src="i18n.ru.js"></script>
+<script src="i18n.en.js"></script>
 <script src="vox.js"></script>
 <script src="app.js"></script>
 </body>

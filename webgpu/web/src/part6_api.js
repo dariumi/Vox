@@ -142,6 +142,7 @@ class VoxModel {
     this.info = {
       name: m.name || "", family: m.family || "f5-tts", variant: m.variant || (tm.manifest.f5 && tm.manifest.f5.variant) || "",
       sampleRate: this.sampleRate, weightBytes: f5.wbytes, device: gpu.info, backend: gpu.isCpu ? "cpu" : "webgpu", precision: tm.manifest.precision || {},
+      f5: { text_mask_padding: f5.cfg.mask_padding, pe_attn_head: f5.cfg.pe_attn_head || null },
     };
   }
 

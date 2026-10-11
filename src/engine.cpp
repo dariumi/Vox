@@ -15,7 +15,7 @@
 using namespace vox;
 
 #ifndef VOX_VERSION_STRING
-#define VOX_VERSION_STRING "0.12.0"
+#define VOX_VERSION_STRING "0.12.2"
 #endif
 
 extern std::string vox_internal_last_error();

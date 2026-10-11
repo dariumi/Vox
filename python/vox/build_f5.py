@@ -116,12 +116,39 @@ def pinyin_table() -> Dict[str, str]:
 
 
 def read_vocab(path: str):
-    with open(path, "r", encoding="utf-8", newline="") as f:
-        data = f.read()
-    lines = data.split("\n")
+    """One token per line, like f5_tts.model.utils.get_tokenizer: the file is read in text mode, so CRLF and CR line endings are
+    line breaks, not part of the token (some fine-tunes, e.g. hotstone228/F5-TTS-Russian, ship vocab.txt with CRLF)."""
+    with open(path, "rb") as f:
+        raw = f.read().decode("utf-8")
+    n_cr = raw.count("\r")
+    lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
     if lines and lines[-1] == "":
         lines.pop()
+    if n_cr:
+        print(f"note: {path}: CR/CRLF line endings, read as line breaks ({len(lines)} tokens)", file=sys.stderr)
     return lines
+
+
+def vocos_padding(vocos: str) -> str:
+    """ISTFT head padding of the Vocos vocoder: "center" (charactr/vocos-mel-24khz, which F5-TTS uses) or "same".
+    Read from config.yaml next to the weights; without a config the official F5-TTS vocoder (center) is assumed."""
+    p = Path(vocos)
+    cfg = (p if p.is_dir() else p.parent) / "config.yaml"
+    if not cfg.exists():
+        print(f"note: no {cfg}; assuming the ISTFT padding of charactr/vocos-mel-24khz (center)", file=sys.stderr)
+        return "center"
+    return parse_vocos_padding(cfg.read_text(encoding="utf-8"))
+
+
+def parse_vocos_padding(text: str) -> str:
+    m = re.search(r"^head:[ \t]*\n((?:[ \t]+.*\n?|[ \t]*\n)*)", text.replace("\r\n", "\n"), re.M)
+    if not m:
+        return "center"
+    pm = re.search(r"padding:\s*['\"]?(\w+)", m.group(1))
+    pad = pm.group(1) if pm else "same"          # ISTFTHead(padding="same") by default
+    if pad not in ("center", "same"):
+        raise SystemExit(f"Vocos ISTFT padding '{pad}' is not supported (center, same)")
+    return pad
 
 
 def weights_sha256(paths) -> str:
@@ -152,8 +179,31 @@ def find_vocos_weights(path: str) -> str:
 BLOCK_LINEAR = re.compile(r"^transformer_blocks\.\d+\.(attn\.(to_q|to_k|to_v)\.weight|attn\.to_out\.0\.weight|attn_norm\.linear\.weight|ff\.ff\.0\.0\.weight|ff\.ff\.2\.weight)$")
 
 
+def guess_model_cfg(*names) -> str:
+    """F5TTS_Base / F5TTS_Small (v0) have text_mask_padding=False and pe_attn_head=1; F5TTS_v1_* have True and None.
+    The checkpoint's path usually says which one it is (SWivid/F5-TTS keeps them in F5TTS_Base/ and F5TTS_v1_Base/). Unknown -> v1."""
+    for n in names:
+        n = str(n or "")
+        if re.search(r"F5TTS_v1", n, re.I):
+            return "v1"
+        if re.search(r"F5TTS_(Base|Small)", n, re.I):
+            return "v0"
+    return "v1"
+
+
 def build(ckpt: str, vocab: str, vocos: str, out: str, dtype: str = "bf16", quant: str = "", tokenizer: str = "pinyin",
-          variant: str = "", dim_head: int = 64, mel: dict | None = None, pinyin: bool = True, sha: bool = True, defaults: dict | None = None):
+          variant: str = "", dim_head: int = 64, mel: dict | None = None, pinyin: bool = True, sha: bool = True, defaults: dict | None = None,
+          model_cfg: str | None = None, text_mask_padding: bool | None = None, pe_attn_head: int | None = None):
+    """model_cfg: "v1" (F5TTS_v1_Base: text_mask_padding=True, RoPE on all heads) or "v0" (F5TTS_Base / F5TTS_Small and most
+    fine-tunes of them: text_mask_padding=False, pe_attn_head=1, RoPE only on the first head). Neither is visible in the weights,
+    so by default it is guessed from the checkpoint path (see guess_model_cfg); text_mask_padding / pe_attn_head override it."""
+    model_cfg = model_cfg or guess_model_cfg(ckpt, variant)
+    if model_cfg not in ("v0", "v1"):
+        raise SystemExit("model_cfg must be v0 or v1")
+    if text_mask_padding is None:
+        text_mask_padding = model_cfg == "v1"
+    if pe_attn_head is None and model_cfg == "v0":
+        pe_attn_head = 1
     dit = load_weights(ckpt, "transformer.")
     if not dit.get:
         raise SystemExit(f"{ckpt}: no 'transformer.*' tensors found")
@@ -185,7 +235,7 @@ def build(ckpt: str, vocab: str, vocos: str, out: str, dtype: str = "bf16", quan
     vinter = voc.shape["backbone.convnext.0.pwconv1.weight"][0]
     vlayers = 1 + max(int(m.group(1)) for k in voc.get if (m := re.match(r"backbone\.convnext\.(\d+)\.", k)))
     vout = voc.shape["head.out.weight"][0]
-    vocos_cfg = {"dim": vdim, "intermediate": vinter, "layers": vlayers, "n_fft": vout - 2, "hop": mel["hop"]}
+    vocos_cfg = {"dim": vdim, "intermediate": vinter, "layers": vlayers, "n_fft": vout - 2, "hop": mel["hop"], "padding": vocos_padding(vocos)}
 
     em = Emitter(dtype)
     for k in dit.get:
@@ -229,10 +279,11 @@ def build(ckpt: str, vocab: str, vocos: str, out: str, dtype: str = "bf16", quan
         "generation": gen,
         "f5": {"dim": dim, "depth": depth, "heads": heads, "dim_head": dim_head, "ff_mult": ff_mult, "text_dim": text_dim,
                "text_rows": text_rows, "mel_dim": mel_dim, "conv_layers": conv_layers, "conv_mult": conv_mult,
-               "text_mask_padding": True, "qk_norm": None, "mel": mel, "vocos": vocos_cfg, "tokenizer": tok},
+               "text_mask_padding": bool(text_mask_padding), "pe_attn_head": pe_attn_head, "qk_norm": None, "mel": mel, "vocos": vocos_cfg, "tokenizer": tok},
     }
     write_tmod(out, manifest, dict(em.blobs))
-    print(f"{out}: {len(em.blobs)} blobs, {os.path.getsize(out) / 2**20:.1f} MiB", file=sys.stderr)
+    print(f"{out}: {len(em.blobs)} blobs, {os.path.getsize(out) / 2**20:.1f} MiB; F5 config {model_cfg} "
+          f"(text_mask_padding={bool(text_mask_padding)}, pe_attn_head={pe_attn_head}), Vocos padding {vocos_cfg['padding']}", file=sys.stderr)
 
 
 def main(argv=None):
@@ -245,11 +296,16 @@ def main(argv=None):
     ap.add_argument("--tokenizer", default="pinyin", choices=["pinyin", "char"])
     ap.add_argument("--variant", default="")
     ap.add_argument("--dim-head", type=int, default=64)
+    ap.add_argument("--model-cfg", default="", choices=["", "v0", "v1"],
+                    help="v0 = F5TTS_Base/Small config (text_mask_padding=False, pe_attn_head=1), v1 = F5TTS_v1_Base; default: guessed from the path, else v1")
+    ap.add_argument("--text-mask-padding", dest="tmp", default=None, choices=["true", "false"], help="override the preset")
+    ap.add_argument("--pe-attn-head", type=int, default=None, help="apply RoPE only to the first N heads (0 or absent = all); override the preset")
     ap.add_argument("--no-pinyin-table", action="store_true")
     ap.add_argument("--no-hash", action="store_true")
     ap.add_argument("-o", "--out", required=True)
     a = ap.parse_args(argv)
-    build(a.ckpt, a.vocab, a.vocos, a.out, a.dtype, a.quant, a.tokenizer, a.variant, a.dim_head, pinyin=not a.no_pinyin_table, sha=not a.no_hash)
+    build(a.ckpt, a.vocab, a.vocos, a.out, a.dtype, a.quant, a.tokenizer, a.variant, a.dim_head, pinyin=not a.no_pinyin_table, sha=not a.no_hash,
+          model_cfg=a.model_cfg or None, text_mask_padding=None if a.tmp is None else a.tmp == "true", pe_attn_head=a.pe_attn_head or None)
 
 
 if __name__ == "__main__":

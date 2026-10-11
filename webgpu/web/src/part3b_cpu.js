@@ -205,12 +205,13 @@ const CPU_KERNELS = {
     return { total: R, cost: C * 4, fn(lo, hi) { for (let r = lo; r < hi; r++) { const bs = yo + r * C; let s = 0; for (let c = 0; c < C; c++) { const v = Yf[bs + c]; s += v * v; } const inv = 1 / Math.sqrt(s / C + eps); for (let c = 0; c < C; c++) Yf[bs + c] = Wf[c] * (Yf[bs + c] * inv); } } };
   },
   "rope/main": () => (b, u) => {
-    const [Q, K, CS] = b, rows = u[0], N = u[1], heads = u[2], HD = u[3], qo = u[4], ko = u[5], half = HD >> 1, Qf = Q.f, Kf = K.f, Cf = CS.f, inner = heads * HD;
+    const [Q, K, CS] = b, rows = u[0], N = u[1], heads = u[2], HD = u[3], qo = u[4], ko = u[5], hlim = u[6], half = HD >> 1, Qf = Q.f, Kf = K.f, Cf = CS.f, inner = heads * HD;
     return {
       total: rows * heads, cost: half * 12,
       fn(lo, hi) {
         for (let i = lo; i < hi; i++) {
           const r = Math.floor(i / heads), h = i - r * heads, pos = r % N;
+          if (hlim > 0 && h >= hlim) continue;
           for (let j = 0; j < half; j++) {
             const c = Cf[(pos * half + j) * 2], s = Cf[(pos * half + j) * 2 + 1];
             const qi = qo + r * inner + h * HD + 2 * j, ki = ko + r * inner + h * HD + 2 * j;

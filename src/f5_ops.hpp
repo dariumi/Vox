@@ -30,7 +30,9 @@ struct Conv1d {
 };
 
 // Обратное STFT в стиле Vocos (padding="same"): mag, phase — [T][n_fft/2+1]; выход (T * hop) отсчётов.
-void istft_same(const float *mag, const float *phase, int T, int n_fft, int hop, std::vector<float> &out);
+// Vocos ISTFT head. center=false: "same" padding (trims (n_fft-hop)/2 at both ends, length T*hop);
+// center=true: torch.istft(center=True), as in charactr/vocos-mel-24khz (trims n_fft/2, length (T-1)*hop).
+void istft_same(const float *mag, const float *phase, int T, int n_fft, int hop, std::vector<float> &out, bool center = false);
 
 // Вспомогательное: приведение любой матрицы к float (rows * cols).
 void mat_to_float(const Mat &W, std::vector<float> &out);

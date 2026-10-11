@@ -1,6 +1,6 @@
-// Go через cgo (C ABI): синтез в stdout — сырой float32 PCM.
+// Go via cgo (C ABI): synthesis to stdout as raw float32 PCM.
 //
-//	cd examples/go && go build -o vox-go . && LD_LIBRARY_PATH=../../build ./vox-go model.tmod voice.tvoice "Привет!" > out.f32
+//	cd examples/go && go build -o vox-go . && LD_LIBRARY_PATH=../../build ./vox-go model.tmod voice.tvoice "Hello!" > out.f32
 package main
 
 /*

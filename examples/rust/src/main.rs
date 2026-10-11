@@ -1,5 +1,5 @@
-//! Rust через C ABI (без зависимостей): синтез в stdout — сырой float32 PCM.
-//!   cd examples/rust && cargo build --release && LD_LIBRARY_PATH=../../build ./target/release/vox-example model.tmod voice.tvoice "Привет!" > out.f32
+//! Rust over the C ABI (no dependencies): synthesis to stdout as raw float32 PCM.
+//!   cd examples/rust && cargo build --release && LD_LIBRARY_PATH=../../build ./target/release/vox-example model.tmod voice.tvoice "Hello!" > out.f32
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::io::Write;
 use std::ptr;
@@ -71,7 +71,7 @@ fn run() -> Result<(), String> {
             let st = vox_session_pull(s, buf.as_mut_ptr(), buf.len(), &mut n);
             if st != VOX_OK {
                 check(st, "pull")?;
-                break; // VOX_DONE (2) или VOX_AGAIN (1) для синхронного режима здесь означает конец
+                break; // VOX_DONE (2) or VOX_AGAIN (1) in synchronous mode means the end here
             }
             let bytes = std::slice::from_raw_parts(buf.as_ptr() as *const u8, n * 4);
             out.write_all(bytes).map_err(|e| e.to_string())?;

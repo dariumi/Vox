@@ -110,7 +110,7 @@ def main(cli):
     try:
         import vox as vx
         if vx._vox is not None:
-            eng = vx.Engine(tmods["f32"])
+            eng = vx.Engine(tmods["f32"], device=DEVICES[0])   # явно: auto мог выбрать другую видеокарту, а Vulkan — одно устройство на процесс
             pv = eng.clone_voice(os.path.join(work, "ref_short.wav"), "Привет, это референс голоса для проверки.")
             pyp = os.path.join(work, "py_short.tvoice")
             pv.save(pyp)
@@ -240,7 +240,7 @@ def main(cli):
         try:
             import vox as vx
             if vx._vox is not None:
-                with vx.Engine(os.path.join(work, f"{variant}_f32.tmod")) as eng:
+                with vx.Engine(os.path.join(work, f"{variant}_f32.tmod"), device=DEVICES[0]) as eng:
                     caps = eng.capabilities
                     if variant == "custom_voice":
                         check(caps["named_speakers"] and "dylan" in eng.speakers and caps["instruct"], "custom_voice capabilities")

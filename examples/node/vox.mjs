@@ -1,6 +1,6 @@
-// Node.js через koffi (FFI к C ABI): синтез в stdout — сырой float32 PCM.
-//   cd examples/node && npm install && node vox.mjs model.tmod voice.tvoice "Привет!" > out.f32
-// Путь к библиотеке: VOX_LIB (по умолчанию ../../build/libvox.so; macOS — libvox.dylib, Windows — vox.dll).
+// Node.js via koffi (FFI to the C ABI): synthesis to stdout as raw float32 PCM.
+//   cd examples/node && npm install && node vox.mjs model.tmod voice.tvoice "Hello!" > out.f32
+// Library path: VOX_LIB (default ../../build/libvox.so; macOS: libvox.dylib, Windows: vox.dll).
 import koffi from "koffi";
 
 const lib = koffi.load(process.env.VOX_LIB || new URL("../../build/libvox.so", import.meta.url).pathname);
@@ -27,7 +27,7 @@ check(vox_engine_open(model, null, out), "open");
 const engine = out[0];
 check(vox_voice_load(engine, voicePath, voice), "voice");
 
-// vox_gen_params: struct_size заполняет vox_gen_params_default; seed — uint64 по смещению 32
+// vox_gen_params: vox_gen_params_default fills struct_size; seed is a uint64 at offset 32
 const params = Buffer.alloc(72);
 vox_gen_params_default(params);
 params.writeBigUInt64LE(42n, 32);

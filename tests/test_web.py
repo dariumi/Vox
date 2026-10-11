@@ -79,14 +79,23 @@ def main(cli, work=None):
         work = tempfile.mkdtemp(prefix="voxweb_")
         rc, out = run([sys.executable, os.path.join(ROOT, "tools", "make_tiny_f5.py"), "--out", work])
         assert rc == 0, out[-2000:]
-        try:
-            from vox.build_f5 import build
-        except ImportError:
-            sys.path[:0] = [os.path.join(ROOT, "python")]
-            from vox.build_f5 import build
+        sys.path.insert(0, os.path.join(ROOT, "python"))
+        from vox.build_f5 import build
         for name, kw in (("f32", dict(dtype="f32")), ("bf16", dict(dtype="bf16")), ("q8", dict(dtype="f32", quant="q8"))):
             build(os.path.join(work, "ckpt", "model.safetensors"), os.path.join(work, "ckpt", "vocab.txt"), os.path.join(work, "vocos"),
                   os.path.join(work, f"tiny_{name}.tmod"), dim_head=32, **kw)
+    # F5TTS_Base (v0): text_mask_padding=False, RoPE only on the first head (pe_attn_head=1). Its weights look the same as v1,
+    # only the config differs, and a wrong config gives noise on real checkpoints.
+    has_v0 = False
+    if not os.path.exists(os.path.join(work, "tiny_v0.tmod")):
+        v0dir = os.path.join(work, "v0")
+        rc, out = run([sys.executable, os.path.join(ROOT, "tools", "make_tiny_f5.py"), "--out", v0dir, "--v0", "--seed", "7", "--vocos-center", "--crlf-vocab"])
+        if rc == 0:
+            sys.path.insert(0, os.path.join(ROOT, "python"))
+            from vox.build_f5 import build as _build
+            _build(os.path.join(v0dir, "ckpt", "model.safetensors"), os.path.join(v0dir, "ckpt", "vocab.txt"), os.path.join(v0dir, "vocos"),
+                   os.path.join(work, "tiny_v0.tmod"), dtype="f32", dim_head=32, model_cfg="v0")
+    has_v0 = os.path.exists(os.path.join(work, "tiny_v0.tmod"))
     rc, out = run([sys.executable, os.path.join(ROOT, "tools", "build_web.py")])
     assert rc == 0, out
     stage = tempfile.mkdtemp(prefix="voxweb_srv_")
@@ -161,6 +170,24 @@ def main(cli, work=None):
         gotc = np.array(js["pcm"], dtype=np.float32)
         dc = float(np.abs(gotc[:len(nat)] - nat[:len(gotc)]).max()) if len(gotc) and len(nat) else 1.0
         check(len(gotc) == len(nat) and dc < 5e-5 and pg.evaluate("window.model.info.backend") == "cpu", f"процессорный бэкенд (backend:'cpu') ≡ ядро: те же {len(gotc)} отсчётов (max|diff| {dc:.2e})")
+        # 4c. F5TTS_Base (v0): mask_padding=False + RoPE на первой голове; ядро, WebGPU и процессорный бэкенд дают один звук
+        if has_v0:
+            vv0 = os.path.join(work, "v_v0.tvoice")
+            assert run([cli, "voice", "create", os.path.join(work, "ref.wav"), "--model", os.path.join(work, "tiny_v0.tmod"), "--text", e2e["ref_text"], "-o", vv0, "--device", "cpu"])[0] == 0
+            outv = os.path.join(work, "native_v0.wav")
+            rc, so = run([cli, "say", text, "--model", os.path.join(work, "tiny_v0.tmod"), "--voice", vv0, "-o", outv, "--float", "--device", "cpu", "--seed", "5", "--nfe", "4"])
+            assert rc == 0, so
+            natv = read_wav_f32(outv)
+            for be in ("webgpu", "cpu"):
+                info = pg.evaluate(f"loadModel('tiny_v0.tmod', {{ backend: '{be}' }})")["info"]
+                pg.evaluate(f"setRef('ref.wav', {json.dumps(e2e['ref_text'])})")
+                jv = pg.evaluate("a => runSeed(a[0], a[1], a[2])", [text, 5, 4])
+                gv = np.array(jv["pcm"], dtype=np.float32)
+                dv = float(np.abs(gv[:len(natv)] - natv[:len(gv)]).max()) if len(gv) and len(natv) else 1.0
+                check(len(gv) == len(natv) and dv < 5e-5 and info["f5"] == {"text_mask_padding": False, "pe_attn_head": 1},
+                      f"F5TTS_Base v0 ({be}): текст без маски, RoPE на 1 голове = ядро (max|diff| {dv:.2e}), info.f5 = {info['f5']}")
+            ntrue = pg.evaluate("loadModel('tiny_f32.tmod').then(r => r.info.f5)")
+            check(ntrue == {"text_mask_padding": True, "pe_attn_head": None}, "v1 по умолчанию: mask_padding=true, RoPE на всех головах")
         # 5. квантованные модели
         for name in ("bf16", "q8"):
             pg.evaluate(f"loadModel('tiny_{name}.tmod')")

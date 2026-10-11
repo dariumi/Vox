@@ -68,8 +68,8 @@ void check(vox_status st, const char *what) {
 }
 
 void usage() {
+    std::printf("vox %s — движок синтеза речи\n\n", vox_version());
     std::puts(
-        "vox 0.11 — движок синтеза речи\n\n"
         "  vox info <файл.tmod|файл.tvoice>\n"
         "  vox devices [--json]   (процессор, память, GPU с индексами и свободной видеопамятью)\n"
         "  vox voice speaker --model M.tmod [--speaker NAME] [--instruct ТЕКСТ] -o v.tvoice   (диктор CustomVoice / описание голоса VoiceDesign)\n"

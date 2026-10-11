@@ -28,7 +28,7 @@ python3 tests/test_web_qwen.py build/vox   # Qwen3-TTS в браузере: HF-�
 python3 tests/test_web_cpu.py build/vox   # vox.js без WebGPU: процессорный бэкенд = ядро (f32/bf16/f16), q8 = WebGPU, страница не замирает (иначе SKIP)
 python3 tests/test_duplex.py build/vox   # двусторонний стриминг: ядро, Python, CLI vox live, WebSocket
 python3 tests/test_py_family.py
-python3 tests/test_api_serve.py
+VOX_TEST_DEVICES="$DEVICES" python3 tests/test_api_serve.py
 VOX_TEST_DEVICES="$DEVICES" python3 tests/test_q4.py build/vox
 VOX_TEST_DEVICES="$DEVICES" python3 tests/test_official.py build/vox
 echo "ALL OK"

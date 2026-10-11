@@ -146,7 +146,7 @@ def build_repos(work, tmp):
     else:
         shutil.copy(os.path.join(vc, "pytorch_model.bin"), vbin)
     put("charactr/vocos-mel-24khz/pytorch_model.bin", src=vbin)
-    put("charactr/vocos-mel-24khz/config.yaml", b"x: 1\n")
+    put("charactr/vocos-mel-24khz/config.yaml", src=os.path.join(vc, "config.yaml"))   # padding головы ISTFT читается отсюда
     put("mock/vocos/pytorch_model.bin", src=vbin)
     put("mock/f5-tmod/model.q8.tmod", src=os.path.join(refs, "py_f16q8.tmod"))
     put("mock/f5-tmod/model.bf16.tmod", src=os.path.join(refs, "py_bf16.tmod"))

@@ -391,8 +391,44 @@ async function sha256Hex(parts) {
 
 // ---------- сборка F5 ----------
 // o: { ckpt: Uint8Array, ckptName, vocab: string, vocos: Uint8Array, vocosName, dtype: "bf16"|"f16"|"f32", quant: ""|"q8",
+//      vocosConfig: text of the vocoder's config.yaml (or vocosPadding: "center"|"same"; default center),
 //      tokenizer: "pinyin"|"char", variant, dimHead, pinyin: {char: syllable}|null, mel, hash: bool, onProgress(stage, frac) }
+// F5TTS_Base / F5TTS_Small (v0): text_mask_padding=false, pe_attn_head=1; F5TTS_v1_*: true / all heads. The weights do not say which, so the
+// config is chosen by opts.modelCfg ("v0" | "v1") or guessed from the file/repo name; unknown -> v1.
+// vocab.txt: one token per line; CRLF/CR are line breaks (as in f5_tts get_tokenizer, which reads the file in text mode).
+function splitVocab(text) {
+  const lines = String(text).replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  if (lines.length && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+// ISTFT padding of the Vocos head from its config.yaml ("center" for charactr/vocos-mel-24khz, ISTFTHead default "same");
+// no config -> the official F5-TTS vocoder (center).
+function parseVocosPadding(yamlText) {
+  if (yamlText == null) return "center";
+  const lines = String(yamlText).replace(/\r\n/g, "\n").split("\n");
+  const i = lines.findIndex((l) => /^head:\s*$/.test(l));
+  if (i < 0) return "center";
+  let pad = "same";
+  for (let j = i + 1; j < lines.length && (lines[j] === "" || /^[ \t]/.test(lines[j])); j++) {
+    const m = /padding:\s*['"]?(\w+)/.exec(lines[j]);
+    if (m) { pad = m[1]; break; }
+  }
+  if (pad !== "center" && pad !== "same") fail("Vocos: padding '" + pad + "' не поддерживается (center, same)", "unsupported");
+  return pad;
+}
+function guessF5Cfg(...names) {
+  for (const n of names) {
+    const s = String(n || "");
+    if (/F5TTS_v1/i.test(s)) return "v1";
+    if (/F5TTS_(Base|Small)/i.test(s)) return "v0";
+  }
+  return "v1";
+}
 async function convertF5(o) {
+  const modelCfg = o.modelCfg || guessF5Cfg(o.ckptName, o.variant);
+  if (modelCfg !== "v0" && modelCfg !== "v1") fail("modelCfg: v0 или v1", "arg");
+  const maskPadding = o.textMaskPadding != null ? !!o.textMaskPadding : modelCfg === "v1";
+  const peAttnHead = o.peAttnHead != null ? (o.peAttnHead || null) : (modelCfg === "v0" ? 1 : null);
   const dtype = (o.dtype || "bf16").toUpperCase(), quant = o.quant || "", tokenizer = o.tokenizer || "pinyin", dimHead = o.dimHead || 64;
   if (!["F32", "F16", "BF16"].includes(dtype)) fail("dtype: f32, f16 или bf16", "arg");
   if (quant && quant !== "q8") fail("quant: пусто или q8", "arg");
@@ -420,14 +456,15 @@ async function convertF5(o) {
     if (k.includes(".q_norm.")) fail("F5-TTS: qk_norm пока не поддерживается", "unsupported");
   }
   if (sh(dit, "input_embed.proj.weight")[1] !== 2 * melDim + textDim) fail("неожиданная форма input_embed.proj", "format");
-  const vocabList = o.vocab.split("\n");
-  if (vocabList.length && vocabList[vocabList.length - 1] === "") vocabList.pop();
+  const vocabList = splitVocab(o.vocab);
   const mel = Object.assign({ sample_rate: 24000, n_fft: 1024, hop: 256, win: 1024, n_mels: melDim }, o.mel || {});
   const vdim = sh(voc, "backbone.embed.weight")[0], vinter = sh(voc, "backbone.convnext.0.pwconv1.weight")[0];
   let vlayers = 0;
   for (const k of voc.keys()) { const m = /^backbone\.convnext\.(\d+)\./.exec(k); if (m) vlayers = Math.max(vlayers, +m[1] + 1); }
   const vout = sh(voc, "head.out.weight")[0];
-  const vocosCfg = { dim: vdim, intermediate: vinter, layers: vlayers, n_fft: vout - 2, hop: mel.hop };
+  const vocosCfg = { dim: vdim, intermediate: vinter, layers: vlayers, n_fft: vout - 2, hop: mel.hop,
+    padding: o.vocosPadding || parseVocosPadding(o.vocosConfig) };
+  if (vocosCfg.padding !== "center" && vocosCfg.padding !== "same") fail("vocosPadding: center или same", "arg");
 
   const blobs = [];
   for (const [k, t] of dit) addBlob(blobs, "dit." + k, t.shape, t.get, dtype, quant === "q8" && F5_BLOCK_LINEAR.test(k));
@@ -449,7 +486,7 @@ async function convertF5(o) {
     precision: { weights: o.dtype ? o.dtype.toLowerCase() : "bf16", quant: quant || "none" },
     generation: gen,
     f5: { dim, depth, heads, dim_head: dimHead, ff_mult: ffMult, text_dim: textDim, text_rows: textRows, mel_dim: melDim, conv_layers: convLayers, conv_mult: convMult,
-      text_mask_padding: true, qk_norm: null, mel, vocos: vocosCfg, tokenizer: tok },
+      text_mask_padding: maskPadding, pe_attn_head: peAttnHead, qk_norm: null, mel, vocos: vocosCfg, tokenizer: tok },
   };
   if (vocabList.length + 1 !== textRows && o.onWarn) o.onWarn("словарь: " + vocabList.length + " записей, а в таблице эмбеддингов " + textRows + " строк (ожидалось на одну больше)");
   prog("read", 1);

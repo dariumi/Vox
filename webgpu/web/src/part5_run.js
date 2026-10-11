@@ -41,7 +41,7 @@ Object.assign(F5Gpu.prototype, {
       this.gemm(ws.nrm, L.q, ws.q, R);
       this.gemm(ws.nrm, L.k, ws.k, R);
       this.gemm(ws.nrm, L.v, ws.v, R);
-      g.run1d(rope, [ws.q, ws.k, ws.cs], [R, N, H, HD, 0, 0, 0, 0], R * H * (HD >> 1));
+      g.run1d(rope, [ws.q, ws.k, ws.cs], [R, N, H, HD, 0, 0, k.pe_attn_head || 0, 0], R * H * (HD >> 1));
       g.run(attn, [ws.q, ws.k, ws.v, ws.at], [N, H, B, 0, f(scale), 0, 0, 0], Math.ceil(N / 4), H * B);
       this.gemm(ws.at, L.o, ws.h, R, { epi: 3, G: ws.ada, gOff: a0 + 2 * D });
       this.ln(ws.h, ws.nrm, R, D, { mode: 1, V: ws.ada, scOff: a0 + 4 * D, shOff: a0 + 3 * D });
@@ -132,7 +132,7 @@ Object.assign(F5Gpu.prototype, {
     this.gemm(y2, this.v_head, head, T);
     g.submit();
     const h = await g.read(head, T * 2 * nb);
-    const pcm = istftSame(h, T, V.n_fft, V.hop);
+    const pcm = istftSame(h, T, V.n_fft, V.hop, V.center);
     this.timing.vocos_ms += performance.now() - t0;
     return pcm;
   },

@@ -226,6 +226,11 @@ F5Model::F5Model(std::shared_ptr<TmodFile> f, bool gpu) : p_(new Impl), file_(f)
     cfg_.text_dim = c.at("text_dim"); cfg_.text_rows = c.at("text_rows"); cfg_.mel_dim = c.value("mel_dim", 100);
     cfg_.conv_layers = c.value("conv_layers", 4); cfg_.conv_mult = c.value("conv_mult", 2);
     cfg_.mask_padding = c.value("text_mask_padding", true);
+    {
+        const json pe = c.value("pe_attn_head", json());
+        cfg_.pe_attn_head = pe.is_number_integer() ? int(pe.get<int>()) : 0;
+        if (cfg_.pe_attn_head < 0 || cfg_.pe_attn_head > int(c.at("heads").get<int>())) fail(VOX_ERR_FORMAT, "F5-TTS: bad pe_attn_head");
+    }
     if (!c.value("qk_norm", json()).is_null()) fail(VOX_ERR_UNSUPPORTED, "F5-TTS: qk_norm is not supported");
     if (c.value("long_skip_connection", false)) fail(VOX_ERR_UNSUPPORTED, "F5-TTS: long_skip_connection is not supported");
     if (c.value("text_embedding_average_upsampling", false)) fail(VOX_ERR_UNSUPPORTED, "F5-TTS: average upsampling is not supported");
@@ -238,6 +243,11 @@ F5Model::F5Model(std::shared_ptr<TmodFile> f, bool gpu) : p_(new Impl), file_(f)
     const json &vc = c.at("vocos");
     cfg_.vocos_dim = vc.at("dim"); cfg_.vocos_inter = vc.at("intermediate"); cfg_.vocos_layers = vc.at("layers");
     cfg_.vocos_n_fft = vc.value("n_fft", 1024); cfg_.vocos_hop = vc.value("hop", 256);
+    {
+        const std::string pad = vc.value("padding", std::string("same"));
+        if (pad != "same" && pad != "center") fail(VOX_ERR_FORMAT, "F5-TTS: Vocos padding must be same or center, got '" + pad + "'");
+        cfg_.vocos_center = pad == "center";
+    }
     tok_.load(c.at("tokenizer"));
 
     const TensorView &fb = f->get("mel.fb");
@@ -519,6 +529,7 @@ void F5Model::dit_forward(int B, int N, const float *x, const float *cond, const
         parallel_for(R * H, 16, [&](int64_t a0, int64_t a1) {
             for (int64_t a = a0; a < a1; ++a) {
                 const int64_t r = a / H, hh = a % H;
+                if (cfg_.pe_attn_head > 0 && hh >= cfg_.pe_attn_head) continue;   // v0: RoPE only on the first pe_attn_head heads
                 const int pos = int(r % N);
                 for (float *base : {&q[size_t(r) * size_t(INNER) + size_t(hh) * size_t(HD)], &k[size_t(r) * size_t(INNER) + size_t(hh) * size_t(HD)]})
                     for (int j = 0; j < HH; ++j) {
@@ -644,7 +655,7 @@ void F5Model::vocode(const float *mel, int T, std::vector<float> &pcm) const {
         std::memcpy(&mag[size_t(t) * size_t(nb)], &head[size_t(t) * size_t(2 * nb)], size_t(nb) * 4);
         std::memcpy(&ph[size_t(t) * size_t(nb)], &head[size_t(t) * size_t(2 * nb) + size_t(nb)], size_t(nb) * 4);
     }
-    istft_same(mag.data(), ph.data(), T, cfg_.vocos_n_fft, cfg_.vocos_hop, pcm);
+    istft_same(mag.data(), ph.data(), T, cfg_.vocos_n_fft, cfg_.vocos_hop, pcm, cfg_.vocos_center);
     ms_vocos_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
