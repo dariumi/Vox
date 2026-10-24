@@ -1,6 +1,7 @@
 """vox tune: candidates, measurement in child processes, the cache, and engines that open with the measured configuration.
 Run: python tests/test_tune.py [build/vox]  (the vox-test model; with a Vulkan device, VOX_TUNE_SOFTWARE=1 lets lavapipe in)"""
 import json
+import time
 import os
 import subprocess
 import sys
@@ -69,6 +70,28 @@ print(json.dumps({{"entry": e, "rows": rows}}))
     p2 = json.loads(py2.stdout.strip().splitlines()[-1]) if py2.returncode == 0 else {}
     check(p2.get("entry", {}).get("device") == "cpu" and len(p2.get("rows", [])) == 1,
           "Python: vox.tune() measures in a child process, reports progress and saves" + ("" if py2.returncode == 0 else " — " + py2.stderr[-300:]))
+    # a candidate that cannot win is stopped once its synthesis passes twice the best one's, and the rest of its group is skipped
+    cands = [{"label": "fast", "device": "cpu"}, {"label": "slow", "device": "cpu,threads=1", "group": "cpu"},
+             {"label": "same group", "device": "cpu,threads=2", "group": "cpu"}]
+    env_slow = dict(env, VOX_TUNE_TEST_SLOW="cpu,threads=1")
+    t0 = time.monotonic()
+    r = subprocess.run([cli, "tune", "--model", model, "--voice", voice, "--runs", "1", "--text", "Привет.", "--candidates", json.dumps(cands)],
+                       capture_output=True, text=True, env=env_slow)
+    took = time.monotonic() - t0
+    e3 = json.loads(r.stdout.strip().splitlines()[-1]) if r.returncode == 0 else {}
+    c3 = e3.get("candidates", [])
+    check(r.returncode == 0 and len(c3) == 3 and "rtf" in c3[0] and c3[1].get("skipped") and c3[2].get("skipped") and "not measured" in c3[2].get("error", "")
+          and took < 25, f"CLI: the slow candidate is stopped after the synthesis deadline, its group skipped ({took:.1f} s)" + ("" if r.returncode == 0 else " — " + r.stderr[-300:]))
+    t0 = time.monotonic()
+    py3 = subprocess.run([sys.executable, "-c", f"""
+import json, vox
+e = vox.tune({model!r}, {voice!r}, runs=1, text="Привет.", candidates={cands!r})
+print(json.dumps(e))
+"""], capture_output=True, text=True, env=env_slow)
+    took = time.monotonic() - t0
+    c4 = json.loads(py3.stdout.strip().splitlines()[-1]).get("candidates", []) if py3.returncode == 0 else []
+    check(len(c4) == 3 and c4[1].get("skipped") and c4[2].get("skipped") and took < 25,
+          f"Python: the same ({took:.1f} s)" + ("" if py3.returncode == 0 else " — " + py3.stderr[-300:]))
     r = run("tune", "--model", model, "--forget")
     info3 = json.loads(run("tune", "--model", model, "--show").stdout)
     check(r.returncode == 0 and info3["entry"] is None, "vox tune --forget")

@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "vox-tts"            # рабочее имя пакета; импортируется как `import vox`
-version = "0.19.1"
+version = "0.19.2"
 description = "vox: native Qwen3-TTS inference engine (C ABI, CLI, Python, Vulkan)"
 readme = "README.md"
 license = {text = "Apache-2.0"}

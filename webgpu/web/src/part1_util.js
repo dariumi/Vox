@@ -4,7 +4,7 @@
 // Эта часть: утилиты, формат .tmod, форматы весов, Philox-шум, расписание шагов.
 // ============================================================================
 
-const VOX_VERSION = "0.19.1";
+const VOX_VERSION = "0.19.2";
 // Папка, откуда загружен vox.js: рядом лежат pinyin.json и прочие ресурсы. Меняется через Vox.config({ baseUrl }).
 let VOX_BASE_URL = "";
 try { if (typeof document !== "undefined" && document.currentScript && document.currentScript.src) VOX_BASE_URL = document.currentScript.src.replace(/[^/]*$/, ""); } catch (e) { /* ок */ }

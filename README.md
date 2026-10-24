@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.19.1-2a78d6" alt="version 0.19.1">
+  <img src="https://img.shields.io/badge/version-0.19.2-2a78d6" alt="version 0.19.2">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -556,8 +556,10 @@ an RTX 3050 with the other; a small model may be faster on 16 CPU cores than on 
 - **Candidates** (`vox tune --show` lists them): every non-software GPU with the default placement, and with each *light* GPU-capable stage
   (under a quarter of the GPU weights: Qwen3's codec decoder, F5's Vocos) moved to the CPU; then the CPU with a thread per physical core,
   with every logical CPU (SMT) and with ¾ of the cores. Heavy stages on the CPU were 3–10× slower in every measurement, so they are no longer
-  tried (`--device vulkan:0,flow=cpu` still works by hand). GPUs go first: a candidate taking 3× the wall time of the best so far (at least
-  90 s) is stopped and marked as such.
+  tried (`--device vulkan:0,flow=cpu` still works by hand). GPUs go first: a candidate whose synthesis passes twice the best one's (+3 s;
+  the whole run is also capped at 3× the best's wall time, at least 90 s) is stopped, and once one CPU thread count is stopped the other
+  CPU ones are not run. Results within 3 % of the fastest count as a tie: the first of them (the plain configuration) is kept.
+  `--candidates JSON` measures a list of your own.
 - **GEMM is not a separate candidate**: for F5 and the flow models every GPU candidate times convgemm against gemmb on the model's own
   layers when its graph is built, and keeps the faster one; the row shows which one won (`GEMM gemmb`) and the result records it.
 - Each candidate runs in its own child process (`vox bench`; one Vulkan device per process), on a short text in the model's language.

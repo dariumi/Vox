@@ -146,6 +146,8 @@ article.line.busy .head .st::before { content: ""; width: 8px; height: 8px; bord
 .cast button .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 500; }
 .cast button .nm small { color: var(--faint); font-weight: 400; margin-left: 4px; }
 .cast button[aria-pressed=true] { border-color: var(--c); box-shadow: 0 0 0 1px var(--c) inset; background: color-mix(in srgb, var(--c) 8%, var(--surface)); }
+.cast button.other { opacity: .62; border-style: dashed; }
+.cast button.other:hover, .cast button.other[aria-pressed=true] { opacity: 1; }
 .cast .none { font-size: 13px; color: var(--faint); align-self: center; }
 .editor { border: 1px solid var(--line); border-radius: 12px; background: var(--surface); transition: border-color .12s, box-shadow .12s; }
 .editor:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -207,7 +209,7 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 
 .models { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr)); gap: 14px; align-items: start; }
 .models > .panel + .panel { margin-top: 0; }
-.mcard { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; min-width: 0; }
+.mcard { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; min-width: 0; overflow-wrap: anywhere; }
 .mcard .t { display: flex; align-items: start; gap: 10px; }
 .mcard .t b { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
 .mcard .t .fam { color: var(--muted); font-size: 13px; }
@@ -438,7 +440,7 @@ const RUS = {
   hTitle: "История", hSub: "Всё, что озвучено через этот движок, новые сверху. Записи хранятся на компьютере движка.", search: "Поиск по тексту",
   open: "Открыть", close2: "Закрыть", loaded: "открыта", notLoaded: "откроется при первом запросе", play: "Слушать", download: "Скачать", del: "Удалить",
   again: "Ещё вариант", toEditor: "В редактор", noModels: "Движок запущен без моделей: добавьте файл .tmod во вкладке «Модели».",
-  connecting: "Подключаюсь…", builtIn: "встроенный", design: "голос по описанию", fail: "Не получилось",
+  connecting: "Подключаюсь…", builtIn: "встроенный", otherModel: "профиль собран для другой модели: голос соберётся заново из записи", otherModels: "Профили других моделей", design: "голос по описанию", fail: "Не получилось",
   opening: "открываю модель — в первый раз дольше", speaking: "озвучиваю", stopped: "остановлено",
   segments: (n) => n + " сегм.", rtf: (r) => "RTF " + r, firstChunk: (s) => "первый звук через " + s + " с",
   recNew: "Добавить запись", recStep1: "Чей это голос и какой стиль", recStep2: "Запишите или выберите файл", recStep3: "Что сказано в записи",
@@ -484,7 +486,7 @@ const EN = {
   hTitle: "History", hSub: "Everything spoken through this engine, newest first. The clips stay on the engine's computer.", search: "Search the text",
   open: "Open", close2: "Close", loaded: "open", notLoaded: "opens on first use", play: "Play", download: "Download", del: "Delete",
   again: "Another take", toEditor: "To the editor", noModels: "The engine has no models: add a .tmod file in Models.",
-  connecting: "Connecting…", builtIn: "built-in", design: "voice from a description", fail: "Failed",
+  connecting: "Connecting…", builtIn: "built-in", otherModel: "this profile was built for another model: the voice is built again from its recording", otherModels: "Profiles of other models", design: "voice from a description", fail: "Failed",
   opening: "opening the model — the first time takes longer", speaking: "speaking", stopped: "stopped",
   segments: (n) => n + " segments", rtf: (r) => "RTF " + r, firstChunk: (s) => "first sound after " + s + " s",
   recNew: "Add a recording", recStep1: "Whose voice and which style", recStep2: "Record or choose a file", recStep3: "What is said in it",
@@ -659,14 +661,25 @@ $("setClose").addEventListener("click", () => toggleSet(false));
 $("scrim").addEventListener("click", () => toggleSet(false));
 
 // cast: profile voices + the model's built-in speakers
+// in order: profiles built for this model's family (or for none yet), the model's own speakers, then the profiles built for other
+// models ("other": they still speak — the voice is built again from its recordings — but they were not made for this one). A profile
+// built only for other models and with no recordings cannot be rebuilt, so it is left out.
 function castItems() {
-  const items = [];
-  for (const p of S.info.profiles || []) for (const [v, d] of Object.entries(p.voices || {}))
-    items.push({ kind: "profile", profile: p.file, voice: v, styles: d.styles || [], label: v, sub: profTitle(p), key: p.file + ":" + v });
+  const fam = (modelRow(S.model) || {}).family || "", mine = [], other = [], own = [];
+  for (const p of S.info.profiles || []) {
+    const bf = (p.built_for || []).map((b) => b.split("/")[0]);
+    const foreign = !!fam && bf.length > 0 && !bf.includes(fam);
+    if (foreign && !p.recordings) continue;
+    for (const [v, d] of Object.entries(p.voices || {}))
+      (foreign ? other : mine).push({ kind: "profile", profile: p.file, voice: v, styles: d.styles || [], label: v, sub: profTitle(p), key: p.file + ":" + v,
+                                      other: foreign, built: bf.includes(fam) });
+  }
   const c = caps();
-  if (c.requires_instruct) items.push({ kind: "design", label: TT.design, sub: S.model, key: "design:" + S.model });
-  for (const s of (c.speakers || []).slice(0, 80)) items.push({ kind: "speaker", speaker: s, label: s, sub: TT.builtIn, key: "spk:" + s });
-  return items;
+  if (c.requires_instruct) own.push({ kind: "design", label: TT.design, sub: S.model, key: "design:" + S.model });
+  const spk = (c.speakers || []).slice(0, 80), ds = c.default_speaker;
+  if (ds && spk.includes(ds)) { spk.splice(spk.indexOf(ds), 1); spk.unshift(ds); }   // the model's recommended speaker first
+  for (const x of spk) own.push({ kind: "speaker", speaker: x, label: x, sub: TT.builtIn, key: "spk:" + x });
+  return mine.concat(own, other);
 }
 function selectItem(it) { S.sel = it; store.set("sel." + S.model, it ? it.key : null); renderCast(); renderEmo(); }
 // the voice a model starts with: the one last used with this model; else a profile voice built for this model's family; else
@@ -675,17 +688,19 @@ function defaultItem(items) {
   const saved = store.get("sel." + S.model), m = modelRow(S.model) || {}, fam = m.family || "";
   const byKey = items.find((i) => i.key === saved);
   if (byKey) return byKey;
-  const built = (it) => { const p = (S.info.profiles || []).find((q) => q.file === it.profile); return !!(p && (p.built_for || []).some((b) => b.split("/")[0] === fam)); };
-  return items.find((i) => i.kind === "profile" && fam && built(i)) || items.find((i) => i.kind === "speaker" || i.kind === "design") || items[0] || null;
+  return items.find((i) => i.kind === "profile" && fam && i.built) || items.find((i) => i.kind === "speaker" || i.kind === "design")
+      || items.find((i) => !i.other) || items[0] || null;
 }
 function renderCast() {
   if (!S.info) return;
   const items = castItems(), box = $("cast");
   if (!S.sel || S.selModel !== S.model || !items.some((i) => i.key === S.sel.key)) { S.sel = defaultItem(items); S.selModel = S.model; }
-  box.innerHTML = items.map((it, i) => `<button data-i="${i}" style="--c:${colorOf(it.key)}" aria-pressed="${S.sel && it.key === S.sel.key}" title="${esc(it.label + " — " + it.sub)}"><span class="av">${esc(initial(it.label))}</span><span class="nm">${esc(it.label)}<small>${esc(it.sub)}</small></span></button>`).join("");
+  box.innerHTML = items.map((it, i) => `<button data-i="${i}"${it.other ? ' class="other"' : ""} style="--c:${colorOf(it.key)}" aria-pressed="${S.sel && it.key === S.sel.key}" title="${esc(it.label + " — " + it.sub + (it.other ? " · " + TT.otherModel : ""))}"><span class="av">${esc(initial(it.label))}</span><span class="nm">${esc(it.label)}<small>${esc(it.sub)}</small></span></button>`).join("");
   $("castEmpty").hidden = items.length > 0;
   box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => selectItem(items[+b.dataset.i])));
-  $("sVoice").innerHTML = items.map((it, i) => `<option value="${i}"${S.sel && it.key === S.sel.key ? " selected" : ""}>${esc(it.label)} (${esc(it.sub)})</option>`).join("");
+  const opt = (it) => { const i = items.indexOf(it); return `<option value="${i}"${S.sel && it.key === S.sel.key ? " selected" : ""}>${esc(it.label)} (${esc(it.sub)})</option>`; };
+  const oth = items.filter((it) => it.other);
+  $("sVoice").innerHTML = items.filter((it) => !it.other).map(opt).join("") + (oth.length ? `<optgroup label="${esc(TT.otherModels)}">${oth.map(opt).join("")}</optgroup>` : "");
   $("sVoice").onchange = () => selectItem(items[+$("sVoice").value]);
   const styles = S.sel && S.sel.kind === "profile" ? S.sel.styles : [];
   $("sStyle").innerHTML = `<option value="">${TT.main}</option>` + styles.map((s) => `<option>${esc(s)}</option>`).join("");

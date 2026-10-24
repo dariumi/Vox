@@ -224,8 +224,9 @@ json tune_candidates(const TmodFile &f) {
         if (n_gpu > 1)
             for (const std::string &s : light) out.push_back({{"label", dev + ", " + s + " on the CPU"}, {"device", dev + "," + s + "=cpu"}});
     }
-    // the GPUs first: a fast result early lets `vox tune` cut the slow candidates short
-    for (const auto &c : cpu) out.push_back(c);
+    // the GPUs first: a fast result early lets `vox tune` cut the slow candidates short; the CPU thread counts are one group (one of
+    // them more than 2x slower than the best means the others are too: they differ by tens of percent)
+    for (auto c : cpu) { c["group"] = "cpu"; out.push_back(c); }
     return out;
 }
 

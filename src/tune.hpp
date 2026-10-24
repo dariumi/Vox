@@ -25,7 +25,7 @@ void tune_store(const TmodFile &f, json entry);  // adds the keys, the hardware 
 bool tune_forget(const TmodFile &f);
 // Configurations worth measuring: the CPU (a thread per physical core; every logical CPU with SMT; ¾ of the cores on a big CPU),
 // every non-software GPU with the default placement and with each light GPU-capable stage (< ¼ of the GPU weights) moved to
-// the CPU. [{"label", "device"}].
+// the CPU. [{"label", "device", "group"?}] (the CPU candidates are the group "cpu", listed after the GPUs).
 json tune_candidates(const TmodFile &f);
 
 }  // namespace vox

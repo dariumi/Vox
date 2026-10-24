@@ -95,7 +95,7 @@ void usage() {
         "                                                   (текст из stdin на лету → звук на лету; двусторонний стриминг)\n"
         "  vox tokenize --model M.tmod   (JSON-строки из stdin → id токенов)\n"
         "  vox bench --model M.tmod --voice V.tvoice [--text T] [--runs 5]\n"
-        "  vox tune --model M.tmod [--voice V.tvoice | --speaker S] [--goal speed|latency] [--text T] [--runs 2] [--show | --forget]\n"
+        "  vox tune --model M.tmod [--voice V.tvoice | --speaker S] [--goal speed|latency] [--text T] [--runs 2] [--show | --forget] [--candidates JSON]\n"
         "                (замерить устройства и размещение стадий на этом компьютере; потом \"auto\" открывает модель так, как быстрее)\n"
         "  vox make-test-model -o test.tmod   (модель тестового бэкенда для разработки)\n\n"
         "ресурсы: --device auto|cpu|gpu[:N]|vulkan[:N][,codec=cpu][,strict]  --mode speed|balanced|memory|background\n"
@@ -668,6 +668,17 @@ int cmd_bench(const Args &a) {
     }
     vox_engine *e = open_engine(a);
     vox_voice *v = load_voice(e, a);
+    if (a.has("--synth-deadline-s")) {   // vox tune: the synthesis alone (the model is open) took twice as long as the best one's
+        const double d = std::stod(a.get("--synth-deadline-s"));
+        std::thread([d] {
+            std::this_thread::sleep_for(std::chrono::duration<double>(d));
+            std::printf("{\"error\": \"slower than the best so far: the synthesis passed %.0f s\", \"deadline\": true}\n", d);
+            std::fflush(stdout);
+            std::_Exit(3);
+        }).detach();
+    }
+    if (const char *slow = std::getenv("VOX_TUNE_TEST_SLOW"))   // tests of vox tune: this candidate pretends to be slow
+        if (slow[0] && a.get("--device", "") == std::string(slow) + ",strict") std::this_thread::sleep_for(std::chrono::seconds(30));
     std::string lang;
     vox_gen_params p = gen_params(a, lang);
     std::string text = a.get("--text", "Это тестовая фраза для замера скорости движка синтеза речи.");
@@ -976,7 +987,7 @@ int cmd_tune(const Args &a) {
     if (a.has("--voice")) vargs = " --voice " + shq(a.get("--voice"));
     else if (a.has("--speaker")) vargs = " --speaker " + shq(a.get("--speaker"));
     else if (caps.value("named_speakers", false) && caps.contains("speakers") && !caps["speakers"].empty())
-        vargs = " --speaker " + shq(caps["speakers"][0].get<std::string>());
+        vargs = " --speaker " + shq(caps.value("default_speaker", "").empty() ? caps["speakers"][0].get<std::string>() : caps.value("default_speaker", ""));
     else if (caps.value("requires_instruct", false)) vargs = " --instruct " + shq("A calm, clear adult voice.");
     else die("this model speaks with a cloned voice: give one with --voice V.tvoice (vox voice create …)");
     if (a.has("--instruct") && !a.has("--voice")) vargs += " --instruct " + shq(a.get("--instruct"));
@@ -992,21 +1003,35 @@ int cmd_tune(const Args &a) {
     if (goal != "speed" && goal != "latency") die("--goal is speed (the lowest RTF) or latency (the earliest first sound)");
     const int runs = std::max(1, std::stoi(a.get("--runs", "2")));
     const std::string exe = self_exe(g_argv0);
-    const vox::json cands = info.value("candidates", vox::json::array());
+    // --candidates '[{"label": …, "device": …, "group": …}]' measures these instead of the library's list
+    const vox::json cands = a.has("--candidates") ? vox::json::parse(a.get("--candidates")) : info.value("candidates", vox::json::array());
+    if (!cands.is_array()) die("--candidates is a JSON array of {\"device\": …}");
     std::fprintf(stderr, "tuning %s: %zu configuration(s), %d run(s) each, goal: %s\n", model.c_str(), cands.size(), runs, goal.c_str());
     vox::json results = vox::json::array();
     int best = -1;
-    double best_score = 1e300, best_wall = 0;
+    double best_score = 1e300, best_wall = 0, best_synth = 0;
+    std::string slow_group;   // a group (the CPU thread counts) one of whose members was already stopped as too slow
     for (size_t i = 0; i < cands.size(); ++i) {
-        const std::string dev = cands[i].value("device", "cpu"), label = cands[i].value("label", dev);
+        const std::string dev = cands[i].value("device", "cpu"), label = cands[i].value("label", dev), group = cands[i].value("group", "");
         vox::json r = {{"label", label}, {"device", dev}};
+        if (!group.empty()) r["group"] = group;
         if (a.has("--dry-run")) { results.push_back(r); continue; }
         std::fprintf(stderr, "  [%zu/%zu] %-44s ", i + 1, cands.size(), label.c_str());
         std::fflush(stderr);
-        // a candidate that runs 3× as long as the best so far (load included, at least 90 s) is stopped: it cannot win
+        if (!group.empty() && group == slow_group) {   // other thread counts differ by tens of percent, not by 2x
+            r["error"] = "not measured: another " + group + " configuration was already more than twice as slow as the best";
+            r["skipped"] = true;
+            std::fprintf(stderr, "skipped: another %s configuration was already far slower\n", group.c_str());
+            results.push_back(r);
+            continue;
+        }
+        // stopped as soon as it cannot win: its synthesis passes twice the best one's (the model is open by then), or the whole
+        // run (load included) passes 3x the best's wall time, at least 90 s
         const double deadline = best_wall > 0 ? std::max(90.0, 3.0 * best_wall) : 0.0;
+        const double synth_deadline = best_synth > 0 ? 2.0 * best_synth + 3.0 : 0.0;
         const std::string cmd = shq(exe) + " bench --model " + shq(model) + " --device " + shq(dev + ",strict") + vargs + " --text " + shq(text) +
-                                " --runs " + std::to_string(runs) + (deadline > 0 ? " --deadline-s " + std::to_string(int(deadline)) : std::string()) + " 2>&1";
+                                " --runs " + std::to_string(runs) + (deadline > 0 ? " --deadline-s " + std::to_string(int(deadline)) : std::string()) +
+                                (synth_deadline > 0 ? " --synth-deadline-s " + std::to_string(synth_deadline) : std::string()) + " 2>&1";
         const auto w0 = std::chrono::steady_clock::now();
 #if defined(_WIN32)
         FILE *pp = _popen(cmd.c_str(), "r");
@@ -1032,7 +1057,8 @@ int cmd_tune(const Args &a) {
         if (bj.is_object() && bj.value("deadline", false)) {
             r["error"] = bj.value("error", "stopped");
             r["skipped"] = true;
-            std::fprintf(stderr, "stopped: slower than the best so far (> %.0f s)\n", deadline);
+            std::fprintf(stderr, "stopped: %s\n", bj.value("error", "slower than the best so far").c_str());
+            if (!group.empty()) slow_group = group;
             results.push_back(r);
             continue;
         }
@@ -1057,11 +1083,22 @@ int cmd_tune(const Args &a) {
         const double score = goal == "speed" ? r["rtf"].get<double>() : r["first_chunk_ms"].get<double>();
         std::fprintf(stderr, "RTF %.3f, first sound %.0f ms%s\n", r["rtf"].get<double>(), r["first_chunk_ms"].get<double>(),
                      r.contains("gemm") ? (", GEMM " + r["gemm"].get<std::string>()).c_str() : "");
-        if (score > 0 && score < best_score) { best_score = score; best = int(results.size()); best_wall = wall; }
+        // the synthesis time of every run (what the next candidates' --synth-deadline-s is measured against)
+        double synth = bj.value("cold", vox::json::object()).value("total_s", 0.0);
+        if (bj.contains("warm")) synth += bj["warm"].value("total_s", 0.0) * double(runs - 1);
+        if (score > 0 && score < best_score) { best_score = score; best = int(results.size()); best_wall = wall; best_synth = synth; }
         results.push_back(r);
     }
     if (a.has("--dry-run")) { std::cout << results.dump(1) << "\n"; return 0; }
     if (best < 0) die("no configuration worked; nothing saved");
+    // within 3 % of the fastest is noise (F5 on a 5050: 3.095 with Vocos on the CPU against 3.116 without): the first such candidate
+    // wins, and the list puts the plain configurations first
+    for (size_t i = 0; i < results.size(); ++i) {
+        const vox::json &x = results[i];
+        if (!x.contains("rtf")) continue;
+        const double sc = goal == "speed" ? x["rtf"].get<double>() : x["first_chunk_ms"].get<double>();
+        if (sc > 0 && sc <= best_score * 1.03) { best = int(i); break; }
+    }
     const vox::json &b = results[size_t(best)];
     vox::json entry = {{"device", b["device"]}, {"goal", goal}, {"rtf", b["rtf"]}, {"first_chunk_ms", b["first_chunk_ms"]}, {"label", b["label"]},
                        {"candidates", results}, {"text_chars", text.size()}};

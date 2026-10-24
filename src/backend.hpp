@@ -69,12 +69,13 @@ struct Capabilities {
     std::string text_in = "token", audio_out = "frames";
     bool stream_exact = false;
     std::vector<std::string> speakers, languages;
+    std::string default_speaker;   // the speaker to start with (the model's own recommendation), "" = the first one
     bool speed = false;            // the "speed" option changes the speaking rate (F5, Kokoro): markup [speed] and emotions use it
     std::vector<std::string> tags; // non-verbal tags the model reads natively ("laugh", "breath", …), passed through as [tag]
     json to_json() const {
         return {{"clone_icl", clone_icl}, {"clone_xvector", clone_xvector}, {"named_speakers", named_speakers}, {"instruct", instruct},
                 {"streaming_text", streaming_text}, {"requires_instruct", requires_instruct}, {"speakers", speakers}, {"languages", languages},
-                {"speed", speed}, {"tags", tags},
+                {"speed", speed}, {"tags", tags}, {"default_speaker", default_speaker.empty() && !speakers.empty() ? speakers.front() : default_speaker},
                 {"stream", {{"text_in", text_in}, {"audio_out", audio_out}, {"exact", stream_exact}, {"commit", {"auto", "sentence", "manual"}}}}};
     }
 };

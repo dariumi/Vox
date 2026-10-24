@@ -50,7 +50,7 @@ def main():
     tm = os.path.join(models, "tiny.tmod")
     vox.make_test_model(tm)
     import shutil
-    for extra in ("a_rather_long_model_name_for_the_layout_check_q8", "second_model_with_a_long_name_bf16", "third"):
+    for extra in ("a_rather_long_model_name_for_the_layout_check_q8", "second_model_with_a_long_name_bf16", "eec1ae6c0d4f9a2b7e5c3d1f8a6b4c2e0f9d7b5a3c1e8f6d4b2a0c9e7f5d293d"):
         shutil.copy(tm, os.path.join(models, extra + ".tmod"))   # several cards in the Models grid (the layout check below)
     sr = 24000
     t = np.arange(int(sr * 1.5)) / sr
@@ -235,11 +235,11 @@ def main():
                 pg.wait_for_timeout(200)
                 boxes = pg.evaluate("""() => [...document.querySelectorAll('#mRows .mcard')].map((c) => {
                     const r = c.getBoundingClientRect(), b = c.querySelector('[data-a="load"]').getBoundingClientRect();
-                    return [r.left, r.top, r.right, r.bottom, b.left, b.right]; })""")
-                inside = all(bx[4] >= bx[0] - 0.5 and bx[5] <= bx[2] + 0.5 for bx in boxes)
+                    return [r.left, r.top, r.right, r.bottom, b.left, b.right, c.scrollWidth - c.clientWidth]; })""")
+                inside = all(bx[4] >= bx[0] - 0.5 and bx[5] <= bx[2] + 0.5 and bx[6] <= 1 for bx in boxes)
                 apart = all(not (p[0] < q[2] - 1 and q[0] < p[2] - 1 and p[1] < q[3] - 1 and q[1] < p[3] - 1)
                             for i, p in enumerate(boxes) for q in boxes[i + 1:])
-                check(boxes and inside and apart, f"Models at 1568 px: {len(boxes)} card(s), apart, the open button inside")
+                check(boxes and inside and apart, f"Models at 1568 px: {len(boxes)} card(s), apart, the open button and the text inside")
                 check(pg.evaluate("STUDIO_VERSION") == vox.__version__, "the page carries the engine's version (an old cached copy is noticed)")
                 # the connect screen and its hint when the engine is unreachable
                 pg2 = br.new_page()

@@ -79,6 +79,9 @@ public:
         c.stream_exact = true;
         const json &k = f.manifest().at("kokoro");
         c.speakers = k.value("voices", std::vector<std::string>{});
+        // the voice Kokoro's own examples speak with (hexgrad/Kokoro-82M), not the alphabetically first af_alloy
+        for (const char *d : {"af_heart", "af_bella"})
+            if (std::find(c.speakers.begin(), c.speakers.end(), d) != c.speakers.end()) { c.default_speaker = d; break; }
         c.languages = {"en-us", "en-gb"};
         return c;
     }
