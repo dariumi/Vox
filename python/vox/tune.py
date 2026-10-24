@@ -70,15 +70,27 @@ def run(model, voice=None, *, speaker: Optional[str] = None, instruct: Optional[
             raise ValueError("this model speaks with a cloned voice: pass a .tvoice (vox.tune(model, 'me.tvoice'))")
     text = text or default_text(caps)
     cands = candidates if candidates is not None else info["candidates"]
-    rows, best = [], None
+    rows, best, best_wall = [], None, 0.0
     for i, c in enumerate(cands):
         row = {"label": c.get("label", c["device"]), "device": c["device"], "index": i, "of": len(cands)}
         args = {"model": model, "device": c["device"], "voice": os.fspath(voice) if voice is not None else None, "speaker": speaker,
                 "instruct": instruct, "text": text, "runs": max(1, int(runs))}
         env = dict(os.environ, VOX_TUNE="0")
+        # a candidate running 3x as long as the best so far (load included, at least 90 s) cannot win: it is stopped
+        limit = max(90.0, 3.0 * best_wall) if best_wall else timeout
+        import time as _time
+        t0 = _time.monotonic()
         try:
-            r = subprocess.run([sys.executable, "-m", "vox.tune", "--child", json.dumps(args)], capture_output=True, text=True,
-                               timeout=timeout, env=env)
+            try:
+                r = subprocess.run([sys.executable, "-m", "vox.tune", "--child", json.dumps(args)], capture_output=True, text=True,
+                                   timeout=limit, env=env)
+            except subprocess.TimeoutExpired:
+                row.update(error=f"slower than the best so far: stopped after {limit:.0f} s", skipped=True)
+                rows.append(row)
+                if progress:
+                    progress(dict(row))
+                continue
+            wall = _time.monotonic() - t0
             out = next((json.loads(l) for l in reversed(r.stdout.splitlines()) if l.startswith("{")), None)
             if r.returncode != 0 or out is None:
                 raise RuntimeError((r.stderr or r.stdout)[-300:].strip() or f"exit code {r.returncode}")
@@ -91,6 +103,7 @@ def run(model, voice=None, *, speaker: Optional[str] = None, instruct: Optional[
             score = row["rtf"] if goal == "speed" else row["first_chunk_ms"]
             if score and (best is None or score < best[0]):
                 best = (score, row)
+                best_wall = wall
         except Exception as e:   # noqa: BLE001 — a candidate that fails is reported, the others still run
             row["error"] = str(e)
         rows.append(row)

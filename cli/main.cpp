@@ -237,8 +237,9 @@ int cmd_devices(const Args &a) {
     const vox::json j = vox::json::parse(js);
     const auto &c = j["cpu"];
     auto gib = [](double b) { return b / (1024.0 * 1024 * 1024); };
-    std::printf("cpu  %d logical cores (%d usable by this process), RAM %.1f GiB total, %.1f GiB available%s\n", c["cpu_logical"].get<int>(),
-                c["cpu_allowed"].get<int>(), gib(c["ram_total"].get<double>()), gib(c["ram_available"].get<double>()),
+    const int phys = c.value("cpu_physical", 0);
+    std::printf("cpu  %d logical cores (%d usable by this process%s), RAM %.1f GiB total, %.1f GiB available%s\n", c["cpu_logical"].get<int>(),
+                c["cpu_allowed"].get<int>(), phys ? (", " + std::to_string(phys) + " physical").c_str() : "", gib(c["ram_total"].get<double>()), gib(c["ram_available"].get<double>()),
                 c["cgroup_limit"].get<uint64_t>() ? (", container limit leaves " + std::to_string(gib(c["cgroup_limit"].get<double>())).substr(0, 4) + " GiB").c_str() : "");
     for (const auto &g : j["gpus"])
         std::printf("vulkan:%d  %s  [%s]  VRAM %.1f GiB, free %.1f GiB%s%s%s\n", g["index"].get<int>(), g["name"].get<std::string>().c_str(),
@@ -656,6 +657,15 @@ double peak_rss_mb() {
 
 // Бенчмарк: первый запуск («холодный»: прогрев, кэши) и последующие («тёплые») считаются отдельно.
 int cmd_bench(const Args &a) {
+    if (a.has("--deadline-s")) {   // vox tune: a candidate already slower than the best so far is not worth finishing
+        const double d = std::stod(a.get("--deadline-s"));
+        std::thread([d] {
+            std::this_thread::sleep_for(std::chrono::duration<double>(d));
+            std::printf("{\"error\": \"slower than the best so far: stopped after %.0f s\", \"deadline\": true}\n", d);
+            std::fflush(stdout);
+            std::_Exit(3);
+        }).detach();
+    }
     vox_engine *e = open_engine(a);
     vox_voice *v = load_voice(e, a);
     std::string lang;
@@ -986,15 +996,18 @@ int cmd_tune(const Args &a) {
     std::fprintf(stderr, "tuning %s: %zu configuration(s), %d run(s) each, goal: %s\n", model.c_str(), cands.size(), runs, goal.c_str());
     vox::json results = vox::json::array();
     int best = -1;
-    double best_score = 1e300;
+    double best_score = 1e300, best_wall = 0;
     for (size_t i = 0; i < cands.size(); ++i) {
         const std::string dev = cands[i].value("device", "cpu"), label = cands[i].value("label", dev);
         vox::json r = {{"label", label}, {"device", dev}};
         if (a.has("--dry-run")) { results.push_back(r); continue; }
         std::fprintf(stderr, "  [%zu/%zu] %-44s ", i + 1, cands.size(), label.c_str());
         std::fflush(stderr);
+        // a candidate that runs 3× as long as the best so far (load included, at least 90 s) is stopped: it cannot win
+        const double deadline = best_wall > 0 ? std::max(90.0, 3.0 * best_wall) : 0.0;
         const std::string cmd = shq(exe) + " bench --model " + shq(model) + " --device " + shq(dev + ",strict") + vargs + " --text " + shq(text) +
-                                " --runs " + std::to_string(runs) + " 2>&1";
+                                " --runs " + std::to_string(runs) + (deadline > 0 ? " --deadline-s " + std::to_string(int(deadline)) : std::string()) + " 2>&1";
+        const auto w0 = std::chrono::steady_clock::now();
 #if defined(_WIN32)
         FILE *pp = _popen(cmd.c_str(), "r");
 #else
@@ -1011,10 +1024,18 @@ int cmd_tune(const Args &a) {
             pclose(pp);
 #endif
         }
+        const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - w0).count();
         vox::json bj;
         std::istringstream ls(outp);
         for (std::string line; std::getline(ls, line);)
             if (!line.empty() && line[0] == '{') try { bj = vox::json::parse(line); } catch (const std::exception &) {}
+        if (bj.is_object() && bj.value("deadline", false)) {
+            r["error"] = bj.value("error", "stopped");
+            r["skipped"] = true;
+            std::fprintf(stderr, "stopped: slower than the best so far (> %.0f s)\n", deadline);
+            results.push_back(r);
+            continue;
+        }
         if (!bj.is_object()) {
             std::string why = outp.substr(outp.size() > 300 ? outp.size() - 300 : 0);
             for (char &c : why) if (c == '\n') c = ' ';
@@ -1034,8 +1055,9 @@ int cmd_tune(const Args &a) {
         }
         r["backend"] = bj.value("backend", "");
         const double score = goal == "speed" ? r["rtf"].get<double>() : r["first_chunk_ms"].get<double>();
-        std::fprintf(stderr, "RTF %.3f, first sound %.0f ms\n", r["rtf"].get<double>(), r["first_chunk_ms"].get<double>());
-        if (score > 0 && score < best_score) { best_score = score; best = int(results.size()); }
+        std::fprintf(stderr, "RTF %.3f, first sound %.0f ms%s\n", r["rtf"].get<double>(), r["first_chunk_ms"].get<double>(),
+                     r.contains("gemm") ? (", GEMM " + r["gemm"].get<std::string>()).c_str() : "");
+        if (score > 0 && score < best_score) { best_score = score; best = int(results.size()); best_wall = wall; }
         results.push_back(r);
     }
     if (a.has("--dry-run")) { std::cout << results.dump(1) << "\n"; return 0; }

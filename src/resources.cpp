@@ -252,7 +252,7 @@ uint64_t SystemInfo::usable_ram() const {
 }
 
 json SystemInfo::to_json() const {
-    return {{"os", os}, {"cpu_logical", cpu_logical}, {"cpu_allowed", cpu_allowed}, {"ram_total", ram_total}, {"ram_available", ram_available},
+    return {{"os", os}, {"cpu_logical", cpu_logical}, {"cpu_allowed", cpu_allowed}, {"cpu_physical", cpu_physical}, {"ram_total", ram_total}, {"ram_available", ram_available},
             {"cgroup_limit", cgroup_limit}, {"rss", rss}, {"peak_rss", peak_rss}};
 }
 
@@ -265,6 +265,21 @@ SystemInfo system_info() {
     cpu_set_t set;
     CPU_ZERO(&set);
     if (sched_getaffinity(0, sizeof set, &set) == 0) s.cpu_allowed = std::max(1, int(CPU_COUNT(&set)));
+    {   // physical cores among the allowed CPUs: distinct (package, core) pairs in sysfs
+        std::vector<std::pair<int, int>> cores;
+        bool any = false;
+        for (int c = 0; c < CPU_SETSIZE && c < 4096; ++c) {
+            if (!CPU_ISSET(c, &set)) continue;
+            const std::string base = "/sys/devices/system/cpu/cpu" + std::to_string(c) + "/topology/";
+            std::ifstream fc(base + "core_id"), fp(base + "physical_package_id");
+            int core = -1, pkg = 0;
+            if (!(fc >> core)) continue;
+            fp >> pkg;
+            any = true;
+            if (std::find(cores.begin(), cores.end(), std::make_pair(pkg, core)) == cores.end()) cores.emplace_back(pkg, core);
+        }
+        s.cpu_physical = any ? std::max(1, int(cores.size())) : s.cpu_allowed;
+    }
     std::ifstream mi("/proc/meminfo");
     std::string key;
     uint64_t val;
@@ -297,6 +312,11 @@ SystemInfo system_info() {
     uint64_t mem = 0;
     size_t len = sizeof mem;
     if (sysctlbyname("hw.memsize", &mem, &len, nullptr, 0) == 0) { s.ram_total = mem; s.ram_available = mem / 2; }  // оценка: точного MemAvailable нет
+    {
+        int pc = 0;
+        size_t pl = sizeof pc;
+        s.cpu_physical = sysctlbyname("hw.physicalcpu", &pc, &pl, nullptr, 0) == 0 && pc > 0 ? std::min(pc, s.cpu_allowed) : s.cpu_allowed;
+    }
     struct rusage ru {};
     getrusage(RUSAGE_SELF, &ru);
     s.peak_rss = uint64_t(ru.ru_maxrss);
@@ -306,6 +326,15 @@ SystemInfo system_info() {
     MEMORYSTATUSEX ms{};
     ms.dwLength = sizeof ms;
     if (GlobalMemoryStatusEx(&ms)) { s.ram_total = ms.ullTotalPhys; s.ram_available = ms.ullAvailPhys; }
+    {
+        DWORD bytes = 0;
+        GetLogicalProcessorInformation(nullptr, &bytes);
+        std::vector<SYSTEM_LOGICAL_PROCESSOR_INFORMATION> info(bytes / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION) + 1);
+        int pc = 0;
+        if (bytes && GetLogicalProcessorInformation(info.data(), &bytes))
+            for (size_t i = 0; i < bytes / sizeof(SYSTEM_LOGICAL_PROCESSOR_INFORMATION); ++i) pc += info[i].Relationship == RelationProcessorCore;
+        s.cpu_physical = pc > 0 ? std::min(pc, s.cpu_allowed) : s.cpu_allowed;
+    }
 #else
     s.os = "other";
 #endif
@@ -479,10 +508,15 @@ ResourcePlan make_plan(const ResourceConfig &cfg_in, const ModelFootprint &fp, c
 
     // ---- CPU: потоки, привязка, приоритет ----
     const int hc = std::max(1, sys.cpu_allowed);
+    // One thread per physical core: SMT siblings share the FMA units, and with busy-waiting workers a thread on every logical CPU
+    // was 26–37 % slower than the physical cores alone (Ryzen 7 5700X, 0.19 report: Qwen3 q8 RTF 2.73 → 2.02). Without SMT
+    // balanced leaves one core to the system as before; with SMT the siblings are that headroom.
+    const int pc = std::max(1, std::min(sys.cpu_physical > 0 ? sys.cpu_physical : hc, hc));
+    const bool smt = pc < hc;
     uint32_t threads = cfg.threads;
     if (!threads) {
-        threads = mode == Mode::Speed ? uint32_t(hc) : mode == Mode::Balanced ? uint32_t(hc > 2 ? hc - 1 : hc)  // один свободный поток для системы
-                : mode == Mode::Memory ? uint32_t(std::max(1, hc / 2)) : uint32_t(std::max(1, hc / 4));
+        threads = mode == Mode::Speed ? uint32_t(pc) : mode == Mode::Balanced ? uint32_t(smt || pc <= 2 ? pc : pc - 1)
+                : mode == Mode::Memory ? uint32_t(std::max(1, pc / 2)) : uint32_t(std::max(1, pc / 4));
         if (!cfg.cpu_affinity.empty()) threads = std::min<uint32_t>(threads, uint32_t(cfg.cpu_affinity.size()));
     }
     base.threads = std::max<uint32_t>(1, threads);

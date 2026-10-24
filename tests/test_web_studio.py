@@ -49,6 +49,9 @@ def main():
     os.makedirs(models)
     tm = os.path.join(models, "tiny.tmod")
     vox.make_test_model(tm)
+    import shutil
+    for extra in ("a_rather_long_model_name_for_the_layout_check_q8", "second_model_with_a_long_name_bf16", "third"):
+        shutil.copy(tm, os.path.join(models, extra + ".tmod"))   # several cards in the Models grid (the layout check below)
     sr = 24000
     t = np.arange(int(sr * 1.5)) / sr
     ref = os.path.join(work, "ref.wav")
@@ -227,6 +230,17 @@ def main():
                 pg.click('nav.rail button[data-view="models"]')
                 pg.wait_for_selector("#mRows [data-m='tiny']", timeout=20000)
                 check(True, "the Models tab lists the models")
+                # 0.19 report: at 1568 px the cards overlapped and cut "Open" off
+                pg.set_viewport_size({"width": 1568, "height": 900})
+                pg.wait_for_timeout(200)
+                boxes = pg.evaluate("""() => [...document.querySelectorAll('#mRows .mcard')].map((c) => {
+                    const r = c.getBoundingClientRect(), b = c.querySelector('[data-a="load"]').getBoundingClientRect();
+                    return [r.left, r.top, r.right, r.bottom, b.left, b.right]; })""")
+                inside = all(bx[4] >= bx[0] - 0.5 and bx[5] <= bx[2] + 0.5 for bx in boxes)
+                apart = all(not (p[0] < q[2] - 1 and q[0] < p[2] - 1 and p[1] < q[3] - 1 and q[1] < p[3] - 1)
+                            for i, p in enumerate(boxes) for q in boxes[i + 1:])
+                check(boxes and inside and apart, f"Models at 1568 px: {len(boxes)} card(s), apart, the open button inside")
+                check(pg.evaluate("STUDIO_VERSION") == vox.__version__, "the page carries the engine's version (an old cached copy is noticed)")
                 # the connect screen and its hint when the engine is unreachable
                 pg2 = br.new_page()
                 pg2.goto(f"{base}/studio/")

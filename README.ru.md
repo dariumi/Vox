@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.19.0-2a78d6" alt="версия 0.19.0">
+  <img src="https://img.shields.io/badge/version-0.19.1-2a78d6" alt="версия 0.19.1">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -554,16 +554,20 @@ sequenceDiagram
 другим; небольшая модель на 16 ядрах может обогнать видеокарту ноутбука). `vox tune` не угадывает, а замеряет:
 
     vox tune --model cosyvoice2.tmod --voice me.tvoice       # модели с готовыми дикторами голос не нужен
-      [1/6] cpu                                       RTF 2.63, first sound 2410 ms
-      [2/6] cpu, 8 threads                            RTF 2.71, first sound 2480 ms
-      [3/6] vulkan:0 (NVIDIA GeForce RTX 5050)        RTF 0.45, first sound  690 ms
+      [1/7] vulkan:0 (NVIDIA GeForce RTX 5050)        RTF 0.53, first sound 5393 ms, GEMM convgemm
+      [2/7] vulkan:1 (NVIDIA GeForce RTX 3050)        RTF 0.59, first sound 5995 ms, GEMM convgemm
+      [3/7] cpu, 8 threads                            stopped: slower than the best so far
       …
     best: vulkan:0 (…); saved to ~/.cache/vox/tune.json
     vox say "…" --model cosyvoice2.tmod --voice me.tvoice    # device auto теперь открывает её на vulkan:0
 
-- **Варианты** (`vox tune --show` их показывает): CPU со всеми потоками и с половиной (SMT-соседи делят блоки FMA), каждая не программная
-  видеокарта с размещением по умолчанию и с переносом на CPU каждой стадии, которая умеет GPU (`codec=cpu`, `flow=cpu`, `t3=cpu`, …).
-  Для F5 и моделей с flow заодно замеряется и запоминается GEMM на видеокарте.
+- **Варианты** (`vox tune --show` их показывает): каждая не программная видеокарта с размещением по умолчанию и с переносом на CPU каждой
+  *лёгкой* GPU-стадии (меньше четверти весов на GPU: декодер кодека Qwen3, Vocos у F5); затем CPU — поток на физическое ядро, все логические
+  CPU (SMT) и ¾ ядер. Тяжёлые стадии на CPU во всех замерах были в 3–10 раз медленнее, поэтому больше не пробуются (вручную
+  `--device vulkan:0,flow=cpu` работает). Видеокарты идут первыми: вариант, который идёт втрое дольше лучшего (не меньше 90 с), останавливается
+  с пометкой.
+- **GEMM — не отдельный вариант**: у F5 и моделей с flow каждый вариант на видеокарте при сборке графа сам замеряет convgemm и gemmb на слоях
+  модели и берёт быстрый; в строке видно, какой победил (`GEMM gemmb`), и он записывается в результат.
 - Каждый вариант идёт в своём дочернем процессе (`vox bench`; Vulkan — одно устройство на процесс), на коротком тексте на языке модели.
   `--goal latency` выбирает самый ранний первый звук вместо наименьшего RTF; `--runs N`, `--text`.
 - **Применение**: движок, открытый с ресурсами по умолчанию (`device` auto, без потоков, размещения и слоёв), ищет модель и железо
@@ -595,8 +599,10 @@ flowchart LR
 <details>
 <summary>Подробнее: режимы, лимиты, устройства</summary>
 
-- **Режимы**: `speed` — все ядра, потоки с активным ожиданием; `balanced` (по умолчанию) оставляет ядро системе;
-  `memory` — вдвое меньше потоков без активного ожидания; `background` — четверть ядер с низким приоритетом, без GPU.
+- **Режимы** считают *физические* ядра (0.19.1: SMT-соседи делят блоки FMA и кэш, и 16 потоков на 8-ядерном Ryzen были на 37 % медленнее
+  8): `speed` — поток на ядро с активным ожиданием; `balanced` (по умолчанию) — тоже поток на ядро на CPU с SMT (соседи остаются системе),
+  без SMT на ядро меньше; `memory` — половина ядер без активного ожидания; `background` — четверть с низким приоритетом, без GPU.
+  `--threads N` задаёт явно (`vox devices` показывает `cpu_physical`).
 - **Лимиты жёсткие**: если план больше `ram_limit` / `vram_limit`, модель отклоняется (`OutOfMemory` с планом в тексте), если не задано
   `enforce=false`. Сессия, не влезающая в остаток лимита, не создаётся; `max_sessions` ограничивает их число. После загрузки на GPU
   mmap-страницы весов возвращаются системе (`--no-release` отключает).

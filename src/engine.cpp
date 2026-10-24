@@ -22,7 +22,7 @@
 using namespace vox;
 
 #ifndef VOX_VERSION_STRING
-#define VOX_VERSION_STRING "0.19.0"
+#define VOX_VERSION_STRING "0.19.1"
 #endif
 
 extern std::string vox_internal_last_error();

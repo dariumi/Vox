@@ -205,15 +205,19 @@ input[type=range] { width: 100%; accent-color: var(--accent); }
 .rec.on .btn { border-color: var(--rec); color: var(--rec); }
 .rec.on .btn::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--rec); animation: pulse 1s ease-in-out infinite; }
 
-.models { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
-.mcard { display: grid; gap: 12px; align-content: start; }
+.models { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(330px, 100%), 1fr)); gap: 14px; align-items: start; }
+.models > .panel + .panel { margin-top: 0; }
+.mcard { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-content: start; min-width: 0; }
 .mcard .t { display: flex; align-items: start; gap: 10px; }
 .mcard .t b { font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
 .mcard .t .fam { color: var(--muted); font-size: 13px; }
 .mcard .t .grow { flex: 1; min-width: 0; }
 .mcard .path { font-size: 12px; color: var(--faint); overflow-wrap: anywhere; }
 .mcard .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.mcard select { width: auto; flex: 1 1 150px; }
+.mcard select { width: auto; flex: 1 1 150px; min-width: 0; max-width: 100%; text-overflow: ellipsis; }
+.mcard .row .btn { flex: 0 0 auto; }
+.mcard .tune select { width: 100%; min-width: 0; }
+.tune ol li.skip { color: var(--faint); }
 .tune { border-top: 1px solid var(--line-2); padding-top: 12px; display: grid; gap: 8px; font-size: 14px; }
 .tune .res { color: var(--muted); font-size: 13px; }
 .tune ol { margin: 0; padding-left: 18px; font-size: 13px; color: var(--muted); display: grid; gap: 2px; }
@@ -453,7 +457,8 @@ const RUS = {
   needDesign: "Опишите голос в поле «Инструкция» в параметрах.", needVoiceRec: "Нужны имя голоса и запись.",
   device: "Устройство", auto: "авто", tuneBtn: "Подобрать под этот компьютер", tuneAgain: "Подобрать заново", tuneForget: "Забыть подбор",
   tuning: (i, n) => "Подбираю: " + i + " из " + n, tunedAs: (d, r) => "Подобрано: " + d + (r ? " · RTF " + r : ""), notTuned: "Не подобрано под этот компьютер — «авто» решает по оценке.",
-  tuneVoice: "Голос для замера", tuneNeedVoice: "Для замера нужен голос: создайте профиль с записью во вкладке «Голоса».", tuneDone: "Подбор закончен",
+  tuneVoice: "Голос для замера", tuneNeedVoice: "Для замера нужен голос: создайте профиль с записью во вкладке «Голоса».", tuneDone: "Подбор закончен", tuneSkipped: "медленнее лучшего, остановлен",
+  stale: (a, b) => `Эта страница — Studio ${a}, а движок — ${b}: браузер показал старую копию. Обновите страницу (Ctrl+Shift+R).`,
   tuned: "подобрано", onGpu: (n) => "на " + n, onCpu: "на процессоре", sizeMb: (n) => n + " МБ",
 };
 const EN = {
@@ -498,7 +503,8 @@ const EN = {
   needDesign: "Describe the voice in Instruction, in Settings.", needVoiceRec: "A voice name and a recording are needed.",
   device: "Device", auto: "auto", tuneBtn: "Fit to this computer", tuneAgain: "Fit again", tuneForget: "Forget the fit",
   tuning: (i, n) => "Fitting: " + i + " of " + n, tunedAs: (d, r) => "Fitted: " + d + (r ? " · RTF " + r : ""), notTuned: "Not fitted to this computer: \"auto\" decides by estimate.",
-  tuneVoice: "Voice for the measurement", tuneNeedVoice: "The measurement needs a voice: create a profile with a recording in Voices.", tuneDone: "Fitting finished",
+  tuneVoice: "Voice for the measurement", tuneNeedVoice: "The measurement needs a voice: create a profile with a recording in Voices.", tuneDone: "Fitting finished", tuneSkipped: "slower than the best, stopped",
+  stale: (a, b) => `This page is Studio ${a} and the engine is ${b}: the browser showed an old copy. Reload the page (Ctrl+Shift+R).`,
   tuned: "fitted", onGpu: (n) => "on " + n, onCpu: "on the CPU", sizeMb: (n) => n + " MB",
 };
 const TT = RU ? RUS : EN;
@@ -511,6 +517,7 @@ document.getElementById("exText").textContent = EXAMPLE;
 // ---------------------------------------------------------------- helpers
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const STUDIO_VERSION = "0.19.1";   // tools/build_site.py writes the version in
 const store = { get(k) { try { return localStorage.getItem("voxstudio." + k); } catch (e) { return null; } },
                 set(k, v) { try { if (v == null) localStorage.removeItem("voxstudio." + k); else localStorage.setItem("voxstudio." + k, v); } catch (e) { /* private mode */ } } };
 let toastTimer = 0;
@@ -548,12 +555,29 @@ function connectHint(err, url) {
   if (location.protocol === "https:" && u.protocol === "http:" && !local) return TT.hintMixed(esc(u.origin));
   return TT.hintNet(esc(u.origin));
 }
+function verNum(v) { return String(v || "").split(".").map((x) => parseInt(x, 10) || 0).reduce((a, x) => a * 1000 + x, 0); }
+// a browser that kept an old copy of this page: the engine's own page reloads past the cache once, a hosted one says so
+function staleStudio(engineVer) {
+  if (STUDIO_VERSION.startsWith("{{") || verNum(STUDIO_VERSION) >= verNum(engineVer)) return false;
+  let own = false;
+  try { own = new URL(S.url).origin === location.origin; } catch (e) { /* bad url */ }
+  let tried = null;
+  try { tried = sessionStorage.getItem("voxstudio.reload"); } catch (e) { /* private mode */ }
+  if (own && tried !== engineVer) {
+    try { sessionStorage.setItem("voxstudio.reload", engineVer); } catch (e) { /* private mode */ }
+    location.replace(location.pathname + "?v=" + encodeURIComponent(engineVer) + location.hash);
+    return true;
+  }
+  setTimeout(() => toast(TT.stale(STUDIO_VERSION, engineVer), true), 300);
+  return false;
+}
 async function connect(url, secret, remember) {
   S.url = url.replace(/\/+$/, ""); S.secret = secret;
   $("cGo").disabled = true; $("cErr").hidden = true; $("cGo").textContent = TT.connecting;
   try {
     const hr = await fetch(S.url + "/health").then((r) => r.json());
     if (!hr || !hr.vox) throw new Error("not a vox engine");
+    if (staleStudio(hr.vox)) return;
     S.info = await api("GET", "/v1/info");
     if (remember) { store.set("url", S.url); store.set("secret", S.secret); }
     $("connect").hidden = true; $("app").hidden = false;
@@ -644,12 +668,20 @@ function castItems() {
   for (const s of (c.speakers || []).slice(0, 80)) items.push({ kind: "speaker", speaker: s, label: s, sub: TT.builtIn, key: "spk:" + s });
   return items;
 }
-function selectItem(it) { S.sel = it; store.set("sel", it ? it.key : null); renderCast(); renderEmo(); }
+function selectItem(it) { S.sel = it; store.set("sel." + S.model, it ? it.key : null); renderCast(); renderEmo(); }
+// the voice a model starts with: the one last used with this model; else a profile voice built for this model's family; else
+// the model's own speakers (or voice design); else any profile voice
+function defaultItem(items) {
+  const saved = store.get("sel." + S.model), m = modelRow(S.model) || {}, fam = m.family || "";
+  const byKey = items.find((i) => i.key === saved);
+  if (byKey) return byKey;
+  const built = (it) => { const p = (S.info.profiles || []).find((q) => q.file === it.profile); return !!(p && (p.built_for || []).some((b) => b.split("/")[0] === fam)); };
+  return items.find((i) => i.kind === "profile" && fam && built(i)) || items.find((i) => i.kind === "speaker" || i.kind === "design") || items[0] || null;
+}
 function renderCast() {
   if (!S.info) return;
   const items = castItems(), box = $("cast");
-  const savedKey = store.get("sel");
-  if (!S.sel || !items.some((i) => i.key === S.sel.key)) S.sel = items.find((i) => i.key === savedKey) || items[0] || null;
+  if (!S.sel || S.selModel !== S.model || !items.some((i) => i.key === S.sel.key)) { S.sel = defaultItem(items); S.selModel = S.model; }
   box.innerHTML = items.map((it, i) => `<button data-i="${i}" style="--c:${colorOf(it.key)}" aria-pressed="${S.sel && it.key === S.sel.key}" title="${esc(it.label + " — " + it.sub)}"><span class="av">${esc(initial(it.label))}</span><span class="nm">${esc(it.label)}<small>${esc(it.sub)}</small></span></button>`).join("");
   $("castEmpty").hidden = items.length > 0;
   box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => selectItem(items[+b.dataset.i])));
@@ -966,7 +998,7 @@ function tuneHtml(m, job) {
   const rows = (job && job.rows) || [];
   if (rows.length) {
     const best = job.entry ? job.entry.device : null;
-    h += `<ol>${rows.map((r) => `<li class="${r.device === best ? "best" : ""}">${esc(r.label)}: ${r.rtf ? "RTF " + r.rtf.toFixed(2) : `<span class="err">${esc((r.error || "").slice(0, 120))}</span>`}</li>`).join("")}</ol>`;
+    h += `<ol>${rows.map((r) => `<li class="${r.device === best ? "best" : r.skipped ? "skip" : ""}">${esc(r.label)}: ${r.rtf ? "RTF " + r.rtf.toFixed(2) + (r.gemm ? " · GEMM " + esc(r.gemm) : "") : r.skipped ? esc(TT.tuneSkipped) : `<span class="err">${esc((r.error || "").slice(0, 120))}</span>`}</li>`).join("")}</ol>`;
   }
   if (job && job.state === "error") h += `<div class="err" style="font-size:13px">${esc(job.error)}</div>`;
   const profs = S.info.profiles || [], c = m.capabilities || {};

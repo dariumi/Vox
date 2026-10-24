@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.19.0-2a78d6" alt="version 0.19.0">
+  <img src="https://img.shields.io/badge/version-0.19.1-2a78d6" alt="version 0.19.1">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -546,16 +546,20 @@ sequenceDiagram
 an RTX 3050 with the other; a small model may be faster on 16 CPU cores than on a laptop GPU). `vox tune` measures instead of guessing:
 
     vox tune --model cosyvoice2.tmod --voice me.tvoice       # a model with built-in speakers needs no voice
-      [1/6] cpu                                       RTF 2.63, first sound 2410 ms
-      [2/6] cpu, 8 threads                            RTF 2.71, first sound 2480 ms
-      [3/6] vulkan:0 (NVIDIA GeForce RTX 5050)        RTF 0.45, first sound  690 ms
+      [1/7] vulkan:0 (NVIDIA GeForce RTX 5050)        RTF 0.53, first sound 5393 ms, GEMM convgemm
+      [2/7] vulkan:1 (NVIDIA GeForce RTX 3050)        RTF 0.59, first sound 5995 ms, GEMM convgemm
+      [3/7] cpu, 8 threads                            stopped: slower than the best so far
       …
     best: vulkan:0 (…); saved to ~/.cache/vox/tune.json
     vox say "…" --model cosyvoice2.tmod --voice me.tvoice    # device auto now opens it on vulkan:0
 
-- **Candidates** (`vox tune --show` lists them): the CPU with all threads and with half (SMT siblings share the FMA units), every non-software
-  GPU with the default placement and with each GPU-capable stage moved to the CPU (`codec=cpu`, `flow=cpu`, `t3=cpu`, …).
-  For F5 and the flow models the GPU GEMM is timed on the spot and remembered too.
+- **Candidates** (`vox tune --show` lists them): every non-software GPU with the default placement, and with each *light* GPU-capable stage
+  (under a quarter of the GPU weights: Qwen3's codec decoder, F5's Vocos) moved to the CPU; then the CPU with a thread per physical core,
+  with every logical CPU (SMT) and with ¾ of the cores. Heavy stages on the CPU were 3–10× slower in every measurement, so they are no longer
+  tried (`--device vulkan:0,flow=cpu` still works by hand). GPUs go first: a candidate taking 3× the wall time of the best so far (at least
+  90 s) is stopped and marked as such.
+- **GEMM is not a separate candidate**: for F5 and the flow models every GPU candidate times convgemm against gemmb on the model's own
+  layers when its graph is built, and keeps the faster one; the row shows which one won (`GEMM gemmb`) and the result records it.
 - Each candidate runs in its own child process (`vox bench`; one Vulkan device per process), on a short text in the model's language.
   `--goal latency` keeps the earliest first sound instead of the lowest RTF; `--runs N`, `--text`.
 - **Applying it**: an engine opened with the default resources (`device` auto, no threads, placement or layers) looks up the model and the
@@ -586,8 +590,10 @@ flowchart LR
 <details>
 <summary>Details: modes, limits, devices</summary>
 
-- **Modes**: `speed` uses all cores with busy-waiting threads. `balanced` (the default) leaves one core to the OS.
-  `memory` uses half as many threads with no busy-waiting. `background` uses a quarter of the cores at low priority and never touches the GPU.
+- **Modes** count *physical* cores (0.19.1: SMT siblings share the FMA units and the cache, and 16 threads on an 8-core Ryzen were 37 %
+  slower than 8): `speed` a thread per core with busy-waiting; `balanced` (the default) a thread per core too on an SMT CPU (the siblings
+  are left to the OS), one core fewer without SMT; `memory` half the cores with no busy-waiting; `background` a quarter at low priority, no
+  GPU. `--threads N` overrides (`vox devices` shows `cpu_physical`).
 - **Limits are hard**. If the plan goes over `ram_limit` / `vram_limit`, the model is refused (`OutOfMemory`, with the plan in the message)
   unless `enforce=false`. A session that does not fit in what is left of the limit is not created, and `max_sessions` caps how many there are.
   After upload to the GPU, the weights' mmap pages are returned to the system (`--no-release` turns this off).

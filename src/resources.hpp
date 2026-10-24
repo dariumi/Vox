@@ -82,6 +82,7 @@ struct ModelFootprint {
 // ---------- что есть на машине ----------
 struct SystemInfo {
     int cpu_logical = 1, cpu_allowed = 1;   // всего и доступно процессу (affinity, cpuset)
+    int cpu_physical = 0;                   // 0 = неизвестно; физических ядер среди доступных (SMT-соседи считаются одним ядром)
     uint64_t ram_total = 0, ram_available = 0;
     uint64_t cgroup_limit = 0;              // 0 = нет ограничения контейнера
     uint64_t rss = 0, peak_rss = 0;

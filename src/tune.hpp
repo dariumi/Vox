@@ -23,8 +23,9 @@ std::string tune_model_key(const TmodFile &f);
 json tune_entry(const TmodFile &f);              // the stored result for this model on this hardware, or null
 void tune_store(const TmodFile &f, json entry);  // adds the keys, the hardware and the time; replaces an older one
 bool tune_forget(const TmodFile &f);
-// Configurations worth measuring: the CPU (all threads; half of them when there are SMT siblings), every non-software GPU
-// with the default placement and with each GPU-capable stage moved to the CPU. [{"label", "device"}].
+// Configurations worth measuring: the CPU (a thread per physical core; every logical CPU with SMT; ¾ of the cores on a big CPU),
+// every non-software GPU with the default placement and with each light GPU-capable stage (< ¼ of the GPU weights) moved to
+// the CPU. [{"label", "device"}].
 json tune_candidates(const TmodFile &f);
 
 }  // namespace vox

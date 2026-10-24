@@ -489,6 +489,7 @@ def make_handler(st: Studio, secret: str):
                     if path in ("/", "/studio"):
                         self.send_response(302)
                         self.send_header("Location", "/studio/")
+                        self.send_header("Cache-Control", "no-store")
                         self.send_header("Content-Length", "0")
                         self.end_headers()
                         return

@@ -427,6 +427,16 @@ static void test_planner() {
     c.mode = Mode::Memory;     CHECK(make_plan(c, fp, sys, {}).threads == 4);
     c.mode = Mode::Background; { auto b = make_plan(c, fp, sys, {}); CHECK(b.threads == 2 && b.tuning.nice > 0 && !b.tuning.spin); }
     c.mode = Mode::Speed; c.threads = 3; CHECK(make_plan(c, fp, sys, {}).threads == 3);
+    {   // SMT: 16 logical CPUs on 8 cores → a thread per core (balanced keeps all 8: the siblings are the headroom)
+        SystemInfo smt = sys;
+        smt.cpu_allowed = smt.cpu_logical = 16; smt.cpu_physical = 8;
+        ResourceConfig d; d.device = "cpu";
+        d.mode = Mode::Speed;      CHECK(make_plan(d, fp, smt, {}).threads == 8);
+        d.mode = Mode::Balanced;   CHECK(make_plan(d, fp, smt, {}).threads == 8);
+        d.mode = Mode::Memory;     CHECK(make_plan(d, fp, smt, {}).threads == 4);
+        d.mode = Mode::Background; CHECK(make_plan(d, fp, smt, {}).threads == 2);
+        d.mode = Mode::Speed; d.threads = 16; CHECK(make_plan(d, fp, smt, {}).threads == 16);
+    }
     // background не уходит на GPU в auto
     c = ResourceConfig(); c.mode = Mode::Background;
     CHECK(make_plan(c, fp, sys, {fake_gpu(0, 8 * GiB)}).backend == "cpu");

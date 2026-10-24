@@ -188,27 +188,44 @@ bool tune_forget(const TmodFile &f) {
 }
 
 json tune_candidates(const TmodFile &f) {
-    json out = json::array();
+    json out = json::array(), cpu = json::array();
     const SystemInfo si = system_info();
-    out.push_back({{"label", "cpu"}, {"device", "cpu"}});
-    if (si.cpu_allowed >= 4) {   // SMT siblings share the FMA units: the physical cores alone are often as fast or faster
-        const int half = si.cpu_allowed / 2;
-        out.push_back({{"label", "cpu, " + std::to_string(half) + " threads"}, {"device", "cpu,threads=" + std::to_string(half)}});
+    const int hc = std::max(1, si.cpu_allowed), pc = si.cpu_physical > 0 ? std::min(si.cpu_physical, hc) : hc;
+    // the CPU: the default (one thread per physical core), every logical CPU when there are SMT siblings, and three quarters of the
+    // cores on a big CPU (memory bandwidth, not the cores, is often the limit)
+    cpu.push_back({{"label", "cpu, " + std::to_string(pc) + " threads"}, {"device", "cpu"}});
+    if (hc > pc) cpu.push_back({{"label", "cpu, " + std::to_string(hc) + " threads (SMT)"}, {"device", "cpu,threads=" + std::to_string(hc)}});
+    if (pc >= 6) {
+        const int q = pc * 3 / 4;
+        cpu.push_back({{"label", "cpu, " + std::to_string(q) + " threads"}, {"device", "cpu,threads=" + std::to_string(q)}});
     }
     const Family &fam = find_family(f.manifest());
-    const ModelFootprint fp = fam.footprint(f);
-    std::vector<std::string> gpu_stages;
+    ModelFootprint fp = fam.footprint(f);
+    uint64_t total = 0;
+    for (StageDesc &s : fp.stages)
+        if (s.gpu_capable) {
+            if (!s.weight_bytes && !s.prefixes.empty()) s.weight_bytes = blob_bytes(f, s.prefixes, s.exclude);
+            total += s.weight_bytes;
+        }
+    // moving a stage to the CPU only pays for a light one (Qwen3's codec decoder, F5's Vocos): a stage with a quarter of the GPU
+    // weights or more was 3–10× slower on the CPU in every measurement (0.19 report), so it is not worth the minutes
+    std::vector<std::string> light;
+    size_t n_gpu = 0;
     for (const StageDesc &s : fp.stages)
-        if (s.gpu_capable) gpu_stages.push_back(s.name);
-    if (gpu_stages.empty()) return out;
+        if (s.gpu_capable) {
+            ++n_gpu;
+            if (total && s.weight_bytes * 4 < total) light.push_back(s.name);
+        }
+    if (!n_gpu) return cpu;
     for (const GpuDeviceInfo &d : gpu_enumerate()) {
         if (d.software && !software_ok()) continue;
         const std::string dev = "vulkan:" + std::to_string(d.index);
         out.push_back({{"label", dev + " (" + d.name + ")"}, {"device", dev}});
-        if (gpu_stages.size() > 1)
-            for (const std::string &s : gpu_stages)
-                out.push_back({{"label", dev + ", " + s + " on the CPU"}, {"device", dev + "," + s + "=cpu"}});
+        if (n_gpu > 1)
+            for (const std::string &s : light) out.push_back({{"label", dev + ", " + s + " on the CPU"}, {"device", dev + "," + s + "=cpu"}});
     }
+    // the GPUs first: a fast result early lets `vox tune` cut the slow candidates short
+    for (const auto &c : cpu) out.push_back(c);
     return out;
 }
 
