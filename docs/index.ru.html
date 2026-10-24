@@ -497,7 +497,8 @@ for (;;) {
   const st = vox_session_pull(sess[0], buf, buf.length, written);
   if (st !== 0) { check(st, &quot;pull&quot;); break; }
   const n = Number(written[0]);
-  process.stdout.write(Buffer.from(buf.buffer, 0, n * 4));
+  // a copy: writes to a pipe are asynchronous, and buf is refilled by the next pull
+  process.stdout.write(Buffer.from(buf.slice(0, n).buffer));
   total += n;
 }
 console.error(`${total} samples @ ${vox_engine_sample_rate(engine)} Hz`);
@@ -713,7 +714,7 @@ curl -X POST localhost:8080/v1/voices -d &#x27;{&quot;name&quot;:&quot;me&quot;,
 
 <footer class="site">
   <div class="wrap">
-    <div>vox 0.17.0 · Apache-2.0 · <a href="https://github.com/dariumi/Vox">исходный код</a></div>
+    <div>vox 0.17.1 · Apache-2.0 · <a href="https://github.com/dariumi/Vox">исходный код</a></div>
     <ul><li><a href="https://github.com/dariumi/Vox/blob/main/README.ru.md">README</a></li><li><a href="https://github.com/dariumi/Vox/blob/main/CHANGELOG.md">Список изменений</a></li><li><a href="https://github.com/dariumi/Vox/issues">Сообщить о проблеме</a></li></ul>
   </div>
 </footer>

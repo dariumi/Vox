@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.17.0-2a78d6" alt="version 0.17.0">
+  <img src="https://img.shields.io/badge/version-0.17.1-2a78d6" alt="version 0.17.1">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -148,7 +148,7 @@ so glslang is needed only if you change them (`python tools/gen_shaders.py`). On
     pip install torch safetensors   # for the converter only
     python -m vox.build_chatterbox --model ./chatterbox -o chatterbox.tmod      # T3 bf16 (--quant q8: 8-bit), S3Gen f32
     vox say "Hello from Chatterbox in vox." --model chatterbox.tmod --speaker default -o out.wav
-    vox voice create ref.wav --model chatterbox.tmod --xvector-only -o me.tvoice     # no transcript needed
+    vox voice create ref.wav --model chatterbox.tmod -o me.tvoice                    # no transcript needed
     vox say "[excited] We won!" --model chatterbox.tmod --voice me.tvoice -o won.wav  # emotion → exaggeration / cfg_weight
     vox say "Calm down." --model chatterbox.tmod --voice me.tvoice --extra '{"exaggeration":0.3,"cfg_weight":0.5}' -o calm.wav
 
@@ -301,8 +301,10 @@ flowchart LR
 - **Vocos stays f32** since 0.14.1 (`--vocos-dtype`, +26 MB). It is small but turns mel into phase, so bf16 weights there added waveform error on top of the DiT's own.
   `--dtype` and `--quant` apply to the DiT. Reconvert to get it.
 - **GPU kernels in 0.14.1**: linear layers with many rows use a register-blocked GEMM (`gemmb.comp`: a 128×128 tile, 8×8 outputs per thread,
-  64 FMAs per 4 vec4 reads from shared memory). Attention reads K and V as vec4. `VOX_F5_GEMM=old` returns the 0.14.0 GEMM. Both are checked on lavapipe
-  (the audio is the same as on the CPU to 4e-9). **Speed on a real video card has not been measured yet.** `VOX_PROFILE=gpu` shows the share per shader.
+  64 FMAs per 4 vec4 reads from shared memory). Attention reads K and V as vec4. **Measured on real cards, `gemmb` was 5× slower on an RTX 5050 and 14× on
+  an RTX 3050 than the 0.14.0 GEMM, so since 0.17.1 the 0.14.0 GEMM is the default again**; `VOX_F5_GEMM=new` turns `gemmb` on (in 0.17.1 its loops are
+  unrolled so the accumulators stay in registers; its speed has not been measured since). Both are checked on lavapipe (the audio is the same as on the CPU
+  to 4e-9). `VOX_PROFILE=gpu` shows the share per shader.
 - Parameters keep their official names: `nfe_step`, `cfg_strength`, `sway_sampling_coef`, `speed`, `cross_fade_duration`, `target_rms`,
   `use_epss`, `max_chars`. Set them through `--extra`, `extra={...}`, or the short CLI flags `--nfe --cfg --sway --speed`.
 - Differences from the official pipeline: Chinese is converted to pinyin character by character, with no word dictionary. The reference is not trimmed by silence (the first 12 s are taken),
@@ -367,6 +369,10 @@ flowchart LR
   (`CausalConditionalCFM` draws it with seed 0) is stored too, so the flow is deterministic like the original.
   The CAM++ speaker encoder is read node by node out of `campplus.onnx` (Conv + BatchNorm pairs the exporter folded stay folded) and checked
   against onnxruntime during the conversion; the speech tokenizer goes through `s3tokenizer.utils.onnx2torch`. `--no-clone` leaves both out.
+  CAM++ averages its context over segments of 100 frames; the last, incomplete one is divided by 100 (`--campplus-pool window`, the default), as
+  `campplus.onnx` runs in onnxruntime up to 1.25 (the official CosyVoice pins 1.18). Newer onnxruntime divides by the frames the segment holds
+  (`count`, also what PyTorch does); `--campplus-pool auto` follows the installed one. 0.16.0–0.17.0 used `count` and their converter refused the
+  real model; **rebuild CosyVoice2 `.tmod`s with 0.17.1**.
 - **Voices are cloned natively**, as `CosyVoiceFrontEnd` does it: the recording (≤ 30 s) is resampled with torchaudio's algorithm, then
   the 24 kHz mel (the flow's prompt), the CAM++ x-vector from a Kaldi fbank at 16 kHz and the S3 speech tokens (S3TokenizerV2: Whisper log-mel, conv + FSMN
   attention encoder, FSQ). With the recording's text the voice is **zero-shot** (text and speech tokens prompt the LLM); without it

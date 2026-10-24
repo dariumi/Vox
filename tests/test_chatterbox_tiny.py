@@ -21,6 +21,8 @@ import subprocess
 import sys
 import tempfile
 
+import _cleanup  # noqa: F401  (temporary folders go away on exit; VOX_KEEP_TMP=1 keeps them)
+
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -112,8 +114,17 @@ def main(cli):
     # 4. cloning
     prompt = os.path.join(work, "prompt.wav")
     vcl = os.path.join(work, "clone.tvoice")
-    rc, out = run([cli, "voice", "create", prompt, "--model", tm["f32"], "--xvector-only", "-o", vcl])
-    check(rc == 0, "voice from prompt.wav (no transcript needed)")
+    rc, out = run([cli, "voice", "create", prompt, "--model", tm["f32"], "-o", vcl])   # no --text, no --xvector-only
+    check(rc == 0, "voice from prompt.wav, no transcript and no --xvector-only needed" + ("" if rc == 0 else " — " + out[-300:]))
+    vcl2 = os.path.join(work, "clone2.tvoice")
+    rc2, out2 = run([cli, "voice", "create", prompt, "--model", tm["f32"], "--xvector-only", "-o", vcl2])
+    check(rc2 == 0 and np.array_equal(load_file(vcl2)["feat.cb_s3_tokens"], load_file(vcl)["feat.cb_s3_tokens"]),
+          "--xvector-only gives the same voice")
+    import vox as _vx
+    _e = _vx.Engine(tm["f32"], device="cpu")
+    _v = _e.clone_voice(prompt)   # Python: no ref_text either
+    check(_v is not None, "Python: clone_voice(wav) without ref_text")
+    del _v, _e
     v, c = load_file(vcl), load_file(os.path.join(work, "clone.safetensors"))
     s3_same = np.array_equal(v["feat.cb_s3_tokens"], c["clone_s3_tokens"])
     mel_err = float(np.abs(v["feat.cb_s3_mel"] - c["clone_s3_mel"]).max())

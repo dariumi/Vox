@@ -42,6 +42,7 @@ struct CosyCfg {
     // frontend
     int mel_n_fft = 1920, mel_hop = 480;
     bool has_campplus = false, has_s3 = false;
+    bool campplus_pool_window = false;  // last incomplete context segment: sum / 100 (campplus.onnx) instead of the mean (PyTorch)
     // variants used by Chatterbox's S3Gen (same networks): no LLM in the file, Gaussian noise drawn per utterance instead of the
     // fixed table, Euler steps dt = t[i+1] − t[i], the older SineGen
     bool has_llm = true, fixed_noise = true, dt_diff = false;

@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.17.0-2a78d6" alt="версия 0.17.0">
+  <img src="https://img.shields.io/badge/version-0.17.1-2a78d6" alt="версия 0.17.1">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -146,7 +146,7 @@ Vulkan включается сам, если найдены заголовки (
     pip install torch safetensors   # только для конвертера
     python -m vox.build_chatterbox --model ./chatterbox -o chatterbox.tmod      # T3 в bf16 (--quant q8 — 8 бит), S3Gen в f32
     vox say "Hello from Chatterbox in vox." --model chatterbox.tmod --speaker default -o out.wav
-    vox voice create ref.wav --model chatterbox.tmod --xvector-only -o me.tvoice     # текст записи не нужен
+    vox voice create ref.wav --model chatterbox.tmod -o me.tvoice                    # текст записи не нужен
     vox say "[excited] We won!" --model chatterbox.tmod --voice me.tvoice -o won.wav  # эмоция → exaggeration / cfg_weight
     vox say "Calm down." --model chatterbox.tmod --voice me.tvoice --extra '{"exaggeration":0.3,"cfg_weight":0.5}' -o calm.wav
 
@@ -297,8 +297,10 @@ flowchart LR
 - **Vocos остаётся в f32** с 0.14.1 (`--vocos-dtype`, +26 МБ): он маленький, но превращает мел в фазу, и bf16-веса в нём добавляли ошибку волны
   поверх ошибки DiT. `--dtype` и `--quant` относятся к DiT. Чтобы получить это, пересоберите модель.
 - **Ядра GPU в 0.14.1**: линейные слои с многими строками считает GEMM с регистровыми плитками (`gemmb.comp`: плитка 128×128, 8×8 выходов на поток,
-  64 FMA на 4 чтения vec4 из shared-памяти). Внимание читает K и V как vec4. `VOX_F5_GEMM=old` возвращает GEMM из 0.14.0. Оба проверены на lavapipe
-  (звук совпадает с CPU до 4e-9). **Скорость на настоящей видеокарте ещё не измерена.** `VOX_PROFILE=gpu` показывает долю каждого шейдера.
+  64 FMA на 4 чтения vec4 из shared-памяти). Внимание читает K и V как vec4. **На настоящих картах `gemmb` оказался в 5 раз медленнее GEMM из 0.14.0 на RTX 5050
+  и в 14 раз на RTX 3050, поэтому с 0.17.1 по умолчанию снова GEMM из 0.14.0**; `VOX_F5_GEMM=new` включает `gemmb` (в 0.17.1 его циклы развёрнуты, чтобы
+  аккумуляторы оставались в регистрах; скорость после этого не замерялась). Оба проверены на lavapipe
+  (звук совпадает с CPU до 4e-9). `VOX_PROFILE=gpu` показывает долю каждого шейдера.
 - Параметры названы как в официальном коде: `nfe_step`, `cfg_strength`, `sway_sampling_coef`, `speed`, `cross_fade_duration`, `target_rms`,
   `use_epss`, `max_chars` — через `--extra` / `extra={...}`, короткие флаги CLI `--nfe --cfg --sway --speed`.
 - Отличия от официального пайплайна: китайский переводится в пиньинь посимвольно, без словаря слов; нет обрезки тишины образца (берутся первые 12 с);
@@ -364,6 +366,10 @@ flowchart LR
   (`CausalConditionalCFM` берёт его с зерном 0) тоже сохраняется, поэтому flow детерминирован, как в оригинале.
   Энкодер диктора CAM++ читается из `campplus.onnx` по узлам графа (пары Conv + BatchNorm, которые экспортёр склеил, так и остаются склеенными)
   и при конвертации сверяется с onnxruntime; токенизатор речи идёт через `s3tokenizer.utils.onnx2torch`. `--no-clone` их не берёт.
+  CAM++ усредняет контекст по сегментам из 100 кадров; последний, неполный, делится на 100 (`--campplus-pool window`, по умолчанию) — так
+  `campplus.onnx` считает onnxruntime до 1.25 включительно (официальный CosyVoice закрепляет 1.18). Новые onnxruntime делят на число кадров в сегменте
+  (`count`, так же делает PyTorch); `--campplus-pool auto` следует установленному. В 0.16.0–0.17.0 был `count`, и конвертер отказывался работать
+  с настоящей моделью; **`.tmod` CosyVoice2 пересоберите в 0.17.1**.
 - **Голос клонируется нативно**, как это делает `CosyVoiceFrontEnd`: запись (до 30 с) передискретизируется алгоритмом torchaudio, затем
   считаются mel 24 кГц (подсказка для flow), x-vector CAM++ по Kaldi fbank на 16 кГц и речевые токены S3 (S3TokenizerV2: log-mel Whisper, энкодер
   из свёрток и внимания с FSMN, FSQ). С текстом записи голос **zero-shot** (LLM подсказывают текст и речевые токены), без него

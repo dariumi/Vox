@@ -189,7 +189,7 @@ class Server:
         pcm, sr = load_wav(io.BytesIO(raw))
         xv = bool(req.get("xvector_only", False))
         text = req.get("ref_text")
-        if not xv and not text:
+        if not xv and not text and self.engine.capabilities.get("clone_icl", True):
             raise ValueError("ref_text is required unless xvector_only is true")
         v = self.engine.clone_voice((pcm, sr), None if xv else text, name=name, xvector_only=xv,
                                     **({"language": req["language"]} if req.get("language") else {}))

@@ -22,6 +22,8 @@ import struct
 import subprocess
 import sys
 import tempfile
+
+import _cleanup  # noqa: F401  (temporary folders go away on exit; VOX_KEEP_TMP=1 keeps them)
 import threading
 
 import numpy as np

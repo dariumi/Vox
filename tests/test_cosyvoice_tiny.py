@@ -21,6 +21,8 @@ import os
 import subprocess
 import sys
 import tempfile
+
+import _cleanup  # noqa: F401  (temporary folders go away on exit; VOX_KEEP_TMP=1 keeps them)
 import types
 
 import numpy as np
@@ -57,7 +59,7 @@ def main(cli):
         print("SKIP: set VOX_QWEN2_GGUF=path/to/ggml-vocab-qwen2.gguf")
         return 0
     sys.path.insert(0, os.path.join(ROOT, "python"))
-    from vox.build_cosyvoice import build
+    from vox.build_cosyvoice import build, campplus_from_onnx, campplus_numpy
     from vox.formats import read_tmod_manifest
     sys.path.remove(os.path.join(ROOT, "python"))
     for m in [m for m in sys.modules if m == "vox" or m.startswith("vox.")]:
@@ -70,7 +72,9 @@ def main(cli):
     tm = {}
     for dt in ("f32", "bf16"):
         tm[dt] = os.path.join(work, f"cosy_{dt}.tmod")
-        build(md, tm[dt], dtype=dt, flow_dtype="f32", sha=False)
+        # the official reference below runs campplus.onnx in the installed onnxruntime: follow it (the default, "window",
+        # is what onnxruntime ≤ 1.25 computes — the official CosyVoice pins 1.18)
+        build(md, tm[dt], dtype=dt, flow_dtype="f32", sha=False, campplus_pool="auto")
     failures = 0
 
     def check(ok, what):
@@ -101,6 +105,22 @@ def main(cli):
             check(rc == 0 and "PASS" in out, f"verify {name} {dt} (tol {tol}): frontend, LLM, flow, HiFT")
             if rc != 0 or (dt == "f32" and name == "zero_shot"):
                 print("\n".join("      " + l for l in out.splitlines() if "max|diff|" in l or "equal" in l or "agree" in l))
+
+    # CAM++ segment pooling: the other mode too (onnxruntime ≤ 1.25 divides the last, incomplete segment by 100, newer ones and
+    # PyTorch by the frames it holds); the reference is the converter's numpy CAM++, which reproduces onnxruntime in its mode
+    pool = read_tmod_manifest(tm["f32"])["cosyvoice"].get("campplus_pool")
+    other = "count" if pool == "window" else "window"
+    tm_o = os.path.join(work, "cosy_pool.tmod")
+    build(md, tm_o, dtype="f32", flow_dtype="f32", sha=False, campplus_pool=other)
+    dz = dict(d0)
+    dz["xvec"] = campplus_numpy(campplus_from_onnx(os.path.join(md, "campplus.onnx")), d0["fbank"].reshape(-1, 80), other)
+    dump_o = os.path.join(work, "dump_pool.safetensors")
+    save_file(dz, dump_o)
+    rc, out = run([cli, "verify", "--model", tm_o, "--dump", dump_o, "--device", "cpu", "--tol", "1e-4"])
+    line = next((l for l in out.splitlines() if "x-vector" in l), "")
+    rel = float(np.max(np.abs(dz["xvec"] - d0["xvec"])) / np.max(np.abs(d0["xvec"])))
+    check(line.rstrip().endswith("ok") and rel > 1e-3,
+          f"CAM++ pooling: .tmod follows onnxruntime ('{pool}'); '{other}' also matches its numpy reference ({line.split('rel')[-1].split()[0] if 'rel' in line else line.strip()}; the modes differ by {rel:.1e})")
 
     # 3. whole utterances through the engine with the official tokens and noise
     cases = {}

@@ -190,6 +190,7 @@ def build(model_dir: str, out: str, dtype: str = "bf16", flow_dtype: str = "f32"
             for k, v in campplus_from_torch(camp).items():
                 front["camp." + k] = v
             cv["campplus"] = True
+            cv["campplus_pool"] = "count"   # S3Gen runs CAMPPlus in PyTorch: avg_pool1d divides by the frames it holds
         tok = {k[len("tokenizer."):]: v for k, v in S.items() if k.startswith("tokenizer.") and not k.endswith(("_mel_filters", "window"))}
         if tok:
             for k, v in tok.items():

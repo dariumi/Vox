@@ -104,6 +104,7 @@ struct CamDense {   // CAMDenseTDNNLayer
         l1.load(f, p + "cam_layer.linear1", 1, 0);
         l2.load(f, p + "cam_layer.linear2", 1, 0);
     }
+    bool pool_window = false;
     std::vector<float> forward(const std::vector<float> &x, int T) const {   // x [T][cin] → [T][32]
         std::vector<float> a = x, b, y;
         bn_apply(a, lin1.cin, n1, true);
@@ -124,7 +125,7 @@ struct CamDense {   // CAMDenseTDNNLayer
             for (int c = 0; c < C; ++c) {
                 double acc = 0;
                 for (int t = t0; t < t1; ++t) acc += b[size_t(t) * C + c];
-                seg[size_t(s) * C + c] = float(acc / (t1 - t0));
+                seg[size_t(s) * C + c] = float(acc / (pool_window ? 100 : t1 - t0));
             }
         }
         std::vector<float> ctx(size_t(T) * C);
@@ -195,6 +196,7 @@ void CosyVoiceModel::load_front() {
             for (int i = 0; i < layers[b]; ++i) {
                 CamDense d;
                 d.load(f, p + "xvector.block" + std::to_string(b + 1) + ".tdnnd" + std::to_string(i + 1) + ".", dils[b]);
+                d.pool_window = cfg_.campplus_pool_window;
                 blk.push_back(std::move(d));
             }
             F.blocks.push_back(std::move(blk));

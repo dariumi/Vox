@@ -20,7 +20,7 @@
 using namespace vox;
 
 #ifndef VOX_VERSION_STRING
-#define VOX_VERSION_STRING "0.17.0"
+#define VOX_VERSION_STRING "0.17.1"
 #endif
 
 extern std::string vox_internal_last_error();
@@ -904,8 +904,19 @@ VOX_API vox_status vox_voice_create(vox_engine *e, const float *pcm, size_t n, u
         if (mode == VOX_VOICE_SPEAKER) fail(VOX_ERR_ARG, "use vox_voice_from_speaker for speaker/instruction voices");
         if (!e->caps.clone_icl && !e->caps.clone_xvector)
             fail(VOX_ERR_UNSUPPORTED, "this model cannot clone voices from a recording (no speaker encoder: CustomVoice/VoiceDesign type, or rebuild the .tmod from a Base checkpoint)");
+        // the mode follows what the model can do: a model that clones only without a transcript (Chatterbox) takes the
+        // recording alone, whatever was asked; one that clones only with it needs the text
+        if (mode == VOX_VOICE_ICL && !e->caps.clone_icl) mode = VOX_VOICE_XVECTOR_ONLY;
+        if (mode == VOX_VOICE_XVECTOR_ONLY && !e->caps.clone_xvector) {
+            if (text.empty())
+                fail(VOX_ERR_ARG, "this model clones a voice only from a recording and its transcript: give the text of the recording "
+                                  "(vox voice create --text …; Python: clone_voice(audio, ref_text))");
+            mode = VOX_VOICE_ICL;
+        }
         if (mode == VOX_VOICE_ICL && text.empty())
-            fail(VOX_ERR_ARG, "ref_text is required in ICL mode (or use VOX_VOICE_XVECTOR_ONLY)");
+            fail(VOX_ERR_ARG, "the text of the recording is needed to clone in the full (ICL) mode: give it (vox voice create --text …; "
+                              "Python: clone_voice(audio, ref_text)) or clone from the voice alone, without the text "
+                              "(vox voice create --xvector-only; Python: xvector_only=True; C: the mode VOX_VOICE_XVECTOR_ONLY)");
         PoolScope scope(e->pool.get());
         VoiceData v;
         fill_voice(*e->backend, e->tmod->manifest(), pcm, n, sr, text, mode, v);

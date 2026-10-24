@@ -99,8 +99,9 @@ void gemm(int mat, VkBuffer X, VkBuffer Y, uint32_t T, uint32_t flags) {
     const GpuMat &gm = g.mats[size_t(mat)];
     if (gm.b) flags |= 1u;
     const VkBuffer b[6] = {gm.w, gm.s ? gm.s : kNone, gm.b ? gm.b : kNone, X, Y, kNone};
-    // many rows: the register-blocked 128×128 GEMM (gemmb.comp); VOX_F5_GEMM=old keeps the 64×64 convgemm tile everywhere
-    static const bool big_ok = [] { const char *e = std::getenv("VOX_F5_GEMM"); return !(e && std::strcmp(e, "old") == 0); }();
+    // The register-blocked 128×128 GEMM (gemmb.comp) only with VOX_F5_GEMM=new: on real NVIDIA cards (RTX 5050 / 3050) it was
+    // 5–14× slower than the 64×64 convgemm tile (0.14.1–0.17.0), so convgemm is the default again until it is measured faster.
+    static const bool big_ok = [] { const char *e = std::getenv("VOX_F5_GEMM"); return e && std::strcmp(e, "new") == 0; }();
     if (big_ok && T >= 64 && gm.cols % 8 == 0 && int(gm.type) <= 3 && !((flags & 4u) && gm.s)) {
         const uint32_t pc[5] = {T, uint32_t(gm.rows), uint32_t(gm.cols), flags, uint32_t(gm.rows)};
         disp(P_GEMMB + int(gm.type), b, pc, 5, (T + 127) / 128, uint32_t((gm.rows + 127) / 128));

@@ -1,5 +1,6 @@
 """Python-API со стримингом и HTTP-сервер на крошечной модели. Нужен vocab gguf Qwen2 (VOX_QWEN2_GGUF), иначе SKIP."""
 import json, os, subprocess, sys, tempfile, threading, time, urllib.request, numpy as np
+import _cleanup  # noqa: F401  (temporary folders go away on exit; VOX_KEEP_TMP=1 keeps them)
 HERE = os.path.dirname(os.path.abspath(__file__)); ROOT = os.path.join(HERE, "..")
 sys.path.insert(0, HERE)
 import vox

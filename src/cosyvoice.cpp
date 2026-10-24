@@ -349,6 +349,7 @@ void load_cfg(const json &c, CosyCfg &g) {
         g.s3_layers = s.value("n_audio_layer", g.s3_layers); g.s3_mels = s.value("n_mels", g.s3_mels);
     }
     g.has_campplus = c.value("campplus", false);
+    g.campplus_pool_window = c.value("campplus_pool", std::string("count")) == "window";
     if (c.contains("flow")) g.dt_diff = c.at("flow").value("dt", std::string("accumulate")) == "diff";
     if (c.contains("hift")) g.sinegen = c.at("hift").value("sinegen", 2);
     (void)gf;

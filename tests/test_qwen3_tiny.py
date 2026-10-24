@@ -2,6 +2,7 @@
 numpy-реализации (tools/ref_numpy.py). Запуск: python tests/test_qwen3_tiny.py [build/vox]
 Нужны: numpy, tokenizers, regex и vocab-only gguf Qwen2 (llama.cpp/models/ggml-vocab-qwen2.gguf)."""
 import os, subprocess, sys, tempfile
+import _cleanup  # noqa: F401  (temporary folders go away on exit; VOX_KEEP_TMP=1 keeps them)
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))

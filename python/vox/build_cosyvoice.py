@@ -197,8 +197,10 @@ def campplus_from_onnx(path: str) -> Dict[str, np.ndarray]:
     return out
 
 
-def campplus_numpy(W: Dict[str, np.ndarray], fb: np.ndarray) -> np.ndarray:
-    """CAM++ forward in numpy on the converted weights (fb [T][80]) — the conversion's self-check against onnxruntime."""
+def campplus_numpy(W: Dict[str, np.ndarray], fb: np.ndarray, pool: str = "window") -> np.ndarray:
+    """CAM++ forward in numpy on the converted weights (fb [T][80]) — the conversion's self-check against onnxruntime.
+    pool: how the last, incomplete 100-frame segment of the context pooling is averaged — "window" divides by 100
+    (what the shipped campplus.onnx does in onnxruntime), "count" by the frames it holds (PyTorch's avg_pool1d)."""
     def bn(x, n, relu):   # x [C, ...]
         sh = (-1,) + (1,) * (x.ndim - 1)
         y = x * W[n + ".scale"].reshape(sh) + W[n + ".shift"].reshape(sh)
@@ -253,7 +255,8 @@ def campplus_numpy(W: Dict[str, np.ndarray], fb: np.ndarray) -> np.ndarray:
             h = bn(h, p + "nonlinear2.batchnorm", True)
             y = conv1(h, p + "cam_layer.linear_local", 1, d, d)
             T = h.shape[1]
-            seg = np.stack([h[:, s: s + 100].mean(1) for s in range(0, T, 100)], 1)
+            seg = np.stack([h[:, s: s + 100].sum(1) / (100 if pool == "window" else h[:, s: s + 100].shape[1])
+                            for s in range(0, T, 100)], 1)
             ctx = h.mean(1, keepdims=True) + np.repeat(seg, 100, axis=1)[:, :T]
             m = 1 / (1 + np.exp(-conv1(np.maximum(conv1(ctx, p + "cam_layer.linear1"), 0), p + "cam_layer.linear2")))
             x = np.concatenate([x, y * m], 0)
@@ -264,22 +267,26 @@ def campplus_numpy(W: Dict[str, np.ndarray], fb: np.ndarray) -> np.ndarray:
     return e[:, 0].astype(np.float32)
 
 
-def check_campplus(path: str, W: Dict[str, np.ndarray]) -> str:
+def check_campplus(path: str, W: Dict[str, np.ndarray]) -> Tuple[str, str]:
+    """(segment pooling mode with which the converted CAM++ reproduces the installed onnxruntime — "window", "count",
+    or "" without onnxruntime, note). Fails when neither mode reproduces it (the weights were walked out wrongly)."""
     try:
         import onnxruntime
     except ImportError:
-        return "not checked (onnxruntime missing)"
+        return "", "not checked (onnxruntime missing)"
     rng = np.random.RandomState(0)
     fb = rng.randn(230, 80).astype(np.float32)
     so = onnxruntime.SessionOptions()
     so.intra_op_num_threads = 1
     sess = onnxruntime.InferenceSession(path, sess_options=so, providers=["CPUExecutionProvider"])
     ref = sess.run(None, {sess.get_inputs()[0].name: fb[None]})[0].reshape(-1)
-    mine = campplus_numpy(W, fb)
-    err = float(np.max(np.abs(ref - mine)) / (np.max(np.abs(ref)) + 1e-9))
-    if not err < 1e-3:
-        raise SystemExit(f"{path}: the converted CAM++ does not reproduce onnxruntime (relative error {err:.2e})")
-    return f"matches onnxruntime (rel {err:.1e})"
+    errs = {}
+    for pool in ("window", "count"):   # 230 frames → 115 after the head: the last segment is incomplete, the two modes differ
+        mine = campplus_numpy(W, fb, pool)
+        errs[pool] = float(np.max(np.abs(ref - mine)) / (np.max(np.abs(ref)) + 1e-9))
+        if errs[pool] < 1e-3:
+            return pool, f"matches onnxruntime {onnxruntime.__version__} (rel {errs[pool]:.1e}, segment pooling: {pool})"
+    raise SystemExit(f"{path}: the converted CAM++ does not reproduce onnxruntime (relative error {min(errs.values()):.2e})")
 
 
 # ---------------------------------------------------------------- S3 tokenizer
@@ -398,7 +405,7 @@ def tokenizer_blobs(d: Path):
 
 # ---------------------------------------------------------------- build
 def build(model_dir: str, out: str, dtype: str = "bf16", flow_dtype: str = "f32", clone: bool = True, variant: str = "",
-          sha: bool = True, quant: str = ""):
+          sha: bool = True, quant: str = "", campplus_pool: str = "window"):
     import torch
     md = Path(model_dir)
     y = load_yaml(str(next(iter(sorted(md.glob("cosyvoice2*.yaml"))), md / "cosyvoice2.yaml")))
@@ -499,7 +506,13 @@ def build(model_dir: str, out: str, dtype: str = "bf16", flow_dtype: str = "f32"
         camp_p = md / "campplus.onnx"
         if camp_p.exists():
             CW = campplus_from_onnx(str(camp_p))
-            notes.append("CAM++ " + check_campplus(str(camp_p), CW))
+            ort_pool, note = check_campplus(str(camp_p), CW)
+            notes.append("CAM++ " + note)
+            pool = (ort_pool or "window") if campplus_pool == "auto" else campplus_pool
+            if ort_pool and ort_pool != pool:
+                notes.append(f"CAM++: the installed onnxruntime averages the last context segment by '{ort_pool}', the .tmod "
+                             f"uses '{pool}' (--campplus-pool)")
+            cv["campplus_pool"] = pool
             for k, v in CW.items():
                 front["camp." + k] = v.astype(np.float32)
             cv["campplus"] = True
@@ -545,9 +558,14 @@ def main(argv=None):
     ap.add_argument("--no-clone", action="store_true")
     ap.add_argument("--variant", default="")
     ap.add_argument("--no-hash", action="store_true")
+    ap.add_argument("--campplus-pool", default="window", choices=["window", "count", "auto"],
+                    help="how CAM++ averages the last, incomplete 100-frame context segment: window = sum / 100, as campplus.onnx "
+                         "runs in the onnxruntime the official CosyVoice pins (1.18; every release up to 1.25 does the same); "
+                         "count = the mean of the frames it holds (PyTorch, newer onnxruntime); auto = as the installed onnxruntime")
     ap.add_argument("-o", "--out", required=True)
     a = ap.parse_args(argv)
-    build(a.model, a.out, a.dtype, a.flow_dtype, not a.no_clone, a.variant, sha=not a.no_hash, quant=a.quant)
+    build(a.model, a.out, a.dtype, a.flow_dtype, not a.no_clone, a.variant, sha=not a.no_hash, quant=a.quant,
+          campplus_pool=a.campplus_pool)
 
 
 if __name__ == "__main__":
