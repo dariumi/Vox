@@ -231,11 +231,11 @@ class CosyBackend final : public Backend {
 public:
     CosyBackend(std::shared_ptr<TmodFile> f, const ResourcePlan &plan) : file_(f), model_(f), tok_(Tokenizer::from_tmod(*f)) {
         if (plan.uses_gpu() && plan.place_of("flow") == Place::Gpu) {
-            gpu_ = model_.enable_gpu();
+            gpu_ = model_.enable_gpu(plan.release_host_weights);
             if (!gpu_ && plan.strict) fail(VOX_ERR_DEVICE, "GPU strict mode: the flow estimator did not go to the GPU (" + gpu_stats().last_error + ")");
         }
         if (plan.uses_gpu() && plan.place_of("llm") == Place::Gpu && model_.cfg().has_llm) {
-            gpu_llm_ = model_.enable_gpu_llm();
+            gpu_llm_ = model_.enable_gpu_llm(plan.release_host_weights);
             if (!gpu_llm_ && plan.strict) fail(VOX_ERR_DEVICE, "GPU strict mode: the LLM did not go to the GPU (" + gpu_stats().last_error + ")");
         }
         info_.sample_rate = model_.cfg().sample_rate;

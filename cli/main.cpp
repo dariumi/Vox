@@ -12,8 +12,12 @@
 #include <cstdio>
 #include <iostream>
 #include <map>
+#include <sstream>
 #include <string>
 #include <vector>
+#if !defined(_WIN32)
+#  include <unistd.h>
+#endif
 
 #include "../src/backend.hpp"
 #include "../src/formats.hpp"
@@ -43,7 +47,8 @@ struct Args {
 };
 
 // Флаги без значения; всё остальное в виде --key value.
-const char *kFlags[] = {"--no-argmax", "--xvector-only", "--stream", "--stdin", "--float", "--help", "-h", "--strict", "--json", "--no-release", "--default"};
+const char *kFlags[] = {"--no-argmax", "--xvector-only", "--stream", "--stdin", "--float", "--help", "-h", "--strict", "--json", "--no-release", "--default",
+                        "--show", "--forget", "--dry-run"};
 
 Args parse(int argc, char **argv, int from) {
     Args a;
@@ -90,6 +95,8 @@ void usage() {
         "                                                   (текст из stdin на лету → звук на лету; двусторонний стриминг)\n"
         "  vox tokenize --model M.tmod   (JSON-строки из stdin → id токенов)\n"
         "  vox bench --model M.tmod --voice V.tvoice [--text T] [--runs 5]\n"
+        "  vox tune --model M.tmod [--voice V.tvoice | --speaker S] [--goal speed|latency] [--text T] [--runs 2] [--show | --forget]\n"
+        "                (замерить устройства и размещение стадий на этом компьютере; потом \"auto\" открывает модель так, как быстрее)\n"
         "  vox make-test-model -o test.tmod   (модель тестового бэкенда для разработки)\n\n"
         "ресурсы: --device auto|cpu|gpu[:N]|vulkan[:N][,codec=cpu][,strict]  --mode speed|balanced|memory|background\n"
         "         --threads N  --affinity 0-3,6  --priority low|normal|idle|<nice>  --ram-limit 6GiB  --vram-limit 3GiB\n"
@@ -922,6 +929,129 @@ int cmd_verify(const Args &a) {
     return ok ? 0 : 1;
 }
 
+// ---- vox tune: measure the candidate configurations of a model on this computer, keep the fastest ----
+std::string self_exe(const char *argv0) {
+#if defined(__linux__)
+    char buf[4096];
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n > 0) return std::string(buf, size_t(n));
+#endif
+    return argv0;
+}
+std::string shq(const std::string &s) {
+#if defined(_WIN32)
+    return "\"" + s + "\"";
+#else
+    std::string q = "'";
+    for (char c : s) q += (c == '\'') ? std::string("'\\''") : std::string(1, c);
+    return q + "'";
+#endif
+}
+const char *g_argv0 = "vox";
+
+int cmd_tune(const Args &a) {
+    if (!a.has("--model")) die("--model is required");
+    const std::string model = a.get("--model");
+    if (a.has("--forget")) {
+        check(vox_tune_forget(model.c_str()), "forget");
+        std::fprintf(stderr, "the tuning of %s on this computer is forgotten\n", model.c_str());
+        return 0;
+    }
+    const vox::json info = vox::json::parse(fetch([&](char *b, size_t c, size_t *l) { return vox_tune_info(model.c_str(), b, c, l); }, "tune info"));
+    if (a.has("--show")) { std::cout << info.dump(1) << "\n"; return 0; }
+    const vox::json insp = vox::json::parse(fetch([&](char *b, size_t c, size_t *l) { return vox_model_inspect(model.c_str(), b, c, l); }, "inspect"));
+    const vox::json caps = insp.value("capabilities", vox::json::object());
+    // the voice every candidate speaks with
+    std::string vargs;
+    if (a.has("--voice")) vargs = " --voice " + shq(a.get("--voice"));
+    else if (a.has("--speaker")) vargs = " --speaker " + shq(a.get("--speaker"));
+    else if (caps.value("named_speakers", false) && caps.contains("speakers") && !caps["speakers"].empty())
+        vargs = " --speaker " + shq(caps["speakers"][0].get<std::string>());
+    else if (caps.value("requires_instruct", false)) vargs = " --instruct " + shq("A calm, clear adult voice.");
+    else die("this model speaks with a cloned voice: give one with --voice V.tvoice (vox voice create …)");
+    if (a.has("--instruct") && !a.has("--voice")) vargs += " --instruct " + shq(a.get("--instruct"));
+    std::string text = a.get("--text", "");
+    if (text.empty()) {
+        const vox::json langs = caps.value("languages", vox::json::array());
+        auto has = [&](const char *l) { for (const auto &x : langs) if (x.is_string() && x.get<std::string>().rfind(l, 0) == 0) return true; return false; };
+        if (!langs.empty() && !has("en") && !has("auto") && has("zh")) text = "今天天气很好，我们一起去公园散步吧。这是一个测试，看看这台电脑说话有多快。";
+        else if (!langs.empty() && !has("en") && !has("auto") && has("ru")) text = "Привет! Это короткая проверка движка. Она показывает, как быстро этот компьютер говорит.";
+        else text = "Hello! This is a short test of the speech engine. It shows how fast this computer can speak, one sentence after another.";
+    }
+    const std::string goal = a.get("--goal", "speed");
+    if (goal != "speed" && goal != "latency") die("--goal is speed (the lowest RTF) or latency (the earliest first sound)");
+    const int runs = std::max(1, std::stoi(a.get("--runs", "2")));
+    const std::string exe = self_exe(g_argv0);
+    const vox::json cands = info.value("candidates", vox::json::array());
+    std::fprintf(stderr, "tuning %s: %zu configuration(s), %d run(s) each, goal: %s\n", model.c_str(), cands.size(), runs, goal.c_str());
+    vox::json results = vox::json::array();
+    int best = -1;
+    double best_score = 1e300;
+    for (size_t i = 0; i < cands.size(); ++i) {
+        const std::string dev = cands[i].value("device", "cpu"), label = cands[i].value("label", dev);
+        vox::json r = {{"label", label}, {"device", dev}};
+        if (a.has("--dry-run")) { results.push_back(r); continue; }
+        std::fprintf(stderr, "  [%zu/%zu] %-44s ", i + 1, cands.size(), label.c_str());
+        std::fflush(stderr);
+        const std::string cmd = shq(exe) + " bench --model " + shq(model) + " --device " + shq(dev + ",strict") + vargs + " --text " + shq(text) +
+                                " --runs " + std::to_string(runs) + " 2>&1";
+#if defined(_WIN32)
+        FILE *pp = _popen(cmd.c_str(), "r");
+#else
+        FILE *pp = popen(cmd.c_str(), "r");
+#endif
+        std::string outp;
+        if (pp) {
+            char buf[4096];
+            size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, pp)) > 0) outp.append(buf, n);
+#if defined(_WIN32)
+            _pclose(pp);
+#else
+            pclose(pp);
+#endif
+        }
+        vox::json bj;
+        std::istringstream ls(outp);
+        for (std::string line; std::getline(ls, line);)
+            if (!line.empty() && line[0] == '{') try { bj = vox::json::parse(line); } catch (const std::exception &) {}
+        if (!bj.is_object()) {
+            std::string why = outp.substr(outp.size() > 300 ? outp.size() - 300 : 0);
+            for (char &c : why) if (c == '\n') c = ' ';
+            r["error"] = why;
+            std::fprintf(stderr, "failed: %s\n", why.c_str());
+            results.push_back(r);
+            continue;
+        }
+        const vox::json &w = bj.contains("warm") ? bj["warm"] : bj["cold"];
+        r["rtf"] = w.value("rtf", 0.0);
+        r["first_chunk_ms"] = w.value("first_chunk_ms", 0.0);
+        r["peak_rss_mb"] = bj.value("peak_rss_mb", 0.0);
+        const vox::json be = bj.value("stats", vox::json::object()).value("backend", vox::json::object());
+        if (be.contains("gemm") && be["gemm"].is_string() && !be["gemm"].get<std::string>().empty()) {
+            std::string gm = be["gemm"].get<std::string>();
+            r["gemm"] = gm.substr(0, gm.find(' '));
+        }
+        r["backend"] = bj.value("backend", "");
+        const double score = goal == "speed" ? r["rtf"].get<double>() : r["first_chunk_ms"].get<double>();
+        std::fprintf(stderr, "RTF %.3f, first sound %.0f ms\n", r["rtf"].get<double>(), r["first_chunk_ms"].get<double>());
+        if (score > 0 && score < best_score) { best_score = score; best = int(results.size()); }
+        results.push_back(r);
+    }
+    if (a.has("--dry-run")) { std::cout << results.dump(1) << "\n"; return 0; }
+    if (best < 0) die("no configuration worked; nothing saved");
+    const vox::json &b = results[size_t(best)];
+    vox::json entry = {{"device", b["device"]}, {"goal", goal}, {"rtf", b["rtf"]}, {"first_chunk_ms", b["first_chunk_ms"]}, {"label", b["label"]},
+                       {"candidates", results}, {"text_chars", text.size()}};
+    if (b.contains("gemm")) entry["gemm"] = b["gemm"];
+    check(vox_tune_save(model.c_str(), entry.dump().c_str()), "save");
+    std::fprintf(stderr, "best: %s (RTF %.3f, first sound %.0f ms); saved to %s\n", b["label"].get<std::string>().c_str(), b["rtf"].get<double>(),
+                 b["first_chunk_ms"].get<double>(), info.value("cache", "").c_str());
+    std::fprintf(stderr, "engines opened with the default resources (device auto) now use it; VOX_TUNE=0 or --device … overrides\n");
+    std::cout << entry.dump() << "\n";
+    return 0;
+}
+
 int cmd_make_test_model(const Args &a) {
     const std::string out = a.get("-o", "test.tmod");
     vox::write_test_model(out);
@@ -946,6 +1076,7 @@ int main(int argc, char **argv) {
         if (cmd == "say") return cmd_say(a);
         if (cmd == "live") return cmd_live(a);
         if (cmd == "bench") return cmd_bench(a);
+        if (cmd == "tune") { g_argv0 = argv[0]; return cmd_tune(a); }
         if (cmd == "tokenize") return cmd_tokenize(a);
         if (cmd == "phonemize") return cmd_phonemize(a);
         if (cmd == "verify") return cmd_verify(a);

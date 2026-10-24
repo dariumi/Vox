@@ -5,7 +5,7 @@ layout(std430, set = 0, binding = 0) readonly buffer KB { float kc[]; };
 layout(std430, set = 0, binding = 1) readonly buffer VB { float vc[]; };
 layout(std430, set = 0, binding = 3) readonly buffer QB { float q[]; };
 layout(std430, set = 0, binding = 4) writeonly buffer OB { float o[]; };
-layout(push_constant) uniform PC { uint heads; uint kv_heads; uint hd; uint m; uint pos0; uint scale_bits; uint kd; } pc;
+layout(push_constant) uniform PC { uint heads; uint kv_heads; uint hd; uint m; uint pos0; uint scale_bits; uint kd; uint row0; } pc;   // q / o rows row0 + i
 shared float sc[3072];
 shared float qv[128];
 shared float red[128];
@@ -14,7 +14,7 @@ void main() {
     const uint n = pc.pos0 + i + 1u;
     const uint g = h / (pc.heads / pc.kv_heads);
     const float scale = uintBitsToFloat(pc.scale_bits);
-    const uint qb = (i * pc.heads + h) * pc.hd;
+    const uint qb = ((pc.row0 + i) * pc.heads + h) * pc.hd;
     for (uint e = t; e < pc.hd; e += 128u) qv[e] = q[qb + e];
     barrier();
     float mx = -3.0e38;

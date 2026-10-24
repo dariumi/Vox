@@ -675,8 +675,8 @@ void rec_layers(const GpuXfmr &X, GpuSeq &S, int64_t pos, int64_t mc, VkBuffer c
         rec_mm(L.qkv, g.sxn, g.su, mc, false);
         {
             const VkBuffer b[6] = {S.k[size_t(li)], S.v[size_t(li)], kNoBuf, g.su, g.sq, kNoBuf};
-            const uint32_t pc[4] = {uint32_t(mc), uint32_t(qd), uint32_t(kd), uint32_t(pos)};
-            disp(P_QKV, b, pc, 4, uint32_t((mc * (qd + 2 * kd) + 255) / 256), 1);
+            const uint32_t pc[5] = {uint32_t(mc), uint32_t(qd), uint32_t(kd), uint32_t(pos), 0u};
+            disp(P_QKV, b, pc, 5, uint32_t((mc * (qd + 2 * kd) + 255) / 256), 1);
         }
         {
             const VkBuffer bq[6] = {X.norms, csbuf, kNoBuf, g.sq, kNoBuf, kNoBuf};
@@ -689,8 +689,8 @@ void rec_layers(const GpuXfmr &X, GpuSeq &S, int64_t pos, int64_t mc, VkBuffer c
         }
         {
             const VkBuffer ba[6] = {S.k[size_t(li)], S.v[size_t(li)], kNoBuf, g.sq, g.sao, kNoBuf};
-            const uint32_t pa[7] = {uint32_t(X.heads), uint32_t(X.kv), uint32_t(X.hd), uint32_t(mc), uint32_t(pos), fbits(scale), uint32_t(kd)};
-            disp(P_ATTN, ba, pa, 7, uint32_t(X.heads), uint32_t(mc));
+            const uint32_t pa[8] = {uint32_t(X.heads), uint32_t(X.kv), uint32_t(X.hd), uint32_t(mc), uint32_t(pos), fbits(scale), uint32_t(kd), 0u};
+            disp(P_ATTN, ba, pa, 8, uint32_t(X.heads), uint32_t(mc));
         }
         rec_mm(L.o, g.sao, g.sh, mc, true);
         rec_rms(X, L.ln2, g.sh, 0, g.sxn, mc);
@@ -701,6 +701,49 @@ void rec_layers(const GpuXfmr &X, GpuSeq &S, int64_t pos, int64_t mc, VkBuffer c
             disp(P_SWIGLU, bs, ps, 2, uint32_t((mc * X.I + 255) / 256), 1);
         }
         rec_mm(L.down, g.sg, g.sh, mc, true);
+    }
+}
+
+// One token of each of two sequences at the same position (classifier-free guidance: the conditional and the unconditional
+// pass): row s of every activation belongs to sequence s. The matrices are read once for both rows (m = 2); the KV writes,
+// the RoPE of K and the attention run per sequence on its own cache. The RoPE table holds the position twice (rows 0, 1).
+void rec_layers_pair(const GpuXfmr &X, GpuSeq &S0, GpuSeq &S1, int64_t pos, VkBuffer csbuf) {
+    const int64_t qd = int64_t(X.heads) * X.hd, kd = int64_t(X.kv) * X.hd;
+    const float scale = 1.0f / std::sqrt(float(X.hd));
+    GpuSeq *Ss[2] = {&S0, &S1};
+    for (int li = 0; li < X.layers; ++li) {
+        const GpuXfmr::L &L = X.L_[size_t(li)];
+        rec_rms(X, L.ln1, g.sh, 0, g.sxn, 2);
+        rec_mm(L.qkv, g.sxn, g.su, 2, false);
+        for (uint32_t s = 0; s < 2; ++s) {
+            const VkBuffer b[6] = {Ss[s]->k[size_t(li)], Ss[s]->v[size_t(li)], kNoBuf, g.su, g.sq, kNoBuf};
+            const uint32_t pc[5] = {1u, uint32_t(qd), uint32_t(kd), uint32_t(pos), s};
+            disp(P_QKV, b, pc, 5, uint32_t((qd + 2 * kd + 255) / 256), 1);
+        }
+        {
+            const VkBuffer bq[6] = {X.norms, csbuf, kNoBuf, g.sq, kNoBuf, kNoBuf};
+            const uint32_t pq[8] = {uint32_t(X.heads), uint32_t(X.hd), 2u, L.qk ? 1u : 0u, fbits(X.eps), 0u, uint32_t(L.qn), 0u};
+            disp(P_ROPE, bq, pq, 8, uint32_t(X.heads), 2u);
+            for (uint32_t s = 0; s < 2; ++s) {
+                const VkBuffer bk[6] = {X.norms, csbuf, kNoBuf, Ss[s]->k[size_t(li)], kNoBuf, kNoBuf};
+                const uint32_t pk[8] = {uint32_t(X.kv), uint32_t(X.hd), 1u, L.qk ? 1u : 0u, fbits(X.eps), uint32_t(pos * kd), uint32_t(L.kn), 0u};
+                disp(P_ROPE, bk, pk, 8, uint32_t(X.kv), 1u);
+            }
+        }
+        for (uint32_t s = 0; s < 2; ++s) {
+            const VkBuffer ba[6] = {Ss[s]->k[size_t(li)], Ss[s]->v[size_t(li)], kNoBuf, g.sq, g.sao, kNoBuf};
+            const uint32_t pa[8] = {uint32_t(X.heads), uint32_t(X.kv), uint32_t(X.hd), 1u, uint32_t(pos), fbits(scale), uint32_t(kd), s};
+            disp(P_ATTN, ba, pa, 8, uint32_t(X.heads), 1u);
+        }
+        rec_mm(L.o, g.sao, g.sh, 2, true);
+        rec_rms(X, L.ln2, g.sh, 0, g.sxn, 2);
+        rec_mm(L.gu, g.sxn, g.su, 2, false);
+        {
+            const VkBuffer bs[6] = {kNoBuf, kNoBuf, kNoBuf, g.su, g.sg, kNoBuf};
+            const uint32_t ps[2] = {2u, uint32_t(X.I)};
+            disp(P_SWIGLU, bs, ps, 2, uint32_t((2 * X.I + 255) / 256), 1);
+        }
+        rec_mm(L.down, g.sg, g.sh, 2, true);
     }
 }
 
@@ -866,6 +909,48 @@ bool gpu_xfmr_forward_hidden(const TransformerW &w, int seq, int64_t pos0, const
         return true;
     } catch (const std::exception &e) {
         std::fprintf(stderr, "vox: GPU transformer failed: %s\n", e.what());
+        return false;
+    }
+}
+
+bool gpu_xfmr_forward_pair(const TransformerW &w, int seq0, int seq1, int64_t pos, const float *x2, const Mat *head, float *out2,
+                           float *head_out2) {
+    std::lock_guard<std::mutex> lk(g.mu);
+    if (!g.ok || w.gpu_id < 0 || size_t(w.gpu_id) >= g.xf.size() || seq0 < 0 || seq1 < 0 || size_t(seq0) >= g.seqs.size() ||
+        size_t(seq1) >= g.seqs.size() || seq0 == seq1)
+        return false;
+    if (head && head->gpu < 0) return false;
+    try {
+        const GpuXfmr &X = g.xf[size_t(w.gpu_id)];
+        GpuSeq &S0 = g.seqs[size_t(seq0)], &S1 = g.seqs[size_t(seq1)];
+        const int64_t H = X.H, half = X.hd / 2;
+        if (pos + 1 > S0.cap || pos + 1 > S1.cap) throw std::runtime_error("context exceeds GPU KV capacity");
+        ensure_scratch(X);
+        prof_stage(X.name.c_str());
+        std::memcpy(g.xp, x2, size_t(2 * H) * 4);
+        for (int64_t i = 0; i < 2; ++i)
+            for (int64_t p = 0; p < half; ++p) {
+                const float f = X.inv_freq[size_t(p)] * float(pos);
+                g.csp[(i * half + p) * 2] = std::cos(f);
+                g.csp[(i * half + p) * 2 + 1] = std::sin(f);
+            }
+        VKC(vkResetDescriptorPool(g.dev, g.dyn, 0));
+        begin_cmd();
+        VkBufferCopy bc{0, 0, VkDeviceSize(2 * H * 4)};
+        vkCmdCopyBuffer(g.cmd, g.xb, g.sh, 1, &bc);
+        barrier_cc();
+        rec_layers_pair(X, S0, S1, pos, g.csb);
+        rec_rms(X, X.final_off, g.sh, 0, g.yb, 2);   // both rows normed: yb[0 .. 2H)
+        const int64_t V = head ? g.mats[size_t(head->gpu)].rows : 0;
+        if (head) rec_mm(head->gpu, g.yb, g.yb, 2, false, 2 * H);   // logits of both rows: yb[2H .. 2H + 2V)
+        host_barrier();
+        VKC(vkEndCommandBuffer(g.cmd));
+        submit_wait(g.cmd);
+        if (out2) std::memcpy(out2, g.yp, size_t(2 * H) * 4);
+        if (head && head_out2) std::memcpy(head_out2, g.yp + 2 * H, size_t(2 * V) * 4);
+        return true;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "vox: GPU transformer (pair) failed: %s\n", e.what());
         return false;
     }
 }

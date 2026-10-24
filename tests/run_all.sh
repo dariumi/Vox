@@ -24,6 +24,7 @@ python3 tests/test_kokoro_tiny.py build/vox   # Kokoro против официа
 VOX_TEST_DEVICES="$F5_DEVICES" python3 tests/test_cosyvoice_tiny.py build/vox   # CosyVoice2 против официального кода (нужен клон CosyVoice в VOX_COSYVOICE_SRC; иначе SKIP)
 VOX_TEST_DEVICES="$F5_DEVICES" python3 tests/test_chatterbox_tiny.py build/vox  # Chatterbox против chatterbox-tts (если установлен; иначе SKIP)
 python3 tests/test_library.py
+VOX_TUNE_SOFTWARE=1 python3 tests/test_tune.py build/vox   # vox tune: замер конфигураций, кэш, движок с замеренной конфигурацией
 python3 tests/test_examples.py build/vox   # примеры на C, C++, Rust, Go, Node.js, Python ctypes: звук = звуку CLI до бита (нет инструментов — SKIP)
 VOX_WEB_FULL="${VOX_WEB_FULL:-}" python3 tests/test_web.py build/vox   # vox.js в Chromium (WebGPU) против эталона f5_tts (нужны playwright + chromium, torch, f5-tts; иначе SKIP)
 python3 tests/test_web_convert.py   # загрузка и конвертация F5 в браузере против мок-HF (нужны node, torch, safetensors; иначе SKIP)

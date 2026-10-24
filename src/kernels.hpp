@@ -94,6 +94,10 @@ bool gpu_xfmr_forward(const TransformerW &w, int seq, int64_t pos0, const float 
 // Только слои, загруженные на GPU (первые gpu_layers), без финальной нормы: возвращает скрытые состояния всех m строк
 // (hidden_out[m][hidden]) — их дальше считает CPU. Гибридное размещение: часть слоёв в видеопамяти, остальные на процессоре.
 bool gpu_xfmr_forward_hidden(const TransformerW &w, int seq, int64_t pos0, const float *x, int64_t m, float *hidden_out);
+// One token of each of two sequences at the same position (CFG passes) in one submission: x2 [2][hidden] → out2 [2][hidden]
+// (normed), head_out2 [2][head rows] when head is given (on the GPU). The caller advances both KV lengths. false → per pass.
+bool gpu_xfmr_forward_pair(const TransformerW &w, int seq0, int seq1, int64_t pos, const float *x2, const Mat *head, float *out2,
+                           float *head_out2);
 
 // ---------- поэлементные ----------
 void rmsnorm(const float *x, const float *w, int64_t n, float eps, float *out);       // out может совпадать с x

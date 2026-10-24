@@ -489,27 +489,38 @@ CosyVoiceModel::LmState::~LmState() {
     if (kv.gpu_seq >= 0) gpu_seq_free(kv.gpu_seq);
 }
 
-bool CosyVoiceModel::enable_gpu_llm() {
+bool CosyVoiceModel::enable_gpu_llm(bool release_host) {
     Impl &P = *p_;
     if (!cfg_.has_llm) return false;
     if (P.lm.gpu_id >= 0) return true;
     if (!gpu_active()) return false;
-    P.lm.gpu_id = gpu_xfmr_create(P.lm, "llm");
+    const TmodFile &F = *file_;
+    auto rel = [&](const Mat &m) {
+        if (!release_host || !m.valid()) return;
+        F.release(m.data, size_t(m.rows) * mat_row_bytes(m.type, m.cols));
+        if (m.scale) F.release(m.scale, size_t(m.rows) * size_t(m.cols / 32) * 4);
+        if (m.bias) F.release(m.bias, size_t(m.rows) * 4);
+    };
+    P.lm.gpu_id = gpu_xfmr_create(P.lm, "llm", -1, rel);
     if (P.lm.gpu_id < 0) return false;
     P.dec.gpu = gpu_upload(P.dec);   // the decoder head: one GEMV per token on the GPU too (its bias is added on the CPU)
+    if (P.dec.gpu >= 0) rel(P.dec);
     return true;
 }
 
-bool CosyVoiceModel::enable_gpu() {
+bool CosyVoiceModel::enable_gpu(bool release_host) {
     Impl &P = *p_;
     if (P.gpu >= 0) return true;
     if (!gpu_active()) return false;
     const CosyCfg &c = cfg_;
-    auto up = [](const Linear &L) {
+    const TmodFile &F = *file_;
+    auto up = [&](const Linear &L) {
         Mat m = L.w;
         m.bias = L.b.empty() ? nullptr : L.b.data();
         m.gpu = -1;
-        return gpu_upload(m);
+        const int id = gpu_upload(m);
+        if (id >= 0 && release_host) F.release(m.data, size_t(m.rows) * mat_row_bytes(m.type, m.cols));   // only if it is the file's
+        return id;
     };
     auto cv = [](const Conv &x) {
         GpuF5Conv g;

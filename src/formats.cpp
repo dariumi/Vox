@@ -1,4 +1,5 @@
 #include "formats.hpp"
+#include "resources.hpp"
 
 #include <cstdio>
 #include <fstream>
@@ -248,6 +249,12 @@ void tmod_write(const std::string &path, json manifest, const std::map<std::stri
         dpos = a + t.bytes.size();
     }
     if (!out) fail(VOX_ERR_IO, "write failed: " + path);
+}
+
+void TmodFile::release(const void *p, size_t bytes) const {
+    if (!p || !bytes || !map_) return;
+    const uint8_t *a = static_cast<const uint8_t *>(p), *lo = map_->data(), *hi = map_->data() + map_->size();
+    if (a >= lo && a + bytes <= hi) release_pages(p, bytes);
 }
 
 }  // namespace vox

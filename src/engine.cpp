@@ -10,6 +10,8 @@
 
 #include "backend.hpp"
 #include "family.hpp"
+#include "gpu.hpp"
+#include "tune.hpp"
 #include "kernels.hpp"
 #include "markup.hpp"
 #include "profile.hpp"
@@ -20,7 +22,7 @@
 using namespace vox;
 
 #ifndef VOX_VERSION_STRING
-#define VOX_VERSION_STRING "0.18.0"
+#define VOX_VERSION_STRING "0.19.0"
 #endif
 
 extern std::string vox_internal_last_error();
@@ -36,6 +38,7 @@ struct vox_engine {
     std::atomic<uint32_t> sessions{0};
     std::atomic<int64_t> pull_us{0}, samples{0}, created{0};
     Capabilities caps;
+    json tuned;                              // the vox tune result the engine opened with (null = none)
 };
 
 // A voice handle is a profile (one or many voices, styles, recordings, built-voice cache); sessions share it and build styles lazily.
@@ -709,6 +712,29 @@ VOX_API void vox_gen_params_default(vox_gen_params *p) {
 }
 
 // ---- Engine ----
+namespace {
+// A configuration measured by `vox tune` for this model on this computer, when nothing was asked for explicitly (device
+// "auto", no GPU index, placement, layers or threads; {"tuned": false} or VOX_TUNE=0 turn it off). Returns the entry used.
+json apply_tune(ResourceConfig &cfg, const TmodFile &f) {
+    const char *tenv = std::getenv("VOX_TUNE");
+    const bool defaults = cfg.device == "auto" && cfg.gpu < 0 && cfg.place.empty() && cfg.gpu_layers.empty() && !cfg.threads;
+    if (!cfg.tuned || !defaults || (tenv && tenv[0] == '0')) return json();
+    json t;
+    try { t = tune_entry(f); } catch (const std::exception &) { return json(); }
+    if (!t.is_object() || !t.contains("device") || !t["device"].is_string()) return json();
+    try {
+        ResourceConfig tc = cfg;
+        tc.apply_device_string(t["device"].get<std::string>());
+        if (t.value("threads", 0) > 0 && !tc.threads) tc.threads = uint32_t(t.value("threads", 0));
+        cfg = tc;
+        if (t.contains("gemm") && t["gemm"].is_string()) gpu_gemm_preset(t["gemm"].get<std::string>());
+        return t;
+    } catch (const std::exception &) {
+        return json();   // a stale entry: plan as if there were none
+    }
+}
+}  // namespace
+
 VOX_API vox_status vox_engine_open(const char *path, const vox_engine_opts *opts, vox_engine **out) {
     return guard([&] {
         if (!path || !out) fail(VOX_ERR_ARG, "path and out are required");
@@ -738,15 +764,19 @@ VOX_API vox_status vox_engine_open(const char *path, const vox_engine_opts *opts
             if (take("enforce")) cfg.enforce = c2.enforce;
             if (take("overlap")) cfg.overlap = c2.overlap;
             if (take("release_host_weights")) cfg.release_host_weights = c2.release_host_weights;
+            if (take("tuned")) cfg.tuned = c2.tuned;
             if (take("max_sessions")) cfg.max_sessions = c2.max_sessions;
             if (take("planned_sessions")) cfg.planned_sessions = c2.planned_sessions;
         }
         if (!cfg.threads && o.n_threads) cfg.threads = o.n_threads;
         if (!cfg.ram_limit && o.memory_limit) cfg.ram_limit = o.memory_limit;
         if (o.max_sessions > cfg.planned_sessions) cfg.planned_sessions = o.max_sessions;
-        e->config = cfg;
         e->tmod = std::make_shared<TmodFile>(path);
+        e->tuned = apply_tune(cfg, *e->tmod);
+        e->config = cfg;
         e->plan = plan_for_model(*e->tmod, cfg);
+        if (e->tuned.is_object())
+            e->plan.notes.push_back("tuned: " + e->tuned.value("device", std::string()) + " (vox tune, " + e->tuned.value("when", std::string()) + ")");
         if (!e->plan.feasible) {
             std::string why;
             for (const auto &w : e->plan.warnings) why += (why.empty() ? "" : "; ") + w;
@@ -789,6 +819,7 @@ VOX_API vox_status vox_engine_info(const vox_engine *e, char *buf, size_t cap, s
                   {"family", find_family(e->tmod->manifest()).name()},
                   {"capabilities", e->caps.to_json()},
                   {"plan", e->plan.to_json()},
+                  {"tuned", e->tuned},
                   {"manifest", m}};
         write_json(j.dump(), buf, cap, len);
     });
@@ -849,13 +880,44 @@ VOX_API vox_status vox_plan_json(const char *path, const char *config_json, char
     return guard([&] {
         if (!path) fail(VOX_ERR_ARG, "path is required");
         json j = config_json && config_json[0] ? json::parse(config_json) : json::object();
-        const ResourceConfig cfg = ResourceConfig::from_json(j);
+        ResourceConfig cfg = ResourceConfig::from_json(j);
         TmodFile f(path);
-        const ResourcePlan p = plan_for_model(f, cfg);
+        const json tuned = apply_tune(cfg, f);
+        ResourcePlan p = plan_for_model(f, cfg);
+        if (tuned.is_object()) p.notes.push_back("tuned: " + tuned.value("device", std::string()) + " (vox tune, " + tuned.value("when", std::string()) + ")");
         json out = p.to_json();
         out["config"] = cfg.to_json();
+        out["tuned"] = tuned;
         out["summary"] = p.summary();
         write_json(out.dump(), buf, cap, len);
+    });
+}
+
+VOX_API vox_status vox_tune_info(const char *path, char *buf, size_t cap, size_t *len) {
+    return guard([&] {
+        if (!path) fail(VOX_ERR_ARG, "path is required");
+        TmodFile f(path);
+        const json out = {{"cache", tune_cache_path()}, {"model_key", tune_model_key(f)}, {"hardware_key", tune_hw_key()},
+                          {"hardware", tune_hardware()}, {"entry", tune_entry(f)}, {"candidates", tune_candidates(f)}};
+        write_json(out.dump(), buf, cap, len);
+    });
+}
+
+VOX_API vox_status vox_tune_save(const char *path, const char *entry_json) {
+    return guard([&] {
+        if (!path || !entry_json) fail(VOX_ERR_ARG, "path and entry_json are required");
+        json e;
+        try { e = json::parse(entry_json); } catch (const std::exception &ex) { fail(VOX_ERR_ARG, std::string("entry_json is not valid JSON: ") + ex.what()); }
+        TmodFile f(path);
+        tune_store(f, e);
+    });
+}
+
+VOX_API vox_status vox_tune_forget(const char *path) {
+    return guard([&] {
+        if (!path) fail(VOX_ERR_ARG, "path is required");
+        TmodFile f(path);
+        tune_forget(f);
     });
 }
 

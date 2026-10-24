@@ -205,6 +205,12 @@ NB_MODULE(_vox, m) {
     m.def("plan_json", [](const std::string &path, const std::string &config_json) {
         return fetch_json([&](char *b, size_t c, size_t *l) { return vox_plan_json(path.c_str(), config_json.empty() ? nullptr : config_json.c_str(), b, c, l); });
     }, "path"_a, "config_json"_a = "");
+    m.def("tune_info_json", [](const std::string &path) {
+        return fetch_json([&](char *b, size_t c, size_t *l) { return vox_tune_info(path.c_str(), b, c, l); });
+    }, "path"_a);
+    m.def("tune_save", [](const std::string &path, const std::string &entry_json) { check(vox_tune_save(path.c_str(), entry_json.c_str())); },
+          "path"_a, "entry_json"_a);
+    m.def("tune_forget", [](const std::string &path) { check(vox_tune_forget(path.c_str())); }, "path"_a);
 
     nb::class_<vox_py::TmodView>(m, "TmodView")
         .def_prop_ro("manifest", &vox_py::TmodView::manifest)

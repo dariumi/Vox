@@ -94,6 +94,8 @@ void gpu_f5_end(int id);   // освободить буферы шага (вес
 // device (a software renderer keeps convgemm unless VOX_F5_GEMM=auto) and the faster is kept for the process.
 // Returns "convgemm" / "gemmb" (+ " (timed)"), "" before any graph was built.
 std::string gpu_gemm_choice();
+// A choice measured earlier (vox tune): "gemmb" / "convgemm"; ignored when VOX_F5_GEMM is set or a choice was already made.
+void gpu_gemm_preset(const std::string &choice);
 
 // The flow estimator of CosyVoice2 / Chatterbox (CausalConditionalDecoder) on the GPU: one Euler step — the conditional and
 // the unconditional pass (B = 2 sequences of T frames) — in ONE command buffer. Convolutions are f32 K-major [cout][K*cin]

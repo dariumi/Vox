@@ -29,7 +29,7 @@ except ImportError as _e:  # нативный модуль не собран: vo
     _vox = None
     _import_error = _e
 
-__version__ = _vox.VERSION if _vox else "0.18.0"
+__version__ = _vox.VERSION if _vox else "0.19.0"
 __all__ = ["Engine", "Voice", "Profile", "Session", "Duplex", "Resources", "VoxError", "OutOfMemory", "DeviceError", "devices", "inspect", "plan",
            "make_test_model", "register_family", "Family", "Backend", "Tmod", "load_wav", "save_wav", "__version__"]
 
@@ -112,7 +112,7 @@ class Resources:
     """
 
     _KEYS = ("device", "mode", "gpu", "threads", "cpu_affinity", "priority", "ram_limit", "vram_limit", "place",
-             "gpu_layers", "strict", "enforce", "overlap", "release_host_weights", "max_sessions", "planned_sessions")
+             "gpu_layers", "strict", "enforce", "overlap", "release_host_weights", "max_sessions", "planned_sessions", "tuned")
 
     def __init__(self, **kw):
         unknown = set(kw) - set(self._KEYS)
@@ -153,6 +153,19 @@ def plan(model: Union[str, os.PathLike], resources=None) -> dict:
     """Куда будет размещена каждая стадия и сколько памяти потребуется при данных ресурсах. Веса не читаются.
     Ключи результата: feasible, backend, stages, ram_estimate, vram_estimate, notes, warnings, summary, …"""
     return json.loads(_native().plan_json(os.fspath(model), Resources.coerce(resources).to_json()))
+
+
+def tune_info(model: Union[str, os.PathLike]) -> dict:
+    """What is known about tuning this model on this computer: {"cache", "model_key", "hardware", "entry" (the saved result
+    or None), "candidates" (configurations worth measuring)}. Reads no weights."""
+    return json.loads(_native().tune_info_json(os.fspath(model)))
+
+
+def tune(model: Union[str, os.PathLike], voice=None, **kw) -> dict:
+    """Measure the candidate configurations of a model on this computer (each in its own process) and save the fastest:
+    engines opened later with the default resources use it. See vox.tune.run for the options."""
+    from .tune import run
+    return run(model, voice, **kw)
 
 
 def make_test_model(path: Union[str, os.PathLike]) -> str:

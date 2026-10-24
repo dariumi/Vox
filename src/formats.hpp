@@ -72,6 +72,9 @@ public:
     const TensorView &get(const std::string &name) const;
     const std::map<std::string, TensorView> &blobs() const { return blobs_; }
     bool specialized() const { return flags_ & 1u; }
+    // Gives the pages of [p, p + bytes) back to the system when the range lies inside this file's mapping (after the weights
+    // went to video memory; they are read from the file again if the CPU ever needs them). Anything else is left alone.
+    void release(const void *p, size_t bytes) const;
 
 private:
     std::unique_ptr<MappedFile> map_;

@@ -18,6 +18,8 @@ Reaching the engine from a page:
     GET    /v1/info                                  version, devices, models, profiles
     GET    /v1/models;  POST /v1/models/load {"name","device"?};  POST /v1/models/unload {"name"};  POST /v1/models/add {"path","name"?}
     GET    /v1/models/<name>                         capabilities, speakers, languages, plan (loads nothing when not loaded)
+    POST   /v1/models/tune {"name","profile"?,"speaker"?,"goal"?}   measure the configurations on this computer (vox tune) in the
+                                                     background; GET /v1/models/<name>/tune — progress and result; DELETE forgets it
     GET    /v1/profiles                              profile summaries;  POST /v1/profiles {"name"} creates an empty one
     GET    /v1/profiles/<p>                          the profile (voices, styles, recordings, cache);  DELETE removes the file
     PATCH  /v1/profiles/<p>   {JSON merge patch}     voices / styles / speakers / descriptions / options (see vox.h)
@@ -116,6 +118,8 @@ class Studio:
         self.lock = threading.RLock()
         self._profiles: dict[str, tuple] = {}   # name → (mtime, Voice)
         self._speakers: dict[tuple, Voice] = {}
+        self.tunes: dict[str, dict] = {}        # name → {"state": running|done|error, "rows", "entry", "error"}
+        self._tuned: dict[str, object] = {}     # name → the saved vox tune entry (None = not tuned); filled lazily
 
     # ---------------- models
     def model_rows(self) -> list:
@@ -135,8 +139,77 @@ class Studio:
                            sample_rate=info.get("sample_rate"))
             if name in self.errors:
                 row["error"] = self.errors[name]
+            row["tuned"] = self.tuned(name)
+            if name in self.tunes:
+                row["tuning"] = self.tunes[name].get("state")
             out.append(row)
         return out
+
+    # ---------------- vox tune
+    def tuned(self, name: str):
+        if name not in self._tuned:
+            from . import tune_info
+            try:
+                e = tune_info(self.models[name]).get("entry")
+            except Exception:  # noqa: BLE001
+                e = None
+            self._tuned[name] = {k: e.get(k) for k in ("device", "rtf", "first_chunk_ms", "label", "gemm", "when", "goal")} if e else None
+        return self._tuned[name]
+
+    def tune_start(self, name: str, profile: str | None, speaker: str | None, goal: str = "speed") -> dict:
+        if name not in self.models:
+            raise HttpError(404, f"unknown model {name!r}")
+        with self.lock:
+            if self.tunes.get(name, {}).get("state") == "running":
+                raise HttpError(409, f"{name} is being tuned already")
+            voice = None
+            if profile:
+                voice = self._ppath(profile)
+                if not voice.exists():
+                    raise HttpError(404, f"no such profile {profile!r}")
+            self.unload_model(name)   # the measurements need the GPU to themselves
+            job = {"state": "running", "rows": [], "entry": None, "error": None, "started": time.time(), "goal": goal}
+            self.tunes[name] = job
+
+        def work():
+            from .tune import run
+            try:
+                job["entry"] = run(self.models[name], str(voice) if voice else None, speaker=speaker, goal=goal,
+                                   progress=lambda r: job["rows"].append(r))
+                job["state"] = "done"
+            except Exception as e:  # noqa: BLE001
+                job["state"], job["error"] = "error", str(e)
+            finally:
+                self._tuned.pop(name, None)
+                self.devices.pop(name, None)   # the tuned configuration applies to "auto"
+
+        threading.Thread(target=work, daemon=True, name=f"vox-tune-{name}").start()
+        return self.tune_status(name)
+
+    def tune_status(self, name: str) -> dict:
+        if name not in self.models:
+            raise HttpError(404, f"unknown model {name!r}")
+        job = self.tunes.get(name)
+        out = {"name": name, "tuned": self.tuned(name)}
+        if job:
+            out.update({k: job[k] for k in ("state", "rows", "entry", "error", "goal")}, elapsed=time.time() - job["started"])
+        else:
+            out["state"] = "idle"
+        try:
+            from . import tune_info
+            out["candidates"] = len(tune_info(self.models[name]).get("candidates", []))
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    def tune_forget(self, name: str) -> None:
+        from . import _native
+        if name not in self.models:
+            raise HttpError(404, f"unknown model {name!r}")
+        _native().tune_forget(self.models[name])
+        self._tuned.pop(name, None)
+        self.tunes.pop(name, None)
+        self.unload_model(name)
 
     def engine(self, name: str | None) -> Engine:
         if not name:
@@ -147,6 +220,8 @@ class Studio:
         if name not in self.models:
             raise HttpError(404, f"unknown model {name!r}; known: {', '.join(sorted(self.models))}")
         with self.lock:
+            if self.tunes.get(name, {}).get("state") == "running":
+                raise HttpError(409, f"{name} is being tuned for this computer; try again when it is done")
             e = self.engines.get(name)
             if e is None:
                 try:
@@ -481,6 +556,15 @@ def make_handler(st: Studio, secret: str):
             if m == "POST" and parts == ["add"]:
                 j = self._jbody()
                 return self._json(200, st.add_model(j.get("path", ""), j.get("name")))
+            if m == "POST" and parts == ["tune"]:
+                j = self._jbody()
+                return self._json(202, st.tune_start(j.get("name", ""), j.get("profile"), j.get("speaker"), j.get("goal", "speed")))
+            if len(parts) == 2 and parts[1] == "tune":
+                if m == "GET":
+                    return self._json(200, st.tune_status(parts[0]))
+                if m == "DELETE":
+                    st.tune_forget(parts[0])
+                    return self._json(200, {"ok": True})
             if m == "GET" and len(parts) == 1:
                 row = next((r for r in st.model_rows() if r["name"] == parts[0]), None)
                 if not row:

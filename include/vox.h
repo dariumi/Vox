@@ -142,6 +142,17 @@ VOX_API vox_status vox_model_inspect(const char *tmod_path, char *json_buf, size
 /* План размещения для модели при данных ресурсах (config_json как в vox_engine_opts; NULL = по умолчанию). */
 VOX_API vox_status vox_plan_json(const char *tmod_path, const char *config_json, char *json_buf, size_t cap, size_t *len);
 
+/* ---- самонастройка (vox tune) ---- */
+/* Что известно о настройке модели на этом компьютере: {"cache": путь, "model_key", "hardware_key", "hardware": {cpu, cores,
+   ram_gib, gpus}, "entry": сохранённый замер или null, "candidates": [{"label","device"}] — что стоит замерить}. Замер делают
+   `vox tune` / vox.tune() (каждый вариант в своём процессе: Vulkan — одно устройство на процесс). Движок, открытый с
+   ресурсами по умолчанию (device "auto", без потоков и размещения), сам берёт сохранённую конфигурацию; {"tuned": false}
+   в config_json или VOX_TUNE=0 — не брать. */
+VOX_API vox_status vox_tune_info(const char *tmod_path, char *json_buf, size_t cap, size_t *len);
+/* Сохраняет результат: {"device": "vulkan:0,codec=cpu", "threads"?: N, "gemm"?: "gemmb"|"convgemm", …любые поля замера}. */
+VOX_API vox_status vox_tune_save(const char *tmod_path, const char *entry_json);
+VOX_API vox_status vox_tune_forget(const char *tmod_path);
+
 /* Пишет модель тестового семейства "vox-test" (крошечная, без весов Qwen) — для разработки, тестов и примеров. */
 VOX_API vox_status vox_write_test_model(const char *path);
 

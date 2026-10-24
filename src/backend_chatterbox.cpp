@@ -88,11 +88,11 @@ class CbBackend final : public Backend {
 public:
     CbBackend(std::shared_ptr<TmodFile> f, const ResourcePlan &plan) : file_(f), s3gen_(f), t3_(f) {
         if (plan.uses_gpu() && plan.place_of("s3gen") == Place::Gpu) {
-            gpu_ = s3gen_.enable_gpu();
+            gpu_ = s3gen_.enable_gpu(plan.release_host_weights);
             if (!gpu_ && plan.strict) fail(VOX_ERR_DEVICE, "GPU strict mode: the flow estimator did not go to the GPU (" + gpu_stats().last_error + ")");
         }
         if (plan.uses_gpu() && plan.place_of("t3") == Place::Gpu) {
-            gpu_t3_ = t3_.enable_gpu();
+            gpu_t3_ = t3_.enable_gpu(plan.release_host_weights);
             if (!gpu_t3_ && plan.strict) fail(VOX_ERR_DEVICE, "GPU strict mode: T3 did not go to the GPU (" + gpu_stats().last_error + ")");
         }
         info_.sample_rate = s3gen_.cfg().sample_rate;

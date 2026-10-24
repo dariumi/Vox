@@ -50,7 +50,7 @@ public:
     bool has_voice_encoder() const;
     // T3 on the GPU: the transformer of Qwen3-TTS's GPU path with both CFG passes' KV caches in video memory, the speech
     // head on the GPU. A piece longer than 3072 positions runs on the CPU. false → the CPU.
-    bool enable_gpu();
+    bool enable_gpu(bool release_host = true);   // release_host: give the uploaded weights' pages back (ResourcePlan)
     bool gpu() const;
 
     double ms_t3 = 0;

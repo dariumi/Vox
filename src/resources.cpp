@@ -147,7 +147,9 @@ void ResourceConfig::apply_device_string(const std::string &spec) {
             else if (k == "threads") threads = uint32_t(std::stoul(v));
             else if (k == "ram") ram_limit = parse_size(json(v));
             else if (k == "vram") vram_limit = parse_size(json(v));
-            else fail(VOX_ERR_DEVICE, "unknown device option '" + opt + "' (strict, codec=, talker=, predictor=, layers=N, mode=, threads=N, ram=, vram=)");
+            // any other stage of the model by name (llm=cpu, flow=gpu, t3=cpu, …: the stages `vox plan` lists)
+            else if (eq != std::string::npos && (v == "cpu" || v == "gpu" || v == "auto") && !k.empty()) place[k] = place_from_string(v);
+            else fail(VOX_ERR_DEVICE, "unknown device option '" + opt + "' (strict, <stage>=cpu|gpu such as codec=cpu, layers=N, mode=, threads=N, ram=, vram=)");
         } catch (const Error &) {
             throw;
         } catch (const std::exception &) {
@@ -161,7 +163,7 @@ ResourceConfig ResourceConfig::from_json(const json &j) {
     if (j.is_null()) return c;
     if (!j.is_object()) fail(VOX_ERR_ARG, "resource config must be a JSON object");
     static const char *known[] = {"device", "mode", "gpu", "threads", "cpu_affinity", "priority", "ram_limit", "vram_limit", "place",
-                                  "gpu_layers", "strict", "enforce", "overlap", "release_host_weights", "max_sessions", "planned_sessions"};
+                                  "gpu_layers", "strict", "enforce", "overlap", "release_host_weights", "max_sessions", "planned_sessions", "tuned"};
     for (auto it = j.begin(); it != j.end(); ++it) {
         bool ok = false;
         for (const char *k : known) ok = ok || it.key() == k;
@@ -199,6 +201,7 @@ ResourceConfig ResourceConfig::from_json(const json &j) {
     if (j.contains("enforce")) c.enforce = j["enforce"].get<bool>() ? 1 : 0;
     if (j.contains("overlap")) c.overlap = j["overlap"].get<bool>() ? 1 : 0;
     if (j.contains("release_host_weights")) c.release_host_weights = j["release_host_weights"].get<bool>();
+    if (j.contains("tuned")) c.tuned = j["tuned"].get<bool>();
     if (j.contains("max_sessions")) c.max_sessions = j["max_sessions"].get<uint32_t>();
     if (j.contains("planned_sessions")) c.planned_sessions = std::max<uint32_t>(1, j["planned_sessions"].get<uint32_t>());
     return c;

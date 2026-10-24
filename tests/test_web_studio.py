@@ -57,8 +57,9 @@ def main():
     port = free_port()
     base = f"http://127.0.0.1:{port}"
     log = open(os.path.join(work, "server.log"), "w")
+    senv = dict(os.environ, VOX_TUNE_CACHE=os.path.join(work, "tune.json"))
     proc = subprocess.Popen([sys.executable, "-m", "vox", "web", "--models", models, "--voices", os.path.join(work, "voices"),
-                             "--data", work, "--port", str(port), "--secret", secret], stdout=log, stderr=subprocess.STDOUT)
+                             "--data", work, "--port", str(port), "--secret", secret], stdout=log, stderr=subprocess.STDOUT, env=senv)
     try:
         for _ in range(150):
             try:
@@ -175,6 +176,25 @@ def main():
         s.close()
         check(b"101" in status and ready.get("type") == "ready" and nbytes > 0, f"duplex WebSocket with ?token= ({nbytes} bytes)")
 
+        # 5. vox tune through the API (the measurements run in child processes; the model is unloaded meanwhile)
+        code, j, _ = req("POST", "/v1/models/tune", {"name": "tiny", "profile": "cast"})
+        check(code == 202 and j.get("state") == "running", f"POST /v1/models/tune starts the measurement ({j.get('state')})")
+        code2, j2, _ = req("POST", "/v1/speak", {"text": "Hi.", "model": "tiny", "profile": "cast"})
+        check(code2 == 409 or j2 == {} or code2 == 200, "speaking with a model being tuned: 409 (or it was already done)")
+        for _ in range(600):
+            j = req("GET", "/v1/models/tiny/tune")[1]
+            if j.get("state") != "running":
+                break
+            time.sleep(0.2)
+        row = next(m for m in req("GET", "/v1/models")[1]["models"] if m["name"] == "tiny")
+        check(j.get("state") == "done" and j["entry"]["device"] and row["tuned"] and row["tuned"]["device"] == j["entry"]["device"],
+              f"the tuning finishes and the model row shows it ({j.get('state')}, {j.get('error') or (j.get('entry') or {}).get('device')})")
+        code, _, _ = req("POST", "/v1/speak", {"text": "Hi.", "model": "tiny", "profile": "cast", "format": "pcm16"}, raw=True)
+        info_t = req("GET", "/v1/models/tiny")[1]
+        check(code == 200 and info_t.get("loaded"), "the model opens again (with the tuned configuration) and speaks")
+        code, j, _ = req("DELETE", "/v1/models/tiny/tune")
+        check(code == 200 and next(m for m in req("GET", "/v1/models")[1]["models"] if m["name"] == "tiny")["tuned"] is None, "DELETE forgets it")
+
         # 6. the Studio page in Chromium
         try:
             from playwright.sync_api import sync_playwright
@@ -198,14 +218,14 @@ def main():
                 pg.wait_for_selector("article.line .ctl a[download]", timeout=60000)
                 notes = pg.locator("article.line .notes li").all_inner_texts()
                 check(len(notes) >= 1 and pg.locator("article.line .tag").count() >= 2, f"a spoken line: audio, download, tags shown, notes ({notes[:2]})")
-                pg.click('nav.tabs button[data-view="voices"]')
+                pg.click('nav.rail button[data-view="voices"]')
                 pg.wait_for_selector("#profDetail [data-voice='anna']", timeout=20000)
                 check(pg.locator("#profDetail .style").count() >= 3, "the Voices tab shows voices and styles")
-                pg.click('nav.tabs button[data-view="history"]')
-                pg.wait_for_selector("#hRows tr", timeout=20000)
-                check(pg.locator("#hRows tr").count() >= 2, "the History tab lists the clips")
-                pg.click('nav.tabs button[data-view="models"]')
-                pg.wait_for_selector("#mRows tr[data-m='tiny']", timeout=20000)
+                pg.click('nav.rail button[data-view="history"]')
+                pg.wait_for_selector("#hRows [data-c]", timeout=20000)
+                check(pg.locator("#hRows [data-c]").count() >= 2, "the History tab lists the clips")
+                pg.click('nav.rail button[data-view="models"]')
+                pg.wait_for_selector("#mRows [data-m='tiny']", timeout=20000)
                 check(True, "the Models tab lists the models")
                 # the connect screen and its hint when the engine is unreachable
                 pg2 = br.new_page()

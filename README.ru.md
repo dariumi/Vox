@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.18.0-2a78d6" alt="версия 0.18.0">
+  <img src="https://img.shields.io/badge/version-0.19.0-2a78d6" alt="версия 0.19.0">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -509,6 +509,10 @@ audio = engine.synthesize("anna: Привет! [pause 300ms]\nboris: [laugh] З�
 - модели и устройства;
 - история всего озвученного.
 
+*0.19*: новый интерфейс — боковая панель, дубли с крупной волной в цвете голоса («Ещё вариант» с новым seed, «В редактор»), кто говорит — значки
+голосов над редактором, меню эмоций, параметры сгруппированы и коротко объяснены (на узком экране — выезжающая панель), карточки моделей
+с «Подобрать под этот компьютер» (`vox tune`), поиск по истории, светлая и тёмная темы; профили с одинаковыми именами различаются по файлу.
+
 Страница статичная: она живёт на `vox.arkonova.network/studio/`, и её же раздаёт сам движок. Речь делается на вашей машине, а страница
 говорит с движком HTTP-запросами — как панель Clash со своим ядром.
 
@@ -544,6 +548,31 @@ sequenceDiagram
 
   Полный список — в начале `python/vox/web.py`.
 
+## Самонастройка: `vox tune`
+
+*Новое в 0.19.* Какое устройство и размещение быстрее, зависит от модели и компьютера (RTX 5050 считает F5 быстрее одним GEMM, RTX 3050 —
+другим; небольшая модель на 16 ядрах может обогнать видеокарту ноутбука). `vox tune` не угадывает, а замеряет:
+
+    vox tune --model cosyvoice2.tmod --voice me.tvoice       # модели с готовыми дикторами голос не нужен
+      [1/6] cpu                                       RTF 2.63, first sound 2410 ms
+      [2/6] cpu, 8 threads                            RTF 2.71, first sound 2480 ms
+      [3/6] vulkan:0 (NVIDIA GeForce RTX 5050)        RTF 0.45, first sound  690 ms
+      …
+    best: vulkan:0 (…); saved to ~/.cache/vox/tune.json
+    vox say "…" --model cosyvoice2.tmod --voice me.tvoice    # device auto теперь открывает её на vulkan:0
+
+- **Варианты** (`vox tune --show` их показывает): CPU со всеми потоками и с половиной (SMT-соседи делят блоки FMA), каждая не программная
+  видеокарта с размещением по умолчанию и с переносом на CPU каждой стадии, которая умеет GPU (`codec=cpu`, `flow=cpu`, `t3=cpu`, …).
+  Для F5 и моделей с flow заодно замеряется и запоминается GEMM на видеокарте.
+- Каждый вариант идёт в своём дочернем процессе (`vox bench`; Vulkan — одно устройство на процесс), на коротком тексте на языке модели.
+  `--goal latency` выбирает самый ранний первый звук вместо наименьшего RTF; `--runs N`, `--text`.
+- **Применение**: движок, открытый с ресурсами по умолчанию (`device` auto, без потоков, размещения и слоёв), ищет модель и железо
+  (процессор, ядра, RAM, каждую видеокарту и её драйвер) и открывается с замеренной конфигурацией; `vox plan` показывает `tuned: …`.
+  Явные настройки важнее, `VOX_TUNE=0` или `{"tuned": false}` отключают. Новая видеокарта, обновление драйвера или пересобранная модель —
+  новый ключ.
+- Python: `vox.tune(model, voice)` (с отчётом о ходе, тот же кэш), `vox.tune_info(model)`; в Studio у каждой модели есть «Подобрать под этот
+  компьютер» (`POST /v1/models/tune`). `vox tune --forget` удаляет результат.
+
 ## Ресурсы: устройство, память, режим
 
     vox devices [--json]                          # CPU, RAM, GPU с индексами и свободной видеопамятью
@@ -572,7 +601,8 @@ flowchart LR
   `enforce=false`. Сессия, не влезающая в остаток лимита, не создаётся; `max_sessions` ограничивает их число. После загрузки на GPU
   mmap-страницы весов возвращаются системе (`--no-release` отключает).
 - У каждого движка свой пул потоков CPU (привязка к ядрам, `nice`): два движка с разным числом потоков дают одинаковый результат.
-- `--device cpu | auto | gpu[:N] | vulkan | vulkan:N`, плюс `,strict` (ошибка, если матрица не влезла) и `,codec=cpu`.
+- `--device cpu | auto | gpu[:N] | vulkan | vulkan:N`, плюс `,strict` (ошибка, если матрица не влезла) и `,<стадия>=cpu|gpu` для любой стадии
+  из `vox plan` (`codec=cpu`, `flow=cpu`, `t3=cpu`, …).
   Нумерация Vulkan не совпадает с nvidia-smi и CUDA — ориентируйтесь на имя из `vox devices`. Программные рендереры (llvmpipe) `auto` не выбирает.
 - vox пишет в stderr, что ушло в VRAM и почему; тихого отката нет. Одно Vulkan-устройство на процесс.
 - Python: `vox.devices()`, `vox.plan(model, vox.Resources(...))`, `vox.inspect(model)`, `eng.stats()`, `eng.benchmark(...)`;
@@ -721,7 +751,7 @@ Python ctypes. `tests/test_examples.py` собирает каждую и тре�
 | `src/chatterbox.cpp`, `src/backend_chatterbox.cpp`, `src/hf_tokenizer.cpp` | Chatterbox: T3, VoiceEncoder, нарезка на куски; чтение `tokenizer.json` (BPE) |
 | `src/nn.cpp` | общие слои свёрточных моделей (свёртки, источник NSF, STFT / iSTFT, внимание, ресэмплер torchaudio) |
 | `src/profile.cpp`, `src/markup.cpp` | профили голосов (формат, правка, сборка под разные модели) и разметка текста |
-| `src/resources.cpp`, `src/family.cpp` | планировщик ресурсов и бюджет сессий; реестр семейств моделей (C++ и Python) |
+| `src/resources.cpp`, `src/family.cpp`, `src/tune.cpp` | планировщик ресурсов и бюджет сессий; реестр семейств моделей (C++ и Python); кэш и варианты `vox tune` |
 | `src/kernels.cpp` | пулы потоков, matmul (f32/f16/bf16, q8 и q4 int8-dot AVX2), трансформер (включая гибрид GPU/CPU) |
 | `src/gpu_vulkan.cpp`, `src/gpu_codec.cpp`, `src/shaders/*.comp` | Vulkan: matmul, трансформер, декодер кодека, профайлер; шейдеры GLSL (SPIR-V в `src/vk_shaders.inc`) |
 | `webgpu/wgsl/`, `webgpu/web/src/` | WGSL-шейдеры и исходники `vox.js` (`tools/build_web.py`) |

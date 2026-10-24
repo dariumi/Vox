@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.18.0-2a78d6" alt="version 0.18.0">
+  <img src="https://img.shields.io/badge/version-0.19.0-2a78d6" alt="version 0.19.0">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -508,6 +508,9 @@ page and the engine is controlled from the browser: a script with several voices
 voice profiles (record from the microphone, styles, built-in speakers per model), models and devices, and the history of everything
 spoken. The page is static (it lives at `vox.arkonova.network/studio/` and is also served by the engine itself); the speech is made on
 your machine. The page talks to the engine with HTTP requests, the way a Clash dashboard talks to its core.
+*0.19*: a new interface — a side rail, takes with large voice-coloured waveforms ("Another take" with a new seed, "To the editor"), who speaks as
+voice badges above the editor, an emotion menu, settings grouped with short explanations (a sheet on narrow screens), model cards with
+"Fit to this computer" (`vox tune`), history search, light and dark themes; profiles with the same name are told apart by their file.
 
     vox web --models ./models --voices ./voices
       Vox Studio:  https://vox.arkonova.network/studio/#url=http%3A%2F%2F127.0.0.1%3A7860&secret=…
@@ -537,6 +540,30 @@ sequenceDiagram
   prepare, download / upload), `POST /v1/speak` (streamed pcm16 / f32 / wav), `/v1/history`, and WebSocket `/v1/duplex` (the protocol of
   `vox serve`). The full list is at the top of `python/vox/web.py`.
 
+## Self-tuning: `vox tune`
+
+*New in 0.19.* Which device and placement are fastest depends on the model and the computer (an RTX 5050 runs F5 faster with one GEMM,
+an RTX 3050 with the other; a small model may be faster on 16 CPU cores than on a laptop GPU). `vox tune` measures instead of guessing:
+
+    vox tune --model cosyvoice2.tmod --voice me.tvoice       # a model with built-in speakers needs no voice
+      [1/6] cpu                                       RTF 2.63, first sound 2410 ms
+      [2/6] cpu, 8 threads                            RTF 2.71, first sound 2480 ms
+      [3/6] vulkan:0 (NVIDIA GeForce RTX 5050)        RTF 0.45, first sound  690 ms
+      …
+    best: vulkan:0 (…); saved to ~/.cache/vox/tune.json
+    vox say "…" --model cosyvoice2.tmod --voice me.tvoice    # device auto now opens it on vulkan:0
+
+- **Candidates** (`vox tune --show` lists them): the CPU with all threads and with half (SMT siblings share the FMA units), every non-software
+  GPU with the default placement and with each GPU-capable stage moved to the CPU (`codec=cpu`, `flow=cpu`, `t3=cpu`, …).
+  For F5 and the flow models the GPU GEMM is timed on the spot and remembered too.
+- Each candidate runs in its own child process (`vox bench`; one Vulkan device per process), on a short text in the model's language.
+  `--goal latency` keeps the earliest first sound instead of the lowest RTF; `--runs N`, `--text`.
+- **Applying it**: an engine opened with the default resources (`device` auto, no threads, placement or layers) looks up the model and the
+  hardware (CPU, cores, RAM, every GPU and its driver) and opens with the measured configuration; `vox plan` shows `tuned: …`.
+  Anything explicit wins, and `VOX_TUNE=0` or `{"tuned": false}` turns it off. A new GPU, a driver update or a rebuilt model are new keys.
+- Python: `vox.tune(model, voice)` (progress callback, the same cache), `vox.tune_info(model)`; the Studio has "Fit to this computer"
+  on every model (`POST /v1/models/tune`). `vox tune --forget` removes a result.
+
 ## Resources: device, memory, mode
 
     vox devices [--json]                          # CPU, RAM, GPUs with indices and free video memory
@@ -565,7 +592,8 @@ flowchart LR
   unless `enforce=false`. A session that does not fit in what is left of the limit is not created, and `max_sessions` caps how many there are.
   After upload to the GPU, the weights' mmap pages are returned to the system (`--no-release` turns this off).
 - Each engine has its own CPU thread pool, pinned to cores and `nice`d. Two engines with different thread counts give the same result.
-- `--device cpu | auto | gpu[:N] | vulkan | vulkan:N`, plus `,strict` (an error if a matrix does not fit) and `,codec=cpu`.
+- `--device cpu | auto | gpu[:N] | vulkan | vulkan:N`, plus `,strict` (an error if a matrix does not fit) and `,<stage>=cpu|gpu` for any stage
+  `vox plan` lists (`codec=cpu`, `flow=cpu`, `t3=cpu`, …).
   Vulkan numbering does not match nvidia-smi or CUDA, so go by the names that `vox devices` prints. Software renderers (llvmpipe) are never picked by `auto`.
 - vox reports on stderr what went to VRAM and why; it never falls back silently. One Vulkan device per process.
 - Python: `vox.devices()`, `vox.plan(model, vox.Resources(...))`, `vox.inspect(model)`, `eng.stats()`, `eng.benchmark(...)`.
@@ -713,7 +741,7 @@ by `python tools/make_charts.py`.
 | `src/chatterbox.cpp`, `src/backend_chatterbox.cpp`, `src/hf_tokenizer.cpp` | Chatterbox: T3, VoiceEncoder, piece splitting; a `tokenizer.json` (BPE) reader |
 | `src/nn.cpp` | layers shared by the convolutional models (convolutions, NSF source, STFT / iSTFT, attention, torchaudio resampler) |
 | `src/profile.cpp`, `src/markup.cpp` | voice profiles (format, merge patch, cross-model building) and the text markup |
-| `src/resources.cpp`, `src/family.cpp` | resource planner and session budget; registry of model families (C++ and Python) |
+| `src/resources.cpp`, `src/family.cpp`, `src/tune.cpp` | resource planner and session budget; registry of model families (C++ and Python); the `vox tune` cache and candidates |
 | `src/kernels.cpp` | thread pools, matmul (f32/f16/bf16, q8 and q4 int8-dot AVX2), transformer (including the GPU/CPU hybrid) |
 | `src/gpu_vulkan.cpp`, `src/gpu_codec.cpp`, `src/shaders/*.comp` | Vulkan: matmul, transformer, codec decoder, profiler; GLSL shaders (SPIR-V in `src/vk_shaders.inc`) |
 | `webgpu/wgsl/`, `webgpu/web/src/` | WGSL shaders and the `vox.js` sources (`tools/build_web.py`) |

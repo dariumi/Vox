@@ -6,6 +6,9 @@
 #endif
 
 #include <algorithm>
+#if defined(__x86_64__)
+#  include <immintrin.h>
+#endif
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
@@ -327,16 +330,98 @@ VOX_INLINE void matmul_range_t(const Mat &W, const float *x, int64_t m, float *y
 }
 
 VOX_MULTIVERSION static void mm_f32(const Mat &W, const float *x, int64_t m, float *y, int64_t a, int64_t b) { matmul_range_t<WType::F32>(W, x, m, y, a, b); }
-VOX_MULTIVERSION static void mm_bf16(const Mat &W, const float *x, int64_t m, float *y, int64_t a, int64_t b) { matmul_range_t<WType::BF16>(W, x, m, y, a, b); }
-VOX_MULTIVERSION static void mm_f16(const Mat &W, const float *x, int64_t m, float *y, int64_t a, int64_t b) { matmul_range_t<WType::F16>(W, x, m, y, a, b); }
-VOX_MULTIVERSION static void mm_q8(const Mat &W, const float *x, int64_t m, float *y, int64_t a, int64_t b) { matmul_range_t<WType::Q8>(W, x, m, y, a, b); }
+// Many input rows: 4 weight rows are converted to f32 once per block of 64 input rows (cvt(row, dst)) and then go through the f32
+// tiles. The tiles and the summation order are those of matmul_range_t, and the converted values are the ones its loaders produce
+// in registers, so the result is the same bit for bit — but the conversion is paid once per 64 rows instead of once per tile of
+// 3 rows (bf16 1.0×, f16 3× faster at 256 rows on the 2-core box; 0.18 report: f16 DiT of F5 ran 1.4× slower than bf16 on the CPU).
+template <class Cvt>
+VOX_INLINE void matmul_range_cvt(const Mat &W, const float *x, int64_t m, float *y, int64_t r0, int64_t r1, Cvt cvt) {
+    const int64_t rows = W.rows, cols = W.cols;
+    thread_local std::vector<float> buf;
+    if (buf.size() < size_t(4 * cols)) buf.resize(size_t(4 * cols));
+    constexpr int RW = 4;
+    constexpr int64_t TM = 64;
+    for (int64_t i0 = 0; i0 < m; i0 += TM) {
+        const int64_t mm = std::min(m, i0 + TM) - i0;
+        const float *xb = x + i0 * cols;
+        float *yb = y + i0 * rows;
+        for (int64_t r = r0; r < r1; r += RW) {
+            const int n = int(std::min<int64_t>(RW, r1 - r));
+            const uint8_t *wr[4];
+            const float *sc[4] = {nullptr, nullptr, nullptr, nullptr};
+            float bz[4];
+            for (int q = 0; q < 4; ++q) {
+                const int64_t rr = r + (q < n ? q : 0);
+                float *dst = buf.data() + q * cols;
+                if (q < n) cvt(rr, dst);
+                else std::memcpy(dst, buf.data(), size_t(cols) * 4);
+                wr[q] = reinterpret_cast<const uint8_t *>(dst);
+                bz[q] = W.bias ? W.bias[rr] : 0.0f;
+            }
+            if (n == 4) { rows_block<WType::F32, 4>(wr, sc, bz, xb, mm, cols, yb, rows, r); continue; }
+            int q0 = 0;
+            if (n >= 2 && mm > 1) { rows_block<WType::F32, 2>(wr, sc, bz, xb, mm, cols, yb, rows, r); q0 = 2; }
+            for (int q = q0; q < n; ++q) {
+                const uint8_t *w1[1] = {wr[q]};
+                const float *s1[1] = {sc[q]};
+                rows_block<WType::F32, 1>(w1, s1, bz + q, xb, mm, cols, yb, rows, r + q);
+            }
+        }
+    }
+}
+template <WType T>
+VOX_INLINE void cvt_row(const Mat &W, int64_t rr, float *dst) {
+    constexpr int64_t bpe = T == WType::Q8 ? 1 : 2;
+    const uint8_t *row = W.data + rr * W.cols * bpe;
+    const float *sc = W.scale ? W.scale + rr * (W.cols / 32) : nullptr;
+    int64_t k = 0;
+    for (; k + 8 <= W.cols; k += 8) { const v8f v = WL<T>::load8(row, k, sc); std::memcpy(dst + k, &v, 32); }
+    for (; k < W.cols; ++k) dst[k] = WL<T>::at(row, k, sc);
+}
+template <WType T>
+VOX_INLINE void matmul_range_any(const Mat &W, const float *x, int64_t m, float *y, int64_t a, int64_t b) {
+    if (m > 1) matmul_range_cvt(W, x, m, y, a, b, [&](int64_t rr, float *dst) { cvt_row<T>(W, rr, dst); });
+    else matmul_range_t<T>(W, x, m, y, a, b);
+}
+
+#if defined(VOX_VECTOR_EXT) && defined(__GNUC__) && !defined(__clang__) && defined(__x86_64__) && defined(__linux__)
+// f16 rows through F16C (vcvtph2ps, 8 weights per instruction). target_clones cannot name f16c, so this is its own function,
+// compiled for avx2+fma+f16c and picked at run time (VOX_F16C=0 turns it off). Unlike WL<F16> it keeps f16 subnormals.
+#  define VOX_F16C 1
+#  pragma GCC push_options
+#  pragma GCC target("avx2,fma,f16c")
+static void mm_f16_fast(const Mat &W, const float *x, int64_t m, float *y, int64_t r0, int64_t r1) {
+    matmul_range_cvt(W, x, m, y, r0, r1, [&](int64_t rr, float *dst) {
+        const uint16_t *src = reinterpret_cast<const uint16_t *>(W.data) + rr * W.cols;
+        int64_t k = 0;
+        for (; k + 8 <= W.cols; k += 8) {
+            __m128i h; std::memcpy(&h, src + k, 16);
+            _mm256_storeu_ps(dst + k, _mm256_cvtph_ps(h));
+        }
+        for (; k < W.cols; ++k) dst[k] = f16_to_f32(src[k]);
+    });
+}
+#  pragma GCC pop_options
+static const bool g_f16c = [] {
+    __builtin_cpu_init();
+    const char *e = std::getenv("VOX_F16C");
+    return !(e && e[0] == '0') && __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma") && __builtin_cpu_supports("f16c");
+}();
+#endif
+VOX_MULTIVERSION static void mm_bf16(const Mat &W, const float *x, int64_t m, float *y, int64_t a, int64_t b) { matmul_range_any<WType::BF16>(W, x, m, y, a, b); }
+VOX_MULTIVERSION static void mm_f16(const Mat &W, const float *x, int64_t m, float *y, int64_t a, int64_t b) { matmul_range_any<WType::F16>(W, x, m, y, a, b); }
+VOX_MULTIVERSION static void mm_q8(const Mat &W, const float *x, int64_t m, float *y, int64_t a, int64_t b) { matmul_range_any<WType::Q8>(W, x, m, y, a, b); }
 
 static void matmul_q4(const Mat &W, const float *x, int64_t m, float *y);
 static void matmul_range(const Mat &W, const float *x, int64_t m, float *y, int64_t r0, int64_t r1) {
     switch (W.type) {
         case WType::F32: mm_f32(W, x, m, y, r0, r1); break;
         case WType::BF16: mm_bf16(W, x, m, y, r0, r1); break;
-        case WType::F16: mm_f16(W, x, m, y, r0, r1); break;
+        case WType::F16:
+#ifdef VOX_F16C
+            if (g_f16c) { mm_f16_fast(W, x, m, y, r0, r1); break; }
+#endif
+            mm_f16(W, x, m, y, r0, r1); break;
         case WType::Q8: mm_q8(W, x, m, y, r0, r1); break;
         case WType::Q4: matmul_q4(W, x, m, y); break;  // обычно не доходит сюда: matmul() считает Q4 сам
     }

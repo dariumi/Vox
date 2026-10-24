@@ -23,12 +23,14 @@ void gpu_codec_state_free(int) {}
 bool gpu_codec_forward(int, int, const float *, int, std::vector<float> &) { return false; }
 bool gpu_xfmr_forward(const TransformerW &, int, int64_t, const float *, int64_t, float *, const Mat *, const Mat *, float *) { return false; }
 bool gpu_xfmr_forward_hidden(const TransformerW &, int, int64_t, const float *, int64_t, float *) { return false; }
+bool gpu_xfmr_forward_pair(const TransformerW &, int, int, int64_t, const float *, const Mat *, float *, float *) { return false; }
 int gpu_f5_create(const GpuF5Desc &) { return -1; }
 bool gpu_f5_begin(int, int, int, const float *, const float *) { return false; }
 bool gpu_f5_step(int, const float *, const float *, float *) { return false; }
 bool gpu_f5_vocos(int, const float *, int, std::vector<float> &) { return false; }
 void gpu_f5_end(int) {}
 std::string gpu_gemm_choice() { return ""; }
+void gpu_gemm_preset(const std::string &) {}
 int gpu_cosy_create(const GpuCosyDesc &) { return -1; }
 bool gpu_cosy_begin(int, int, const float *) { return false; }
 bool gpu_cosy_step(int, const float *, const float *, float *) { return false; }

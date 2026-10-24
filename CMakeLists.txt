@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(vox VERSION 0.18.0 LANGUAGES CXX)
+project(vox VERSION 0.19.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,7 +31,7 @@ add_library(vox_core STATIC
   src/formats.cpp
   src/voice.cpp src/profile.cpp src/markup.cpp
   src/tokenizer.cpp
-  src/kernels.cpp src/resources.cpp src/family.cpp src/f5_ops.cpp src/f5.cpp
+  src/kernels.cpp src/resources.cpp src/tune.cpp src/family.cpp src/f5_ops.cpp src/f5.cpp
   src/qwen3.cpp src/qwen3_voice.cpp
   src/backend_qwen3.cpp
   src/backend_f5.cpp src/backend_kokoro.cpp src/kokoro.cpp src/nn.cpp src/cosyvoice.cpp src/cosyvoice_front.cpp src/backend_cosyvoice.cpp src/hf_tokenizer.cpp src/chatterbox.cpp src/backend_chatterbox.cpp src/kokoro_g2p.cpp src/kokoro_g2p_en.cpp

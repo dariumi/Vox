@@ -177,13 +177,20 @@ ChatterboxT3::~ChatterboxT3() = default;
 
 bool ChatterboxT3::has_voice_encoder() const { return p_->ve; }
 bool ChatterboxT3::gpu() const { return p_->tf.gpu_id >= 0; }
-bool ChatterboxT3::enable_gpu() {
+bool ChatterboxT3::enable_gpu(bool release_host) {
     Impl &P = *p_;
     if (P.tf.gpu_id >= 0) return true;
     if (!gpu_active()) return false;
-    P.tf.gpu_id = gpu_xfmr_create(P.tf, "t3");
+    const TmodFile &F = *file_;
+    auto rel = [&](const Mat &m) {   // the CPU copy is not needed any more (re-read from the file for a piece too long for the GPU)
+        if (!release_host || !m.valid()) return;
+        F.release(m.data, size_t(m.rows) * mat_row_bytes(m.type, m.cols));
+        if (m.scale) F.release(m.scale, size_t(m.rows) * size_t(m.cols / 32) * 4);
+    };
+    P.tf.gpu_id = gpu_xfmr_create(P.tf, "t3", -1, rel);
     if (P.tf.gpu_id < 0) return false;
     P.speech_head.gpu = gpu_upload(P.speech_head);
+    if (P.speech_head.gpu >= 0) rel(P.speech_head);
     return true;
 }
 
@@ -314,12 +321,18 @@ std::vector<int32_t> ChatterboxT3::generate(const std::vector<float> &cond, cons
     gen.push_back(cfg_.start_speech);
     std::vector<int32_t> out;
     std::vector<float> logits(static_cast<size_t>(V));
+    std::vector<float> l2next;   // GPU: the logits of both passes came back with the step that made hc / hu
+    bool l2_ready = false;
     for (int i = 0; i < maxn; ++i) {
         if (use_cfg) {
             std::vector<float> h2(size_t(2) * H), l2(size_t(2) * V);
-            std::memcpy(h2.data(), hc.data(), size_t(H) * 4);
-            std::memcpy(h2.data() + H, hu.data(), size_t(H) * 4);
-            matmul(P.speech_head, h2.data(), 2, l2.data());
+            if (l2_ready) {
+                l2.swap(l2next);
+            } else {
+                std::memcpy(h2.data(), hc.data(), size_t(H) * 4);
+                std::memcpy(h2.data() + H, hu.data(), size_t(H) * 4);
+                matmul(P.speech_head, h2.data(), 2, l2.data());
+            }
             std::memcpy(lc.data(), l2.data(), size_t(V) * 4);
             std::memcpy(lu.data(), l2.data() + V, size_t(V) * 4);
             for (int k = 0; k < V; ++k) logits[size_t(k)] = lc[size_t(k)] + sp.cfg_weight * (lc[size_t(k)] - lu[size_t(k)]);
@@ -389,9 +402,24 @@ std::vector<int32_t> ChatterboxT3::generate(const std::vector<float> &cond, cons
         mat_gather(P.speech_emb, next, x.data());
         mat_gather(P.speech_pos, i + 1, tmp.data());
         for (int d = 0; d < H; ++d) x[size_t(d)] += tmp[size_t(d)];
+        l2_ready = false;
         if (use_cfg && on_gpu) {
-            transformer_forward(P.tf, kc, x.data(), 1, hc.data());
-            transformer_forward(P.tf, ku, x.data(), 1, hu.data());
+            // both passes and the speech head in one submission: the weights are read once for the two rows
+            std::vector<float> x2(size_t(2) * H), h2(size_t(2) * H);
+            std::memcpy(x2.data(), x.data(), size_t(H) * 4);
+            std::memcpy(x2.data() + H, x.data(), size_t(H) * 4);
+            l2next.resize(size_t(2) * V);
+            const Mat *head = P.speech_head.gpu >= 0 ? &P.speech_head : nullptr;
+            if (kc.len == ku.len && gpu_xfmr_forward_pair(P.tf, kc.gpu_seq, ku.gpu_seq, kc.len, x2.data(), head, h2.data(), l2next.data())) {
+                kc.len += 1;
+                ku.len += 1;
+                std::memcpy(hc.data(), h2.data(), size_t(H) * 4);
+                std::memcpy(hu.data(), h2.data() + H, size_t(H) * 4);
+                l2_ready = head != nullptr;
+            } else {
+                transformer_forward(P.tf, kc, x.data(), 1, hc.data());
+                transformer_forward(P.tf, ku, x.data(), 1, hu.data());
+            }
         } else if (use_cfg) {   // both passes in one: the weights are read once
             std::vector<float> x2(size_t(2) * H), h2(size_t(2) * H);
             std::memcpy(x2.data(), x.data(), size_t(H) * 4);

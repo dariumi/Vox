@@ -190,6 +190,15 @@ void choose_gemm(const std::vector<int> &mats, uint32_t T) {
 
 }  // namespace
 
+void gpu_gemm_preset(const std::string &choice) {
+    std::lock_guard<std::mutex> lk(g.mu);
+    if (g_big >= 0 || std::getenv("VOX_F5_GEMM")) return;
+    if (choice.rfind("gemmb", 0) == 0) g_big = 1;
+    else if (choice.rfind("convgemm", 0) == 0) g_big = 0;
+    else return;
+    g_big_timed = true;   // measured, by vox tune
+}
+
 std::string gpu_gemm_choice() {
     if (g_big < 0) return "";
     return std::string(g_big ? "gemmb" : "convgemm") + (g_big_timed ? " (timed)" : "");

@@ -110,11 +110,11 @@ public:
 
     // The flow estimator on the GPU (gpu_active() first): its weights go to video memory and every Euler step is one
     // submission. false (reason on stderr) → it stays on the CPU. The encoder and HiFT stay on the CPU.
-    bool enable_gpu();
+    bool enable_gpu(bool release_host = true);   // release_host: give the uploaded weights' pages back (ResourcePlan)
     bool gpu_flow() const;
     // The Qwen2 LM on the GPU (the transformer of Qwen3-TTS's GPU path, KV cache in video memory, ≤ 3072 positions;
     // a longer piece runs on the CPU). false → the CPU.
-    bool enable_gpu_llm();
+    bool enable_gpu_llm(bool release_host = true);
     bool gpu_llm() const;
 
     uint64_t weight_bytes() const { return weight_bytes_; }

@@ -46,6 +46,8 @@ jobs:
         run: VOX_QWEN2_GGUF=qwen2.gguf VOX_TEST_DEVICE=vulkan:0,layers=1,strict python tests/test_qwen3_tiny.py build/vox
       - name: Python as a library (resources, sessions, memory limits)
         run: VOX_QWEN2_GGUF=qwen2.gguf python tests/test_library.py
+      - name: vox tune (configurations measured in child processes, the cache, tuned engines)
+        run: VOX_TUNE_SOFTWARE=1 python tests/test_tune.py build/vox
       - name: Python model families
         run: VOX_QWEN2_GGUF=qwen2.gguf python tests/test_py_family.py
       - name: HTTP server
