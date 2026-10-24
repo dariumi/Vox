@@ -273,13 +273,17 @@ float dot(const float *a, const float *b, int64_t n) {
 template <WType T, int RW>
 VOX_INLINE void rows_block(const uint8_t *const *wr, const float *const *sc, const float *bias_r, const float *x,
                            int64_t m, int64_t cols, float *y, int64_t rows, int64_t r0) {
+    // плитка RW × XI аккумуляторов: 4×3 (12 регистров + 3 под вход + 1 под веса = все 16 ymm) или 2×4, 1×4; порядок суммирования
+    // у каждого выхода один и тот же при любой форме плитки
+    constexpr int XI = RW == 4 ? 3 : 4;
     int64_t i = 0;
     float o[RW * 4];
-    for (; i + 4 <= m; i += 4) {
-        const float *xs[4] = {x + i * cols, x + (i + 1) * cols, x + (i + 2) * cols, x + (i + 3) * cols};
-        tile<T, RW, 4>(wr, sc, xs, cols, o);
+    for (; i + XI <= m; i += XI) {
+        const float *xs[4];
+        for (int j = 0; j < XI; ++j) xs[j] = x + (i + j) * cols;
+        tile<T, RW, XI>(wr, sc, xs, cols, o);
         for (int r = 0; r < RW; ++r)
-            for (int j = 0; j < 4; ++j) y[(i + j) * rows + r0 + r] = o[r * 4 + j] + bias_r[r];
+            for (int j = 0; j < XI; ++j) y[(i + j) * rows + r0 + r] = o[r * XI + j] + bias_r[r];
     }
     for (; i < m; ++i) {
         const float *xs[1] = {x + i * cols};
@@ -292,7 +296,7 @@ template <WType T>
 VOX_INLINE void matmul_range_t(const Mat &W, const float *x, int64_t m, float *y, int64_t r0, int64_t r1) {
     const int64_t rows = W.rows, cols = W.cols;
     constexpr int64_t bpe = T == WType::F32 ? 4 : (T == WType::Q8 ? 1 : 2);
-    const int RW = (m == 1) ? 4 : 2;
+    constexpr int RW = 4;   // 4 строки весов на плитку (при m > 1 — плитка 4×3, см. rows_block)
     constexpr int64_t TM = 64;  // плитка по m: блок x остаётся в кэше, пока бежим по строкам весов
     for (int64_t i0 = 0; i0 < m; i0 += TM) {
         const int64_t i1 = std::min(m, i0 + TM), mm = i1 - i0;
@@ -310,9 +314,10 @@ VOX_INLINE void matmul_range_t(const Mat &W, const float *x, int64_t m, float *y
                 sc[q] = W.scale ? W.scale + rr * (cols / 32) : nullptr;
                 bz[q] = W.bias ? W.bias[rr] : 0.0f;
             }
-            if (n == 4) rows_block<T, 4>(wr, sc, bz, xb, mm, cols, yb, rows, r);
-            else if (n >= 2 && RW == 2) rows_block<T, 2>(wr, sc, bz, xb, mm, cols, yb, rows, r);
-            else for (int q = 0; q < n; ++q) {
+            if (n == 4) { rows_block<T, 4>(wr, sc, bz, xb, mm, cols, yb, rows, r); continue; }
+            int q0 = 0;
+            if (n >= 2 && mm > 1) { rows_block<T, 2>(wr, sc, bz, xb, mm, cols, yb, rows, r); q0 = 2; }
+            for (int q = q0; q < n; ++q) {
                 const uint8_t *w1[1] = {wr[q]};
                 const float *s1[1] = {sc[q]};
                 rows_block<T, 1>(w1, s1, bz + q, xb, mm, cols, yb, rows, r + q);
@@ -553,6 +558,10 @@ void quantize_q4(const float *w, int64_t rows, int64_t cols, std::vector<uint8_t
 }
 
 constexpr int64_t kQ8IntMaxRows = 8;
+static bool mm2d_enabled() {
+    static const bool on = [] { const char *e = std::getenv("VOX_MM2D"); return !(e && e[0] == '0'); }();
+    return on;
+}
 
 void matmul(const Mat &W, const float *x, int64_t m, float *y) {
     const int64_t rows = W.rows, cols = W.cols;
@@ -582,6 +591,25 @@ void matmul(const Mat &W, const float *x, int64_t m, float *y) {
         return;
     }
     if (W.type == WType::Q4) { matmul_q4(W, x, m, y); return; }
+    // Много строк входа (префилл, DiT, свёртки вокодеров): делим работу и по m, и по строкам весов. Деление только по строкам
+    // весов заставляет каждый поток заново читать весь вход, и при малом числе строк весов на поток (свёртки Kokoro: 128–256
+    // каналов) упирается в память: на 2 ядрах свёртки генератора Kokoro шли в 1,47 раза быстрее одного ядра, с 2D-делением — в 2,08.
+    // Задача = 64 строки входа × ≤ 256 строк весов; начала блоков кратны 64 и 256, поэтому плитки и порядок суммирования те же,
+    // что в одном потоке, — результат бит в бит. VOX_MM2D=0 отключает (для сравнения).
+    const int nt = num_threads();
+    if (m >= 128 && nt > 1 && mm2d_enabled()) {
+        constexpr int64_t MB = 64, RB = 256;
+        const int64_t nm = (m + MB - 1) / MB, nr = (rows + RB - 1) / RB;
+        if (nm * nr >= nt) {
+            parallel_for(nm * nr, 1, [&](int64_t a, int64_t e) {
+                for (int64_t t = a; t < e; ++t) {
+                    const int64_t i0 = (t / nr) * MB, r0 = (t % nr) * RB;
+                    matmul_range(W, x + i0 * cols, std::min(MB, m - i0), y + i0 * rows, r0, std::min(rows, r0 + RB));
+                }
+            });
+            return;
+        }
+    }
     // зерно параллелизма: диапазон строк кратен 4, чтобы плитки не рвались между потоками
     const int64_t work_per_row = std::max<int64_t>(1, cols * m);
     int64_t grain = std::max<int64_t>(4, (65536 / work_per_row) * 4);

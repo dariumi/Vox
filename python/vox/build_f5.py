@@ -193,7 +193,8 @@ def guess_model_cfg(*names) -> str:
 
 def build(ckpt: str, vocab: str, vocos: str, out: str, dtype: str = "bf16", quant: str = "", tokenizer: str = "pinyin",
           variant: str = "", dim_head: int = 64, mel: dict | None = None, pinyin: bool = True, sha: bool = True, defaults: dict | None = None,
-          model_cfg: str | None = None, text_mask_padding: bool | None = None, pe_attn_head: int | None = None):
+          model_cfg: str | None = None, text_mask_padding: bool | None = None, pe_attn_head: int | None = None,
+          vocos_dtype: str = "f32"):
     """model_cfg: "v1" (F5TTS_v1_Base: text_mask_padding=True, RoPE on all heads) or "v0" (F5TTS_Base / F5TTS_Small and most
     fine-tunes of them: text_mask_padding=False, pe_attn_head=1, RoPE only on the first head). Neither is visible in the weights,
     so by default it is guessed from the checkpoint path (see guess_model_cfg); text_mask_padding / pe_attn_head override it."""
@@ -252,7 +253,9 @@ def build(ckpt: str, vocab: str, vocos: str, out: str, dtype: str = "bf16", quan
         shp = voc.shape[k]
         fn = voc.get[k]
         if k.endswith(".weight") and len(shp) == 2:
-            em.mat(name, fn, shp)
+            # Vocos stays f32 by default (like the codec decoder of Qwen3, --codec-dtype): it is small (~13M parameters) but turns
+            # mel into phase, so bf16 weights there add audible-level waveform error on top of the DiT's own (see CHANGELOG 0.14.1)
+            em.mat(name, fn, shp, dtype=vocos_dtype)
         else:
             em.vec(name, fn, shp)
     fb = mel_filterbank(mel["sample_rate"], mel["n_fft"], mel["n_mels"])
@@ -293,6 +296,8 @@ def main(argv=None):
     ap.add_argument("--vocos", required=True)
     ap.add_argument("--dtype", default="bf16", choices=["f32", "f16", "bf16"])
     ap.add_argument("--quant", default="", choices=["", "q8"])
+    ap.add_argument("--vocos-dtype", default="f32", choices=["f32", "f16", "bf16"],
+                    help="precision of the Vocos vocoder matrices (default f32; --dtype/--quant apply to the DiT)")
     ap.add_argument("--tokenizer", default="pinyin", choices=["pinyin", "char"])
     ap.add_argument("--variant", default="")
     ap.add_argument("--dim-head", type=int, default=64)
@@ -305,7 +310,7 @@ def main(argv=None):
     ap.add_argument("-o", "--out", required=True)
     a = ap.parse_args(argv)
     build(a.ckpt, a.vocab, a.vocos, a.out, a.dtype, a.quant, a.tokenizer, a.variant, a.dim_head, pinyin=not a.no_pinyin_table, sha=not a.no_hash,
-          model_cfg=a.model_cfg or None, text_mask_padding=None if a.tmp is None else a.tmp == "true", pe_attn_head=a.pe_attn_head or None)
+          model_cfg=a.model_cfg or None, text_mask_padding=None if a.tmp is None else a.tmp == "true", pe_attn_head=a.pe_attn_head or None, vocos_dtype=a.vocos_dtype)
 
 
 if __name__ == "__main__":

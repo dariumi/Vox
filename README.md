@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.14.0-2a78d6" alt="version 0.14.0">
+  <img src="https://img.shields.io/badge/version-0.16.0-2a78d6" alt="version 0.16.0">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -19,6 +19,7 @@
   <a href="https://dariumi.github.io/Vox/">Project page and live demo</a> ·
   <a href="#quick-start">Quick start</a> ·
   <a href="#models">Models</a> ·
+  <a href="#vox-studio-the-engine-from-a-browser">Vox Studio</a> ·
   <a href="#performance">Performance</a> ·
   <a href="#what-is-verified">What is verified</a> ·
   <a href="CHANGELOG.md">Changelog</a>
@@ -31,7 +32,7 @@ Weights are mmapped from a single `.tmod` file and voices are stored as `.tvoice
 
 | | |
 |---|---|
-| 🧩 **Several model families, one runtime** | Qwen3-TTS (cloning, built-in speakers, voice from a description), F5-TTS (cloning, flow matching), Kokoro-82M (named voices and voice blends). New families plug in from C++ or Python. |
+| 🧩 **Several model families, one runtime** | Qwen3-TTS (cloning, built-in speakers, voice from a description), F5-TTS (cloning, flow matching), Kokoro-82M (named voices and voice blends), CosyVoice2-0.5B (cloning, instructions, native laughter / breath tags). New families plug in from C++ or Python. |
 | 🎛️ **Resource control** | You pick the device, RAM and VRAM limits, thread count and priority, and a mode (speed / balanced / memory / background). `vox plan` shows where each stage will go without loading the weights. |
 | 🔁 **Streaming both ways** | Text can arrive word by word from an LLM while audio comes out in chunks. Edits to the part that has not been spoken yet are applied. |
 | 🎯 **Checked against the official code** | Every family is compared stage by stage with its official PyTorch implementation (see [What is verified](#what-is-verified)). |
@@ -56,6 +57,7 @@ flowchart LR
         Q["Qwen3-TTS<br/>autoregressive"]
         F["F5-TTS<br/>flow matching"]
         K["Kokoro-82M<br/>StyleTTS2 + iSTFTNet"]
+        C["CosyVoice2<br/>LM + flow + HiFT"]
         P["Python families<br/>vox.register_family"]
     end
     subgraph hw["Backends"]
@@ -67,7 +69,7 @@ flowchart LR
     CLI & PY & SRV --> ABI --> engine
     engine --> fam
     Q & F --> CPU & VK
-    K & P --> CPU
+    K & C & P --> CPU
     TM -.-> fam
     TV -.-> SES
     JS["vox.js in the browser<br/>WebGPU · JS fallback"] -.same formats and seeds.-> TM
@@ -82,8 +84,9 @@ flowchart LR
 | **Qwen3-TTS VoiceDesign** | a voice from a text description | same | ✅ | ✅ | ✅ | word by word |
 | **F5-TTS** v1 / v0 and fine-tunes | clone from a recording + its text | depends on the checkpoint (en/zh base, ru fine-tunes) | ✅ | ✅ whole graph | ✅ | by sentences |
 | **Kokoro-82M** *(new in 0.14)* | the named voices of `voices/*.pt` and blends `af_heart,bf_emma` | English with the built-in G2P | ✅ | — | — | by sentences / lines |
+| **CosyVoice2-0.5B** *(new in 0.16)* | clone from a recording (with its text: zero-shot, without: cross-lingual), instructions and emotions (instruct2) | zh, en, ja, ko, yue (as trained) | ✅ | — | — | by groups of sentences |
 
-Planned: XTTS, CosyVoice, Chatterbox. Each family describes itself (`vox inspect`, `engine.capabilities`), and the engine takes care
+Planned: Chatterbox (shares the vocoder and the flow with CosyVoice2), XTTS. Each family describes itself (`vox inspect`, `engine.capabilities`), and the engine takes care
 of chunking, crossfades and the commit policy.
 
 ## Quick start
@@ -126,6 +129,18 @@ so glslang is needed only if you change them (`python tools/gen_shaders.py`). On
 </details>
 
 <details>
+<summary><b>CosyVoice2-0.5B</b>: convert, clone, instructions</summary>
+
+    pip install torch pyyaml onnx onnxruntime s3tokenizer   # for the converter only
+    python -m vox.build_cosyvoice --model ./CosyVoice2-0.5B -o cosyvoice2.tmod      # LLM bf16, flow and HiFT f32
+    vox voice create ref.wav --model cosyvoice2.tmod --text "Text spoken in ref.wav" -o me.tvoice
+    vox say "Hello! [laugh] This is CosyVoice2 in vox." --model cosyvoice2.tmod --voice me.tvoice -o out.wav
+    vox say "[happy] What a nice day!" --model cosyvoice2.tmod --voice me.tvoice -o happy.wav    # emotion → instruct2
+    vox phonemize --model cosyvoice2.tmod "It costs 25 dollars."                                 # the pieces it will speak
+
+</details>
+
+<details>
 <summary><b>F5-TTS</b>: convert, clone, synthesize</summary>
 
     python -m vox.build_f5 --ckpt F5TTS_v1_Base/model_1250000.safetensors --vocab F5TTS_v1_Base/vocab.txt \
@@ -154,47 +169,65 @@ k.phonemize("Hello there!")        # {'phonemes': …, 'chunks': […], 'g2p': '
 
 ## Performance
 
-Measured by the user on vox 0.12.2 (`tools/run_full_check.py`, Ryzen 7 5700X + RTX 3050 6 GB, Qwen3-TTS 1.7B-Base, about 13 s of speech),
-with qwentts.cpp on the same machine and the same text:
+Measured by the user on vox 0.14.0: `tools/run_full_check.py` on a 16-thread CPU with an RTX 3050 6 GB, Qwen3-TTS 1.7B-Base, about 13 s of speech.
+qwentts.cpp (Q8_0) ran on the same machine with the same text. WER and CER were 0 for all nine vox variants and both qwentts.cpp runs.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/qwen-rtf-dark.en.svg">
-    <img src="docs/img/qwen-rtf-light.en.svg" alt="Qwen3-TTS 1.7B RTF: vox Vulkan q4 0.41, q8 0.44, bf16 0.59, qwentts.cpp CUDA 0.43; CPU: vox q4 1.64, q8 1.96, bf16 2.98, qwentts.cpp 2.16" width="760">
+    <img src="docs/img/qwen-rtf-light.en.svg" alt="Qwen3-TTS 1.7B RTF: vox Vulkan q4 0.42, q8 0.44, bf16 0.59, qwentts.cpp CUDA 0.426; CPU: vox q4 1.35, q8 1.65, bf16 2.61, qwentts.cpp 1.84" width="760">
   </picture>
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/qwen-memory-dark.en.svg">
-    <img src="docs/img/qwen-memory-light.en.svg" alt="Peak RSS: vox q8 Vulkan 0.47 GB vs qwentts.cpp CUDA 2.97 GB; CPU: vox q8 2.4 GB vs qwentts.cpp 7.1 GB" width="760">
+    <img src="docs/img/qwen-memory-light.en.svg" alt="Peak RSS, q8: vox Vulkan 0.48 GB vs qwentts.cpp CUDA 2.97 GB; CPU: vox 2.44 GB vs qwentts.cpp 7.14 GB" width="760">
   </picture>
 </p>
 
 <details>
-<summary>Table of all measured configurations</summary>
+<summary>Table of all measured configurations (warm RTF / first chunk / peak RSS)</summary>
 
-| Format | Vulkan | Vulkan, `codec=cpu` | CPU |
+| Format | CPU | Vulkan | Vulkan, `codec=cpu` |
 |---|---|---|---|
-| bf16 | 0.63 | 0.59 | 2.98 |
-| q8 | 0.47 | 0.44 | 1.96 |
-| q4 | 0.44 | 0.41 | 1.64 |
+| bf16 | 2.61 / 2133 ms / 3.7 GB | 0.62 / 508 ms / 0.47 GB | 0.59 / 565 ms / 0.93 GB |
+| q8 | 1.65 / 2339 ms / 2.4 GB | 0.47 / 490 ms / 0.48 GB | 0.44 / 563 ms / 0.91 GB |
+| q4 | 1.35 / 1913 ms / 1.7 GB | 0.44 / 481 ms / 0.46 GB | 0.42 / 546 ms / 0.90 GB |
 
-qwentts.cpp: CUDA 0.429 (RSS 2.97 GB), CPU 2.164 (RSS 7.1 GB). vox q8 RSS: 0.47 GB on the GPU, 2.4 GB on the CPU.
-q4 is faster and uses a third less VRAM, but it does not pass the standard tolerance (KL ≤ 0.02, top-5 ≥ 97%), so q8 is the default.
+qwentts.cpp: CUDA 0.426 (2.97 GB), CPU 1.84 (7.1 GB). So vox q8 is about 10% faster than qwentts.cpp on the CPU with 2.9× less memory,
+and about 10% slower on the GPU with 6× less memory. q4 does not pass the standard tolerance (KL ≤ 0.02, top-5 ≥ 97%), so q8 is the default.
+On the GPU about 70% of the time goes to the talker and predictor matrix-vector products. The predictor makes 160 thousand small calls of 33–50 µs each,
+so that is where Qwen3 on the GPU will get faster next.
 </details>
 
-F5-TTS on the CPU, before and after 0.13 (a DiT with the real F5 layer widths but 2 layers, 2 steps, 12.8 s of audio, 2 cores of the development machine):
+F5-TTS on real weights (`hotstone228/F5-TTS-Russian`), a 2.3 s phrase. Since 0.13 the whole DiT step and Vocos run on the GPU:
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/img/f5-cpu-dark.en.svg">
-    <img src="docs/img/f5-cpu-light.en.svg" alt="F5-TTS CPU seconds: f32 16.6 → 7.7, bf16 17.4 → 8.0, q8 17.1 → 7.2" width="760">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/f5-speed-dark.en.svg">
+    <img src="docs/img/f5-speed-light.en.svg" alt="F5-TTS RTF at 4 steps: CPU 12.5 → 6.71, RTX 3050 35.1 → 1.39, RTX 5050 0.76" width="760">
   </picture>
 </p>
 
-**Not measured on hardware yet:** F5 on a real video card (0.13 GPU graph) and Kokoro with real weights. On a 2-core development box,
-on the test model whose decoder and generator have the real Kokoro widths (the generator is ~88% of the time), Kokoro went from RTF 2.68 to 1.05 during 0.14 work.
+Kokoro-82M on real weights, on the CPU:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/kokoro-cpu-dark.en.svg">
+    <img src="docs/img/kokoro-cpu-light.en.svg" alt="Kokoro-82M CPU RTF: vox f32 0.39, bf16 0.35, PyTorch 0.21" width="760">
+  </picture>
+</p>
+
+0.14.1 speeds up every CPU matrix product with many input rows. Each output is computed with the same summation order as before, so the audio is bit for bit the same.
+On the 2-core development box this took Kokoro from RTF 0.89 to 0.56, and F5 from 0.52 to 0.35 (f32) or 0.42 (bf16). Your numbers will come from a new run.
+
+**CosyVoice2-0.5B** (0.16, CPU only) was timed with the real dimensions and random weights (`tools/make_tiny_cosyvoice.py --full`) on the same 2-core box.
+The LLM takes 96 ms per speech token in bf16 and 59 ms with `--quant q8` (25 tokens make a second of speech, so the LLM alone runs at RTF 2.4 / 1.5).
+The flow is the heavy part: its estimator has 56 transformer blocks and 14 residual blocks, run 10 steps × 2 (classifier-free guidance) over the prompt and the new
+frames together — 16 s for 2.4 s of speech with a 2.3 s prompt (≈ 1 TFLOP per 4 s of speech). HiFT adds ~0.6 s per second of audio. In total RTF ≈ 7–10 on 2 cores;
+a desktop CPU with 8–16 cores should be several times faster, but this model really wants a GPU, which vox does not run it on yet.
+These numbers say nothing about quality: the weights were random.
 
 ## How each model runs
 
@@ -246,6 +279,11 @@ flowchart LR
   block (AdaLN, q/k/v, RoPE, flash attention, FFN) and the output. Vocos runs on the GPU too; only the iSTFT is on the CPU. Set `VOX_F5_GPU=0` to go back to the old path.
 - **v0 vs v1 config** (`F5TTS_Base` and fine-tunes such as `hotstone228/F5-TTS-Russian`): `--model-cfg v0|v1`. The converter guesses it from the path,
   and a wrong config produces noise. Reconvert models made with 0.12.1 or older (CRLF `vocab.txt`, Vocos padding).
+- **Vocos stays f32** since 0.14.1 (`--vocos-dtype`, +26 MB). It is small but turns mel into phase, so bf16 weights there added waveform error on top of the DiT's own.
+  `--dtype` and `--quant` apply to the DiT. Reconvert to get it.
+- **GPU kernels in 0.14.1**: linear layers with many rows use a register-blocked GEMM (`gemmb.comp`: a 128×128 tile, 8×8 outputs per thread,
+  64 FMAs per 4 vec4 reads from shared memory). Attention reads K and V as vec4. `VOX_F5_GEMM=old` returns the 0.14.0 GEMM. Both are checked on lavapipe
+  (the audio is the same as on the CPU to 4e-9). **Speed on a real video card has not been measured yet.** `VOX_PROFILE=gpu` shows the share per shader.
 - Parameters keep their official names: `nfe_step`, `cfg_strength`, `sway_sampling_coef`, `speed`, `cross_fade_duration`, `target_rms`,
   `use_epss`, `max_chars`. Set them through `--extra`, `extra={...}`, or the short CLI flags `--nfe --cfg --sway --speed`.
 - Differences from the official pipeline: Chinese is converted to pinyin character by character, with no word dictionary. The reference is not trimmed by silence (the first 12 s are taken),
@@ -287,6 +325,150 @@ flowchart LR
 - **API**: `vox phonemize --model M [--lang en-gb] "text"`, `vox_engine_phonemize()` in the C ABI, `Engine.phonemize()` in Python.
 - Each piece is synthesized as a whole, so audio comes out piece by piece (lines, then pieces of at most 510 phonemes).
 </details>
+
+<details open>
+<summary><b>CosyVoice2-0.5B</b> <i>(new in 0.16)</i>: Qwen2 LM over speech tokens → flow matching → HiFT</summary>
+
+```mermaid
+flowchart LR
+    T["text"] --> TN["text_normalize<br/>numbers in words, groups of 60–80 tokens"]
+    TN --> TOK["Qwen2 BPE"]
+    V[".tvoice<br/>speech tokens · mel · x-vector"] --> LM
+    TOK --> LM["Qwen2 LM 0.5B<br/>25 speech tokens / s, RAS sampling"]
+    LM --> ENC["flow encoder<br/>Conformer, ×2 → 50 Hz"]
+    V --> CFM
+    ENC --> CFM["flow matching<br/>U-Net estimator, 10 Euler steps, CFG 0.7"]
+    CFM --> HIFT["HiFT vocoder<br/>F0 → NSF source, iSTFT"]
+    HIFT --> PCM["PCM 24 kHz"]
+```
+
+- **Conversion**: `python -m vox.build_cosyvoice --model DIR` (or `python -m vox build --model DIR`) reads the release folder
+  (`cosyvoice2.yaml`, `llm.pt`, `flow.pt`, `hift.pt`, `campplus.onnx`, `speech_tokenizer_v2.onnx`, `CosyVoice-BlankEN/`).
+  The LLM is stored in `--dtype` (bf16 by default; `--quant q8` puts its linear layers in 8 bits), the flow and HiFT in `--flow-dtype` (f32). The fixed noise of the flow matching
+  (`CausalConditionalCFM` draws it with seed 0) is stored too, so the flow is deterministic like the original.
+  The CAM++ speaker encoder is read node by node out of `campplus.onnx` (Conv + BatchNorm pairs the exporter folded stay folded) and checked
+  against onnxruntime during the conversion; the speech tokenizer goes through `s3tokenizer.utils.onnx2torch`. `--no-clone` leaves both out.
+- **Voices are cloned natively**, as `CosyVoiceFrontEnd` does it: the recording (≤ 30 s) is resampled with torchaudio's algorithm, then
+  the 24 kHz mel (the flow's prompt), the CAM++ x-vector from a Kaldi fbank at 16 kHz and the S3 speech tokens (S3TokenizerV2: Whisper log-mel, conv + FSMN
+  attention encoder, FSQ). With the recording's text the voice is **zero-shot** (text and speech tokens prompt the LLM); without it
+  (`--xvector-only`, or a profile recording without text) it is **cross-lingual** (only the flow is prompted).
+- **Instructions** (`instruct2`): a style with `--instruct "…"`, or an emotion tag (`[happy]`, `[радостно]`) when the profile has no style of that name.
+  The `.tmod` carries the model's own wording of the emotions (the Chinese phrases CosyVoice2 was trained on) and `<|endofprompt|>` is added.
+- **Tags**: `[laugh]` becomes the model's `[laughter]` token; `[breath]`, `[cough]`, `[sigh]` are its own. Other tokens of the model
+  (`[noise]`, `<strong>…</strong>`, `<laughter>…</laughter>`) can be written in the text as they are.
+- **Text**: `text_normalize` without ttsfrd / wetext — Chinese punctuation and bracket rules, numbers spelled out with inflect's rules in other
+  text, sentences grouped to 60–80 tokens (`vox phonemize` shows the pieces). Text inside `<|…|>` is passed as is. Every piece goes through
+  LLM → flow → HiFT at once (`stream=False` of the original); pieces follow each other without crossfade.
+- **Options**: `speed` (the mel is stretched, as in `token2wav`), the seed. The LLM samples with the official RAS rules
+  (top-p 0.8, top-k 25, a window of 10 against repeats, end of speech no earlier than 2 tokens per text token) using Philox: the same seed gives the same audio,
+  but not the same tokens as PyTorch's random generator.
+</details>
+
+## Voice profiles: several voices, emotions, any model
+
+*New in 0.15.* A `.tvoice` is now a **profile**: one file holds several voices. Each voice has styles (emotions, delivery), the recordings it
+was cloned from, the built-in speakers to use on models that cannot clone, and a cache of the voice already built for each model it was used with.
+
+```mermaid
+flowchart LR
+    subgraph P["cast.tvoice"]
+        A["anna<br/>styles: default · happy · whisper<br/>recordings + text"]
+        B["boris<br/>speakers: kokoro=am_adam<br/>description for VoiceDesign"]
+        C[("cache<br/>anna/default on qwen3 base<br/>anna/happy on f5 …")]
+    end
+    P -->|"cached, or cloned from the recording"| Q["Qwen3 Base · F5"]
+    P -->|"the speaker named for the model"| K["Kokoro · Qwen3 CustomVoice"]
+    P -->|"description + style instruction"| D["Qwen3 VoiceDesign"]
+```
+
+    vox profile new cast.tvoice --name "Cast"
+    vox profile add cast.tvoice --voice anna anna.wav --text "What Anna says in the recording"
+    vox profile add cast.tvoice --voice anna --style happy anna_happy.wav --text "Something cheerful"
+    vox profile set cast.tvoice --voice anna --style whisper --instruct "Whisper softly" --speed 0.95
+    vox profile add cast.tvoice --voice boris --from boris.tvoice          # a voice from another file (any model)
+    vox profile set cast.tvoice --voice boris --speaker "kokoro=am_adam;qwen3-tts/custom_voice=ryan"
+    vox profile show cast.tvoice
+    vox profile prepare cast.tvoice --model f5.tmod                        # build every voice for this model now and keep it in the file
+    vox say "anna: Hello! [happy] Great news.
+    boris: [whisper] Really? [pause 400ms] Tell me." --model f5.tmod --voice cast.tvoice -o dialogue.wav
+
+```python
+p = vox.Profile("Cast")
+p.add_recording("anna", "anna.wav", "What Anna says in the recording")
+p.add_recording("anna", "anna_happy.wav", "Something cheerful", style="happy")
+p.set_style("anna", "whisper", instruct="Whisper softly", speed=0.95)
+p.set_voice("boris", speakers={"kokoro": "am_adam"})
+p.save("cast.tvoice")
+audio = engine.synthesize("Hello there.", p, voice_id="anna", style="happy")
+audio = engine.synthesize("anna: Hi! [pause 300ms]\nboris: [laugh] Hello.", p)     # markup
+```
+
+**One profile on any model.** When a model needs a voice the profile does not yet have a build for, the engine builds it on first use and
+`save()` / `vox profile prepare` keeps it:
+
+| model | what the voice is built from |
+|---|---|
+| Qwen3 Base, F5-TTS (clone from a recording) | the style's recording and its text (the default style's, if the style has none) |
+| Kokoro, Qwen3 CustomVoice (built-in speakers) | `speakers` of the voice: `kokoro`, `qwen3-tts/custom_voice` (family or family/variant); CustomVoice 1.7B also gets the style instruction |
+| Qwen3 VoiceDesign (voice from a description) | the voice description plus the style instruction |
+
+A voice that cannot be made on a model (for example, no Kokoro speaker named) is a clear error that says what to add.
+
+**Markup in the text** (`markup`: `auto` by default, `strict`, `off`):
+
+| markup | meaning | when the model cannot do it |
+|---|---|---|
+| `[voice:anna]`, `[anna]`, `anna: …` at the start of a line | switch voice (dialogue lines: profiles with two or more voices) | — |
+| `[happy]`, `[style:happy]`, `[радостно]` | a style of the voice; an emotion without its own style is mapped for the model | instruction (Qwen CustomVoice 1.7B, VoiceDesign), else speaking rate (F5, Kokoro), else a note |
+| `[/]`, `[neutral]` | back to the default style and speed | — |
+| `[pause 500ms]`, `[pause 1.5s]`, `[break]`, `[пауза 300мс]` | exact silence | — |
+| `[speed 1.2]` | speaking rate | a note (Qwen3 has no rate control) |
+| `[laugh]`, `[sigh]`, `[cough]`, `[смех]` … | a non-verbal sound | the model's own tag if it has one, otherwise a short pause |
+| `\[` | a literal bracket | — |
+
+In `auto`, a bracket that is none of these stays text. In `strict` it is dropped, and with `off` everything is read as text. The text
+around tags is spoken exactly as if each piece were said alone. What the engine could not do as asked is listed in the session's `notes`
+(`session.info["notes"]`). Tags may arrive split across `feed()` calls.
+
+**Compatibility.** A 1.0 `.tvoice` opens as a profile with one voice and speaks bit for bit as before. A profile whose default voice has
+a build is saved as format **1.1**: its top level is that voice in the 1.0 layout, so vox 0.14 and vox.js read it as an ordinary voice. A
+profile with no build yet is format 2.0, which older versions refuse with a clear message. Recordings are stored in it once, as WAV.
+
+## Vox Studio: the engine from a browser
+
+*New in 0.15.* `vox web` (or `vox -web`) starts the engine with a built-in server and prints links with a secret. Open the **Vox Studio**
+page and the engine is controlled from the browser: a script with several voices and markup, playback while it is being synthesized,
+voice profiles (record from the microphone, styles, built-in speakers per model), models and devices, and the history of everything
+spoken. The page is static (it lives at `vox.arkonova.network/studio/` and is also served by the engine itself); the speech is made on
+your machine. The page talks to the engine with HTTP requests, the way a Clash dashboard talks to its core.
+
+    vox web --models ./models --voices ./voices
+      Vox Studio:  https://vox.arkonova.network/studio/#url=http%3A%2F%2F127.0.0.1%3A7860&secret=…
+      this engine: http://127.0.0.1:7860/studio/#secret=…
+    vox web --models ./models --host 0.0.0.0 --tls      # for other computers: https with a self-signed certificate
+
+```mermaid
+sequenceDiagram
+    participant B as Browser: Vox Studio page
+    participant E as vox web (your computer)
+    B->>E: GET /health
+    B->>E: GET /v1/info  (Authorization: Bearer secret)
+    E-->>B: models, profiles, devices
+    B->>E: POST /v1/speak {text, model, profile, voice_id, params}
+    E-->>B: PCM chunks as they are synthesized (played at once)
+    E-->>B: X-Vox-Clip → /v1/history/<id> (notes, RTF)
+```
+
+- **Secret.** Every `/v1` request needs it (`Authorization: Bearer …`, or `?token=` for audio links and WebSockets). The secret travels in the
+  link's `#fragment`, which browsers never send to the site hosting the page. It is stored in `~/.vox/web_secret`; `--new-secret` makes a new one.
+- **Reaching the engine.** An https page may call `http://127.0.0.1` / `localhost` (Chrome may ask once to allow local network access).
+  From another computer it may not call plain http, so there are three ways:
+  - `--tls`: a self-signed certificate is made for this machine's names and addresses; open the engine's `https://…/health` once and accept it.
+  - `--cert` / `--key` with your own certificate.
+  - The Studio that the engine serves itself (`http://HOST:PORT/studio/`).
+- **API** (for your own clients too): models (`/v1/models`, load / unload / add), profiles (`/v1/profiles`: create, PATCH, recordings,
+  prepare, download / upload), `POST /v1/speak` (streamed pcm16 / f32 / wav), `/v1/history`, and WebSocket `/v1/duplex` (the protocol of
+  `vox serve`). The full list is at the top of `python/vox/web.py`.
 
 ## Resources: device, memory, mode
 
@@ -401,8 +583,9 @@ real checkpoints, only narrow), then compared with vox stage by stage. CI runs t
 | Family | Reference | Result |
 |---|---|---|
 | Qwen3-TTS | `qwen_tts` 0.1.1 (`generate_voice_clone`, `generate_custom_voice`, `generate_voice_design`) | speaker embedding ≤ 4e-7; reference codes match 100%; talker / predictor logits ≤ 1e-6 / 1e-5 with argmax 100%; decoder audio ≤ 3e-4; on a **real 1.7B-Base**: logits ≤ 2.6e-4, argmax 100% |
-| F5-TTS | `f5_tts` + `vocos` | tokenizer, mel, text encoder, DiT (both CFG branches), Vocos, the CFM loop ~1e-6; end-to-end audio 3e-9; GPU graph on lavapipe 4e-9; real hotstone checkpoint: f32 audio 1.8e-4 |
-| Kokoro-82M | `kokoro` 0.7.16 + `misaki` 0.7.4 (`KModel`, `KPipeline`) | every stage (PL-BERT, duration encoder, durations, F0/N, text encoder, alignment, NSF source, STFT, generator) to ~1e-6; same length in all end-to-end scenarios, log-mel 0.16–0.71 dB (2.64 dB with a different noise); G2P 92.1% of words vs misaki |
+| F5-TTS | `f5_tts` + `vocos` | tokenizer, mel, text encoder, DiT (both CFG branches), Vocos, the CFM loop ~1e-6; end-to-end audio 3e-9; GPU graph on lavapipe 4e-9; **real** `hotstone228/F5-TTS-Russian`: mel ~5e-6 (f32), the same error on CPU, RTX 3050 and RTX 5050 |
+| CosyVoice2 | the CosyVoice repository (`CosyVoice2Model`, `CosyVoiceFrontEnd`), onnxruntime, s3tokenizer | 24 kHz mel 2e-6, fbank 3e-5, CAM++ x-vector 2.5e-7, Whisper mel 2e-5, speech tokens 100%, LLM log-probs 2e-7 with argmax 100%, flow mel 3e-7, HiFT audio 1.4e-4 (rel.); whole utterances through the engine (voice from the WAV, the official tokens and noise) 7e-6–1.4e-5 max \|Δ\| in all three modes; text pieces identical to `text_normalize` on 8 texts. **Real weights not checked yet** |
+| Kokoro-82M | `kokoro` 0.7.16 + `misaki` 0.7.4 (`KModel`, `KPipeline`) | every stage (PL-BERT, duration encoder, durations, F0/N, text encoder, alignment, NSF source, STFT, generator) to ~1e-6; same length in all end-to-end scenarios, log-mel 0.16–0.71 dB (2.64 dB with a different noise); G2P 92.1% of words vs misaki; **real Kokoro-82M**: same length as the official (8.000 s), mean \|Δ log-mel\| 0.125, whisper hears the same words |
 | vox.js | the core and the official dumps | F5 audio 3.7e-9; Qwen3 conversion byte for byte, audio = `vox say --seed`; CPU fallback < 1e-4 |
 | Bindings | `vox say --seed 42` | C, C++, Rust, Go, Node.js, Python ctypes: bit for bit |
 
@@ -430,7 +613,8 @@ To check a reference before creating a voice, run `python tools/check_reference.
 ## Formats
 
 - `.tmod`: a `VOXM` header, a JSON manifest (stages, precision, tokenizer, generation parameters, voices) and blobs aligned to 4096 bytes for mmap.
-- `.tvoice`: safetensors holding `speaker_emb`, `ref_codes`, `ref_text_tokens`, the source WAV and default parameters, bound to the weights by sha256.
+- `.tvoice`: safetensors. Since 0.15 it is a profile (metadata `profile`: voices, styles, recordings, cache index; tensors `ref.<id>` and `c<N>.*`);
+  the default voice's build sits at the top level in the 1.0 layout (`speaker_emb`, `ref_codes`, `ref_text_tokens`, `ref_audio`, metadata `voice`). A build is bound to the weights by sha256.
   A `speaker` voice (built-in speaker, description, Kokoro voice or blend) stores the speaker name and is tied to the model variant.
 - **Q4**: 4 bits per weight in blocks of 32. `--quant q4` covers the talker attention and MLP, `q4mlp` only the MLP, `q4full` everything. On the RTX 3050 it is faster and uses a
   third less VRAM, but it does not pass the KL/top-5 tolerance. WER on five phrases was 0.12–0.18 against 0.07 for q8, with no audible difference on clones.
@@ -457,11 +641,14 @@ by `python tools/make_charts.py`.
 | `src/f5.cpp`, `src/f5_ops.cpp`, `src/backend_f5.cpp`, `src/gpu_f5.cpp` | F5-TTS: tokenizer, DiT + CFM, Vocos, text splitting and crossfade, the Vulkan DiT graph |
 | `src/kokoro.cpp`, `src/backend_kokoro.cpp` | Kokoro-82M: PL-BERT, prosody predictor, text encoder, decoder, iSTFTNet generator |
 | `src/kokoro_g2p.cpp`, `src/kokoro_g2p_en.cpp` | English G2P (a port of misaki.en) and the KPipeline-style piece splitting |
+| `src/cosyvoice.cpp`, `src/cosyvoice_front.cpp`, `src/backend_cosyvoice.cpp` | CosyVoice2: Qwen2 LM, flow (Conformer + CFM), HiFT; mel / fbank / CAM++ / S3 tokenizer; text frontend |
+| `src/nn.cpp` | layers shared by the convolutional models (convolutions, NSF source, STFT / iSTFT, attention, torchaudio resampler) |
+| `src/profile.cpp`, `src/markup.cpp` | voice profiles (format, merge patch, cross-model building) and the text markup |
 | `src/resources.cpp`, `src/family.cpp` | resource planner and session budget; registry of model families (C++ and Python) |
 | `src/kernels.cpp` | thread pools, matmul (f32/f16/bf16, q8 and q4 int8-dot AVX2), transformer (including the GPU/CPU hybrid) |
 | `src/gpu_vulkan.cpp`, `src/gpu_codec.cpp`, `src/shaders/*.comp` | Vulkan: matmul, transformer, codec decoder, profiler; GLSL shaders (SPIR-V in `src/vk_shaders.inc`) |
 | `webgpu/wgsl/`, `webgpu/web/src/` | WGSL shaders and the `vox.js` sources (`tools/build_web.py`) |
-| `python/vox` | Python API, converters `vox.build` / `vox.build_f5` / `vox.build_kokoro`, server `vox.serve`, misaki frontend |
+| `python/vox` | Python API, converters `vox.build` / `vox.build_f5` / `vox.build_kokoro` / `vox.build_cosyvoice`, server `vox.serve`, misaki frontend |
 | `site/`, `docs/` | the project page and its GitHub Pages build; `docs/img/` holds the charts |
 | `tools/` | references, the full run, tiny models (`make_tiny_*.py`), charts |
 | `tests/`, `examples/` | unit and reference tests; clients in six languages |
@@ -472,6 +659,7 @@ by `python tools/make_charts.py`.
                               # examples in 6 languages, vox.js in Chromium (if playwright is available), Python, server, duplex, Q4
     VOX_QWEN2_GGUF=qwen2.gguf VOX_TEST_DEVICES="cpu;vulkan:0" python tests/test_official.py build/vox
     python tests/test_kokoro_tiny.py build/vox
+    VOX_COSYVOICE_SRC=CosyVoice VOX_QWEN2_GGUF=qwen2.gguf python tests/test_cosyvoice_tiny.py build/vox   # a clone of FunAudioLLM/CosyVoice
 
 Test vocabulary: `curl -L -o qwen2.gguf https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/ggml-vocab-qwen2.gguf`.
 CI (`.github/workflows/ci.yml`) runs all of this on the CPU and on lavapipe.
@@ -480,9 +668,11 @@ CI (`.github/workflows/ci.yml`) runs all of this on the CPU and on lavapipe.
 
 - Native GPU support is Vulkan only (no CUDA or Metal). The shaders are generic, with no tensor cores or cooperative matrix. One Vulkan device per process.
 - **Kokoro**: CPU only (no Vulkan and no browser yet). The built-in G2P is English only and differs from misaki on a few words
-  (a heuristic tagger instead of spaCy, no espeak). Real Kokoro-82M weights were not checked during development (there was no Hugging Face access).
-- F5-TTS on the GPU has not been measured on a real card. Its graph needs `dim_head ≤ 64`, which every official checkpoint satisfies.
-- The main path is built for autoregressive codec models. Non-AR models use the "direct" mode of `Backend`, as F5 and Kokoro do. XTTS, CosyVoice and Chatterbox are not supported yet.
+  (a heuristic tagger instead of spaCy, no espeak). On real weights it is about 1.7× slower than PyTorch on 16 threads (measured on 0.14.0, before the 0.14.1 matrix-product speedup).
+- F5-TTS at 32 steps is still slower than real time on the GPU (RTF 5 on an RTX 5050). Its graph needs `dim_head ≤ 64`, which every official checkpoint satisfies.
+- **CosyVoice2**: CPU only. The text frontend has no ttsfrd / wetext (Chinese numbers stay digits, as in the official code without them). Audio comes out per group
+  of sentences, not token by token (the official bidirectional streaming mode is not implemented). Checked against the official code on a tiny model only.
+- The main path is built for autoregressive codec models. Non-AR models use the "direct" mode of `Backend`, as F5, Kokoro and CosyVoice2 do. XTTS and Chatterbox are not supported yet.
 - The official `non_streaming_mode=True` (the whole text in the prefill) is not implemented. A Python backend runs on the CPU in the interpreter and is meant for prototypes.
 - GPU sampling uses float and CPU sampling uses double. The same seed on the same device gives the same audio.
 - Voice input resampling is sinc/Kaiser. It matches `qwen_tts` (soxr) bit for bit only for 24 kHz WAV.

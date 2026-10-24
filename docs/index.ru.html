@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vox — движок синтеза речи для любых моделей</title>
-<meta name="description" content="vox запускает Qwen3-TTS, F5-TTS и Kokoro-82M из одного файла .tmod: на процессоре, через Vulkan и в браузере через WebGPU. Библиотека на C ABI, CLI, Python и vox.js.">
+<meta name="description" content="vox запускает Qwen3-TTS, F5-TTS, Kokoro-82M и CosyVoice2 из одного файла .tmod: на процессоре, через Vulkan и в браузере через WebGPU. Библиотека на C ABI, CLI, Python и vox.js.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23170f2b'/%3E%3Cpath d='M5 16h3l2-7 4 14 4-18 3 11h6' fill='none' stroke='%23ff6b8f' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Unbounded:wght@600;700&display=swap&subset=cyrillic" rel="stylesheet">
@@ -16,7 +16,7 @@
     <a class="logo" href="#top" aria-label="vox"><svg viewBox="0 0 28 20" aria-hidden="true"><path d="M1 10h3l2-6 3.5 12L13 1l3.4 15L19 7l2 3h6" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>vox</a>
     <nav aria-label="Разделы">
       <a href="#models">Модели</a><a href="#perf">Скорость</a><a href="#download">Скачать</a><a href="#languages">Языки</a><a href="#demo">Демо</a>
-      <a class="lang" href="index.html" hreflang="en" lang="en">English</a><a class="gh" href="https://github.com/dariumi/Vox">GitHub</a>
+      <a href="studio/?lang=ru">Vox Studio</a><a class="lang" href="index.html" hreflang="en" lang="en">English</a><a class="gh" href="https://github.com/dariumi/Vox">GitHub</a>
     </nav>
   </div>
 </header>
@@ -26,9 +26,10 @@
   <div class="wrap">
     <div>
       <h1>Движок речи, который не привязан к одной модели</h1>
-      <p class="lead">vox запускает Qwen3-TTS, F5-TTS и Kokoro-82M из одного файла <code>.tmod</code>: на процессоре, на видеокарте через Vulkan и прямо в браузере через WebGPU. Один <code>seed</code> — один звук.</p>
+      <p class="lead">vox запускает Qwen3-TTS, F5-TTS, Kokoro-82M и CosyVoice2 из одного файла <code>.tmod</code>: на процессоре, на видеокарте через Vulkan и прямо в браузере через WebGPU. Один <code>seed</code> — один звук.</p>
       <div class="actions">
         <a class="btn primary" href="#demo">Попробовать в браузере</a>
+        <a class="btn" href="studio/?lang=ru">Открыть Vox Studio</a>
         <a class="btn" href="#download">Скачать</a>
       </div>
       <ul class="facts">
@@ -76,8 +77,9 @@
         <thead><tr><th>Модель</th><th>Процессор</th><th>Vulkan</th><th>Браузер (WebGPU)</th><th>Что проверено</th></tr></thead>
         <tbody>
           <tr><td><b>Qwen3-TTS 12Hz</b><small>Base, CustomVoice, VoiceDesign; 0,6B и 1,7B</small></td><td class="y">да</td><td class="y">да</td><td class="y">да</td><td>Ядро сверено с официальным <code>qwen_tts</code>, в том числе на настоящей 1,7B-Base; замеры скорости на RTX 3050 есть в README. В браузере: загрузка по ссылке HF и синтез сверены с ядром на крошечной модели; на настоящих весах и на реальной видеокарте не измерялось. Клон голоса Base из записи делается прямо в браузере (на крошечной модели сверен с ядром)</td></tr>
-          <tr><td><b>F5-TTS</b><small>DiT + flow matching + Vocos, клонирование по образцу</small></td><td class="y">да</td><td class="y">да, весь граф</td><td class="y">да</td><td>Сверена с <code>f5_tts</code> и <code>vocos</code> на тестовой модели, в браузере тоже; Vulkan-граф (DiT и Vocos) — до 4e-9 на lavapipe. Скорость на реальной видеокарте не измерялась</td></tr>
-          <tr><td><b>Kokoro-82M</b><small>StyleTTS2 + iSTFTNet; именные голоса и смеси; английский G2P встроен</small></td><td class="y">да</td><td class="n">пока нет</td><td class="n">пока нет</td><td>Каждая стадия сверена с официальным <code>kokoro</code> до ~1e-6; сквозное аудио той же длины, разница log-mel 0,16–0,71 дБ. Встроенный G2P совпадает с <code>misaki</code> на 92% слов; с <code>misaki</code> в Python куски в точности как у <code>KPipeline</code>. Настоящие веса не проверялись</td></tr>
+          <tr><td><b>F5-TTS</b><small>DiT + flow matching + Vocos, клонирование по образцу</small></td><td class="y">да</td><td class="y">да, весь граф</td><td class="y">да</td><td>Сверена с <code>f5_tts</code> и <code>vocos</code> на тестовой модели, в браузере тоже; Vulkan-граф (DiT и Vocos) — до 4e-9 на lavapipe.. На настоящих весах (<code>hotstone228/F5-TTS-Russian</code>, 4 шага) RTF 0,76 на RTX 5050, 1,39 на RTX 3050</td></tr>
+          <tr><td><b>Kokoro-82M</b><small>StyleTTS2 + iSTFTNet; именные голоса и смеси; английский G2P встроен</small></td><td class="y">да</td><td class="n">пока нет</td><td class="n">пока нет</td><td>Каждая стадия сверена с официальным <code>kokoro</code> до ~1e-6; сквозное аудио той же длины, разница log-mel 0,16–0,71 дБ. Встроенный G2P совпадает с <code>misaki</code> на 92% слов; с <code>misaki</code> в Python куски в точности как у <code>KPipeline</code>. На настоящих весах Kokoro-82M: длина как у официальной, средний |Δ log-mel| 0,125, whisper слышит те же слова</td></tr>
+          <tr><td><b>CosyVoice2-0.5B</b><small>Qwen2 LM по речевым токенам + flow matching + HiFT; клонирование, инструкции, теги смеха и дыхания</small></td><td class="y">да</td><td class="n">пока нет</td><td class="n">пока нет</td><td>Каждая стадия (mel, fbank, CAM++, mel Whisper, токены S3, лог-вероятности LLM, flow, HiFT) совпадает с официальным кодом CosyVoice до 1e-7–1e-4 на крошечной модели; целые фразы через движок — до 1,4e-5; куски текста как у <code>text_normalize</code>. Настоящие веса пока не проверены</td></tr>
           <tr><td><b>XTTS, CosyVoice, Chatterbox</b></td><td class="n" colspan="3">в очереди</td><td>Будут подключены по одной модели за итерацию</td></tr>
         </tbody>
       </table>
@@ -106,6 +108,7 @@
       <div class="pipe"><div class="who"><b>Qwen3-TTS</b><small>авторегрессионная, текст по словам</small></div><div class="steps-row"><span class="st"><b>текст</b><small>BPE Qwen2</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>prefill</b><small>голос · диктор · инструкция</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>talker</b><small>1 токен / кадр</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>code predictor</b><small>15 проходов, 1 dispatch</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>декодер кодека</b><small>потоковый, чанки 320 мс</small></span></div></div>
       <div class="pipe"><div class="who"><b>F5-TTS</b><small>flow matching, целыми предложениями</small></div><div class="steps-row"><span class="st"><b>текст</b><small>нарезка как infer_process</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>DiT × NFE</b><small>2 ветки CFG, один command buffer на шаг</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>Vocos</b><small>на GPU</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>iSTFT</b></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>кроссфейд</b><small>0,15 с</small></span></div></div>
       <div class="pipe"><div class="who"><b>Kokoro-82M</b><small>новое в 0.14 · именные голоса</small></div><div class="steps-row"><span class="st"><b>G2P</b><small>встроенный порт misaki</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>PL-BERT</b><small>ALBERT</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>просодия</b><small>длительности · F0 · энергия</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>декодер</b><small>AdaIN</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>iSTFTNet</b><small>источник NSF, Snake</small></span></div></div>
+      <div class="pipe"><div class="who"><b>CosyVoice2</b><small>новое в 0.16 · клонирование, инструкции</small></div><div class="steps-row"><span class="st"><b>text_normalize</b><small>группы предложений</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>Qwen2 LM</b><small>речевые токены, RAS</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>Conformer</b><small>×2 → 50 Гц</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>flow matching</b><small>10 шагов, CFG</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>HiFT</b><small>источник NSF, iSTFT</small></span></div></div>
     </div>
   </div>
 </section>
@@ -113,13 +116,14 @@
 <section class="block" id="perf">
   <div class="wrap">
     <h2>Скорость и память</h2>
-    <p class="sub">Замер пользователя на vox 0.12.2 через <code>tools/run_full_check.py</code>: Ryzen 7 5700X + RTX 3050 6 ГБ, Qwen3-TTS 1.7B-Base, около 13 с речи. qwentts.cpp — на той же машине и том же тексте.</p>
+    <p class="sub">Замер пользователя на vox 0.14.0 через <code>tools/run_full_check.py</code>: CPU на 16 потоков, RTX 3050 6 ГБ и RTX 5050 8 ГБ. qwentts.cpp — на той же машине и том же тексте; WER у всех вариантов 0.</p>
     <div class="charts">
-      <figure><img src="img/qwen-rtf-site.ru.svg" alt="RTF Qwen3-TTS 1.7B: vox Vulkan q4 0,41, q8 0,44, bf16 0,59, qwentts.cpp CUDA 0,43; CPU: vox q4 1,64, q8 1,96, bf16 2,98, qwentts.cpp 2,16" width="760" loading="lazy"></figure>
-      <figure><img src="img/qwen-memory-site.ru.svg" alt="Пиковый RSS: vox q8 Vulkan 0,47 ГБ против qwentts.cpp CUDA 2,97 ГБ; CPU: vox q8 2,4 ГБ против qwentts.cpp 7,1 ГБ" width="760" loading="lazy"></figure>
-      <figure><img src="img/f5-cpu-site.ru.svg" alt="F5-TTS на CPU, секунды: f32 16,6 → 7,7, bf16 17,4 → 8,0, q8 17,1 → 7,2" width="760" loading="lazy"></figure>
+      <figure><img src="img/qwen-rtf-site.ru.svg" alt="RTF Qwen3-TTS 1.7B: vox Vulkan q4 0,42, q8 0,44, bf16 0,59, qwentts.cpp CUDA 0,426; CPU: vox q4 1,35, q8 1,65, bf16 2,61, qwentts.cpp 1,84" width="760" loading="lazy"></figure>
+      <figure><img src="img/qwen-memory-site.ru.svg" alt="Пиковый RSS, q8: vox Vulkan 0,48 ГБ против qwentts.cpp CUDA 2,97 ГБ; CPU: vox 2,44 ГБ против qwentts.cpp 7,14 ГБ" width="760" loading="lazy"></figure>
+      <figure><img src="img/f5-speed-site.ru.svg" alt="RTF F5-TTS при 4 шагах: CPU 12,5 → 6,71, RTX 3050 35,1 → 1,39, RTX 5050 0,76" width="760" loading="lazy"></figure>
+      <figure><img src="img/kokoro-cpu-site.ru.svg" alt="RTF Kokoro-82M на CPU: vox f32 0,39, bf16 0,35, PyTorch 0,21" width="760" loading="lazy"></figure>
     </div>
-    <p class="note">Пока не измерено на железе: F5-TTS на настоящей видеокарте (GPU-граф из 0.13) и Kokoro на настоящих весах. Свои цифры даст <code>tools/run_full_check.py</code> на вашей машине.</p>
+    <p class="note">В 0.14.1 ускорены умножения на CPU с многими строками, звук совпадает бит в бит: на 2 ядрах Kokoro RTF 0,89 → 0,56. Ещё там более быстрые GEMM и внимание F5 на GPU; их пока проверили только на корректность на программном GPU. Свои цифры даст <code>tools/run_full_check.py</code> на вашей машине.</p>
   </div>
 </section>
 
@@ -707,7 +711,7 @@ curl -X POST localhost:8080/v1/voices -d &#x27;{&quot;name&quot;:&quot;me&quot;,
 
 <footer class="site">
   <div class="wrap">
-    <div>vox 0.14.0 · Apache-2.0 · <a href="https://github.com/dariumi/Vox">исходный код</a></div>
+    <div>vox 0.16.0 · Apache-2.0 · <a href="https://github.com/dariumi/Vox">исходный код</a></div>
     <ul><li><a href="https://github.com/dariumi/Vox/blob/main/README.ru.md">README</a></li><li><a href="https://github.com/dariumi/Vox/blob/main/CHANGELOG.md">Список изменений</a></li><li><a href="https://github.com/dariumi/Vox/issues">Сообщить о проблеме</a></li></ul>
   </div>
 </footer>

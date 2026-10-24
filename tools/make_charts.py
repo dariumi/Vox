@@ -89,46 +89,60 @@ def f2(v):
     return f"{v:.2f}"
 
 
+def fg(v):
+    return f"{v:.3g}"
+
+
 def f1(v):
     return f"{v:.1f}"
 
 
 CHARTS = {}
 
-# Qwen3-TTS 1.7B-Base, ~13 s of speech, Ryzen 7 5700X + RTX 3050 6 GB — the user's 0.12.2 report (run_full_check.py).
+# All numbers below: the user's report on vox 0.14.0 (tools/run_full_check.py and check_f5_real.py), 16-thread CPU,
+# RTX 3050 6 GB (vulkan:1) and RTX 5050 8 GB (vulkan:0); qwentts.cpp (Q8_0) on the same machine and text.
 for lang in ("en", "ru"):
     L = lang == "en"
     CHARTS[f"qwen-rtf.{lang}"] = hbar_chart(
         "Qwen3-TTS 1.7B: real-time factor" if L else "Qwen3-TTS 1.7B: коэффициент реального времени",
-        ("RTF = synthesis time / audio length, lower is better · Ryzen 7 5700X + RTX 3050 6 GB, ~13 s of speech"
-         if L else "RTF = время синтеза / длина аудио, меньше — лучше · Ryzen 7 5700X + RTX 3050 6 GB, ~13 с речи"),
-        [("GPU" if L else "Видеокарта", [(0, 0.41, "vox q4 · Vulkan"), (0, 0.44, "vox q8 · Vulkan"),
-                                          (0, 0.59, "vox bf16 · Vulkan"), (1, 0.429, "qwentts.cpp · CUDA")]),
-         ("CPU" if L else "Процессор", [(0, 1.64, "vox q4"), (0, 1.96, "vox q8"), (0, 2.98, "vox bf16"),
-                                        (1, 2.164, "qwentts.cpp")])],
-        ["vox", "qwentts.cpp"], 3.2, [0, 0.5, 1, 1.5, 2, 2.5, 3], f2, "",
-        ("vox 0.12.2, Vulkan with codec=cpu (best of the two modes); measured by the user with tools/run_full_check.py"
-         if L else "vox 0.12.2, Vulkan с codec=cpu (лучший из двух режимов); замер пользователя, tools/run_full_check.py"),
+        ("RTF = synthesis time / audio length, lower is better · 16-thread CPU, RTX 3050 6 GB, ~13 s of speech"
+         if L else "RTF = время синтеза / длина аудио, меньше — лучше · 16 потоков CPU, RTX 3050 6 ГБ, ~13 с речи"),
+        [("GPU" if L else "Видеокарта", [(0, 0.42, "vox q4 · Vulkan"), (0, 0.44, "vox q8 · Vulkan"),
+                                          (0, 0.59, "vox bf16 · Vulkan"), (1, 0.426, "qwentts.cpp · CUDA")]),
+         ("CPU" if L else "Процессор", [(0, 1.35, "vox q4"), (0, 1.65, "vox q8"), (0, 2.61, "vox bf16"),
+                                        (1, 1.839, "qwentts.cpp")])],
+        ["vox", "qwentts.cpp"], 2.9, [0, 0.5, 1, 1.5, 2, 2.5], f2, "",
+        ("vox 0.14.0 (warm), Vulkan with codec=cpu; qwentts.cpp Q8_0, synthesis time from its own log; WER 0 everywhere"
+         if L else "vox 0.14.0 (тёплый старт), Vulkan с codec=cpu; qwentts.cpp Q8_0, время синтеза по его логу; WER 0 у всех"),
         ref=(1.0, "real time" if L else "реальное время"))
     CHARTS[f"qwen-memory.{lang}"] = hbar_chart(
         "Qwen3-TTS 1.7B: peak process memory" if L else "Qwen3-TTS 1.7B: пиковая память процесса",
-        "RSS in GB, lower is better · same run as the RTF chart" if L else "RSS в ГБ, меньше — лучше · тот же прогон",
-        [("GPU" if L else "Видеокарта", [(0, 0.47, "vox q8 · Vulkan"), (1, 2.97, "qwentts.cpp · CUDA")]),
-         ("CPU" if L else "Процессор", [(0, 2.4, "vox q8"), (1, 7.1, "qwentts.cpp")])],
-        ["vox", "qwentts.cpp"], 7.6, [0, 2, 4, 6], f2, " GB",
+        "RSS in GB, lower is better · q8, same run as the RTF chart" if L else "RSS в ГБ, меньше — лучше · q8, тот же прогон",
+        [("GPU" if L else "Видеокарта", [(0, 0.476, "vox · Vulkan"), (1, 2.97, "qwentts.cpp · CUDA")]),
+         ("CPU" if L else "Процессор", [(0, 2.444, "vox"), (1, 7.137, "qwentts.cpp")])],
+        ["vox", "qwentts.cpp"], 7.8, [0, 2, 4, 6], f2, " GB",
         ("On the GPU vox returns the mmap pages of the weights to the system after upload (release_host_weights)"
          if L else "На GPU vox после загрузки отдаёт системе mmap-страницы весов (release_host_weights)"))
-    # F5-TTS v1 Base layer sizes, CPU benchmark of this repository, 0.12 vs 0.13 (development box, 2 cores).
-    CHARTS[f"f5-cpu.{lang}"] = hbar_chart(
-        "F5-TTS on the CPU: 0.12 → 0.13" if L else "F5-TTS на процессоре: 0.12 → 0.13",
-        ("Seconds, lower is better · DiT with real F5 layer widths (2 layers), 2 steps, 12.8 s of audio, 2 cores"
-         if L else "Секунды, меньше — лучше · DiT с настоящей шириной слоёв F5 (2 слоя), 2 шага, 12,8 с звука, 2 ядра"),
-        [("f32", [(1, 16.6, "0.12"), (0, 7.7, "0.13")]),
-         ("bf16", [(1, 17.4, "0.12"), (0, 8.0, "0.13")]),
-         ("q8", [(1, 17.1, "0.12"), (0, 7.2, "0.13")])],
-        ["0.13", "0.12"], 19, [0, 5, 10, 15], f1, " s",
-        ("Tiled attention per head and q8 with weights dequantized once; absolute numbers depend on the machine"
-         if L else "Тайловое внимание по головам и q8 с однократной распаковкой весов; абсолютные числа зависят от машины"))
+    CHARTS[f"f5-speed.{lang}"] = hbar_chart(
+        "F5-TTS: 0.12.2 → 0.14.0" if L else "F5-TTS: 0.12.2 → 0.14.0",
+        ("RTF, lower is better · hotstone228/F5-TTS-Russian, bf16, 4 steps, a 2.3 s phrase"
+         if L else "RTF, меньше — лучше · hotstone228/F5-TTS-Russian, bf16, 4 шага, фраза 2,3 с"),
+        [("CPU" if L else "Процессор", [(1, 12.5, "0.12.2"), (0, 6.71, "0.14.0")]),
+         ("RTX 3050", [(1, 35.1, "0.12.2"), (0, 1.39, "0.14.0")]),
+         ("RTX 5050", [(0, 0.76, "0.14.0")])],
+        ["0.14.0", "0.12.2"], 37, [0, 10, 20, 30], fg, "",
+        ("At 32 steps: CPU 96.6 → 53.2, RTX 3050 9.3, RTX 5050 5.0. 0.13 put the whole DiT step and Vocos on the GPU"
+         if L else "При 32 шагах: CPU 96,6 → 53,2, RTX 3050 9,3, RTX 5050 5,0. В 0.13 шаг DiT и Vocos целиком ушли на GPU"),
+        ref=(1.0, "real time" if L else "реальное время"))
+    CHARTS[f"kokoro-cpu.{lang}"] = hbar_chart(
+        "Kokoro-82M on the CPU" if L else "Kokoro-82M на процессоре",
+        ("RTF, lower is better · real weights, af_heart, 8.1 s of speech, 16 threads"
+         if L else "RTF, меньше — лучше · настоящие веса, af_heart, 8,1 с речи, 16 потоков"),
+        [("vox 0.14.0", [(0, 0.39, "f32"), (0, 0.35, "bf16")]),
+         ("PyTorch", [(1, 0.21, "kokoro")])],
+        ["vox", "PyTorch (kokoro 0.7.16)"], 0.45, [0, 0.1, 0.2, 0.3, 0.4], f2, "",
+        ("Measured before the 0.14.1 matmul changes (2D split, 4×3 tiles): on 2 cores those took Kokoro from RTF 0.89 to 0.56"
+         if L else "Замер до изменений умножения в 0.14.1 (2D-деление, плитка 4×3): на 2 ядрах они дали Kokoro RTF 0,89 → 0,56"))
 
 
 def banner(lang):

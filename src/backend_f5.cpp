@@ -125,6 +125,7 @@ public:
     static Capabilities caps() {
         Capabilities c;
         c.clone_icl = true;
+        c.speed = true;
         c.streaming_text = true;
         c.text_in = "chunk";      // куски озвучиваются целиком: частичное предложение ждёт его конца
         c.audio_out = "chunks";

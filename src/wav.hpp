@@ -1,6 +1,7 @@
 #pragma once
 // Минимальный WAV: чтение PCM 16/24/32 и float32 (с переводом в mono), запись float32 или PCM16.
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -75,8 +76,9 @@ inline std::vector<uint8_t> wav_encode(const float *pcm, size_t n, uint32_t sr, 
     std::memcpy(&o[36], "data", 4); w32(40, data_n);
     for (size_t i = 0; i < n; ++i) {
         if (pcm16) {
-            float x = pcm[i] < -1 ? -1 : pcm[i] > 1 ? 1 : pcm[i];
-            int16_t v = int16_t(x * 32767.0f);
+            // round(x · 32768) clamped: the exact inverse of wav_decode (v / 32768), so decode → encode keeps the bytes
+            const float x = pcm[i] * 32768.0f;
+            const int16_t v = int16_t(x <= -32768.0f ? -32768 : x >= 32767.0f ? 32767 : int(std::lrint(x)));
             std::memcpy(&o[44 + i * 2], &v, 2);
         } else {
             std::memcpy(&o[44 + i * 4], &pcm[i], 4);

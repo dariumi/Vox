@@ -177,5 +177,9 @@ for f in ("vox.js", "vox.mjs", "pinyin.json"):   # pinyin.json is only needed fo
     if os.path.exists(src):
         shutil.copy(src, D)
 shutil.copytree(os.path.join(S, "assets"), os.path.join(D, "assets"), dirs_exist_ok=True)
+# Vox Studio: one self-contained page, published at /studio/ and shipped in the Python package (vox web serves the same file)
+os.makedirs(os.path.join(D, "studio"), exist_ok=True)
+shutil.copy(os.path.join(S, "studio", "index.html"), os.path.join(D, "studio", "index.html"))
+shutil.copy(os.path.join(S, "studio", "index.html"), os.path.join(ROOT, "python", "vox", "studio.html"))
 open(os.path.join(D, ".nojekyll"), "w").close()
 print("site: docs/index.html + docs/index.ru.html, vox %s" % ver)

@@ -7,12 +7,13 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "nn.hpp"
 #include "sampling.hpp"
 
 namespace vox {
+using namespace nn;
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
 using Clock = std::chrono::steady_clock;
 
 // VOX_PROFILE=kokoro: time per stage, printed at exit
@@ -23,7 +24,7 @@ struct KProf {
     ~KProf() {
         if (!on || acc.empty()) return;
         double tot = 0;
-        for (auto &a : acc) tot += a.second;
+        for (auto &a : acc) if (a.first[0] != ' ') tot += a.second;   // indented names are parts of the generator, already in its total
         std::fprintf(stderr, "vox Kokoro profile (%.0f ms):\n", tot);
         for (auto &a : acc) std::fprintf(stderr, "  %-16s %9.1f ms %5.1f%%\n", a.first.c_str(), a.second, 100.0 * a.second / tot);
     }
@@ -40,167 +41,8 @@ struct KScope {
     ~KScope() { if (g_kprof.on) g_kprof.add(n, std::chrono::duration<double, std::milli>(Clock::now() - t0).count()); }
 };
 
-// ---------------------------------------------------------------- weights
-std::vector<float> to_float(const TensorView &t) {
-    std::vector<float> v(size_t(t.numel()));
-    switch (t.dtype) {
-        case DType::F32: std::memcpy(v.data(), t.data, v.size() * 4); break;
-        case DType::F16: { auto p = reinterpret_cast<const uint16_t *>(t.data); for (size_t i = 0; i < v.size(); ++i) v[i] = f16_to_f32(p[i]); break; }
-        case DType::BF16: { auto p = reinterpret_cast<const uint16_t *>(t.data); for (size_t i = 0; i < v.size(); ++i) v[i] = bf16_to_f32(p[i]); break; }
-        default: fail(VOX_ERR_FORMAT, "Kokoro: unsupported tensor dtype");
-    }
-    return v;
-}
-Mat mat_of(const TensorView &t) {
-    Mat m;
-    m.data = t.data;
-    m.rows = t.shape.at(0);
-    m.cols = t.numel() / m.rows;
-    switch (t.dtype) {
-        case DType::F32: m.type = WType::F32; break;
-        case DType::F16: m.type = WType::F16; break;
-        case DType::BF16: m.type = WType::BF16; break;
-        default: fail(VOX_ERR_FORMAT, "Kokoro: unsupported matrix dtype");
-    }
-    return m;
-}
 
-inline float leaky(float x, float a) { return x >= 0.f ? x : a * x; }
-// sin for Snake activations: Cody–Waite reduction by π (3 parts) and an odd minimax polynomial; |error| < 2e-7 for |x| < 1e5,
-// branch-free so the compiler vectorizes the loop (std::sin was a third of the generator's time)
-inline float fast_sin(float x) {
-    const float q = std::nearbyint(x * 0.31830988618379067f);   // x / π
-    float r = x - q * 3.140625f;
-    r = r - q * 9.67502593994140625e-4f;
-    r = r - q * 1.509957990978376432e-7f;
-    const float r2 = r * r;
-    float p = -2.39e-8f;
-    p = p * r2 + 2.7526e-6f;
-    p = p * r2 - 1.98409e-4f;
-    p = p * r2 + 8.3333315e-3f;
-    p = p * r2 - 1.6666666e-1f;
-    const float s = r + r * r2 * p;
-    const int qi = int(q);
-    return (qi & 1) ? -s : s;
-}
-inline float sigmoidf(float x) { return 1.0f / (1.0f + std::exp(-x)); }
 
-// y[T][O] = x[T][I] · Wᵀ (+ b)
-void linear(const Mat &W, const std::vector<float> *b, const float *x, int64_t T, float *y) {
-    matmul(W, x, T, y);
-    if (b && !b->empty())
-        parallel_for(T, 64, [&](int64_t a, int64_t e) {
-            for (int64_t t = a; t < e; ++t)
-                for (int64_t o = 0; o < W.rows; ++o) y[t * W.rows + o] += (*b)[size_t(o)];
-        });
-}
-
-// ---------------------------------------------------------------- layers
-struct Linear {
-    Mat w;
-    std::vector<float> b;
-    int64_t in = 0, out = 0;
-    void load(const TmodFile &f, const std::string &n, bool bias = true) {
-        w = mat_of(f.get(n + ".weight"));
-        out = w.rows; in = w.cols;
-        if (bias && f.has(n + ".bias")) b = to_float(f.get(n + ".bias"));
-    }
-    void forward(const float *x, int64_t T, float *y) const { linear(w, &b, x, T, y); }
-};
-
-// 1D convolution, time-major: x [T][cin] → y [Tout][cout]; weights PyTorch [cout][cin][K] re-laid out K-major [cout][K*cin]
-struct Conv {
-    int cin = 0, cout = 0, K = 1, stride = 1, pad = 0, dil = 1;
-    std::vector<float> w, b;
-    Mat m;
-    void load(const TmodFile &f, const std::string &n, int stride_ = 1, int pad_ = -1, int dil_ = 1) {
-        const TensorView &t = f.get(n + ".weight");
-        if (t.shape.size() != 3) fail(VOX_ERR_FORMAT, "Kokoro: conv weight must be 3-D: " + n);
-        cout = int(t.shape[0]); cin = int(t.shape[1]); K = int(t.shape[2]);
-        stride = stride_; dil = dil_;
-        pad = pad_ < 0 ? (K - 1) * dil / 2 : pad_;
-        const std::vector<float> src = to_float(t);
-        w.resize(src.size());
-        for (int o = 0; o < cout; ++o)
-            for (int c = 0; c < cin; ++c)
-                for (int k = 0; k < K; ++k) w[(size_t(o) * K + k) * cin + c] = src[(size_t(o) * cin + c) * K + k];
-        if (f.has(n + ".bias")) b = to_float(f.get(n + ".bias"));
-        m.type = WType::F32; m.data = reinterpret_cast<const uint8_t *>(w.data()); m.rows = cout; m.cols = int64_t(K) * cin;
-    }
-    int out_len(int T) const { return (T + 2 * pad - dil * (K - 1) - 1) / stride + 1; }
-    void forward(const float *x, int T, std::vector<float> &y) const {
-        const int To = out_len(T);
-        y.assign(size_t(std::max(To, 0)) * size_t(cout), 0.f);
-        if (To <= 0) return;
-        if (K == 1 && stride == 1 && pad == 0) { linear(m, &b, x, T, y.data()); return; }
-        const int64_t KC = int64_t(K) * cin;
-        const int64_t blk = std::max<int64_t>(64, (int64_t(4) << 20) / std::max<int64_t>(KC, 1));  // ≤ 16 MB of columns per block
-        std::vector<float> col;
-        for (int64_t t0 = 0; t0 < To; t0 += blk) {
-            const int64_t n = std::min<int64_t>(blk, To - t0);
-            col.resize(size_t(n * KC));
-            parallel_for(n, 32, [&](int64_t a, int64_t e) {
-                for (int64_t i = a; i < e; ++i) {
-                    const int64_t t = t0 + i;
-                    for (int k = 0; k < K; ++k) {
-                        const int64_t s = t * stride + int64_t(k) * dil - pad;
-                        float *dst = &col[size_t(i * KC + int64_t(k) * cin)];
-                        if (s >= 0 && s < T) std::memcpy(dst, x + s * cin, size_t(cin) * 4);
-                        else std::memset(dst, 0, size_t(cin) * 4);
-                    }
-                }
-            });
-            linear(m, &b, col.data(), n, y.data() + size_t(t0) * size_t(cout));
-        }
-    }
-};
-
-// ConvTranspose1d (groups = 1): x [T][cin] → y [(T-1)*stride - 2*pad + K + out_pad][cout]; PyTorch weight [cin][cout][K]
-struct ConvT {
-    int cin = 0, cout = 0, K = 1, stride = 1, pad = 0, out_pad = 0;
-    std::vector<float> w, b;   // w: [K*cout][cin]
-    Mat m;
-    void load(const TmodFile &f, const std::string &n, int stride_, int pad_, int out_pad_ = 0) {
-        const TensorView &t = f.get(n + ".weight");
-        cin = int(t.shape[0]); cout = int(t.shape[1]); K = int(t.shape[2]);
-        stride = stride_; pad = pad_; out_pad = out_pad_;
-        const std::vector<float> src = to_float(t);
-        w.resize(src.size());
-        for (int c = 0; c < cin; ++c)
-            for (int o = 0; o < cout; ++o)
-                for (int k = 0; k < K; ++k) w[(size_t(k) * cout + o) * cin + c] = src[(size_t(c) * cout + o) * K + k];
-        if (f.has(n + ".bias")) b = to_float(f.get(n + ".bias"));
-        m.type = WType::F32; m.data = reinterpret_cast<const uint8_t *>(w.data()); m.rows = int64_t(K) * cout; m.cols = cin;
-    }
-    void forward(const float *x, int T, std::vector<float> &y) const {
-        const int To = (T - 1) * stride - 2 * pad + K + out_pad;
-        y.assign(size_t(To) * size_t(cout), 0.f);
-        const int64_t KO = int64_t(K) * cout;
-        const int64_t blk = std::max<int64_t>(16, (int64_t(4) << 20) / KO);
-        std::vector<float> z;
-        for (int64_t t0 = 0; t0 < T; t0 += blk) {
-            const int64_t n = std::min<int64_t>(blk, T - t0);
-            z.resize(size_t(n * KO));
-            matmul(m, x + t0 * cin, n, z.data());
-            // overlap-add; parallel over output channels (no write conflicts)
-            parallel_for(cout, 8, [&](int64_t o0, int64_t o1) {
-                for (int64_t i = 0; i < n; ++i) {
-                    const int64_t t = t0 + i;
-                    for (int k = 0; k < K; ++k) {
-                        const int64_t to = t * stride + k - pad;
-                        if (to < 0 || to >= To) continue;
-                        const float *zr = &z[size_t(i * KO + int64_t(k) * cout)];
-                        float *yr = &y[size_t(to) * size_t(cout)];
-                        for (int64_t o = o0; o < o1; ++o) yr[o] += zr[o];
-                    }
-                }
-            });
-        }
-        if (!b.empty())
-            for (int t = 0; t < To; ++t)
-                for (int o = 0; o < cout; ++o) y[size_t(t) * size_t(cout) + size_t(o)] += b[size_t(o)];
-    }
-};
 
 // Depthwise ConvTranspose1d (k=3, stride 2, padding 1, output_padding 1): T → 2T (the "pool" of upsampling AdaIN blocks)
 struct DwConvT {
@@ -277,25 +119,6 @@ struct BiLSTM {
     }
 };
 
-// LayerNorm over channels of [T][C] rows
-void layer_norm(float *x, int T, int C, const float *w, const float *b, float eps, bool modulate = false) {
-    parallel_for(T, 16, [&](int64_t a, int64_t e) {
-        for (int64_t t = a; t < e; ++t) {
-            float *r = x + t * C;
-            double mean = 0;
-            for (int c = 0; c < C; ++c) mean += r[c];
-            mean /= C;
-            double var = 0;
-            for (int c = 0; c < C; ++c) { const double d = r[c] - mean; var += d * d; }
-            var /= C;
-            const float inv = float(1.0 / std::sqrt(var + eps));
-            for (int c = 0; c < C; ++c) {
-                const float n = (r[c] - float(mean)) * inv;
-                r[c] = w ? (modulate ? (1.0f + w[c]) * n + b[c] : n * w[c] + (b ? b[c] : 0.f)) : n;
-            }
-        }
-    });
-}
 
 // AdaIN1d: InstanceNorm over time per channel (no affine, eps 1e-5), then (1 + gamma) * x + beta, [gamma; beta] = fc(s)
 struct AdaIN {
@@ -420,24 +243,18 @@ struct AdaINResBlock1 {
     void forward(std::vector<float> &x, int T, const float *s) const {
         std::vector<float> xt, t2;
         for (int j = 0; j < 3; ++j) {
-            xt = x;
-            a1[j].forward(xt, T, s);
-            snake(xt, C, al1[j]);
-            c1[j].forward(xt.data(), T, t2);
-            a2[j].forward(t2, T, s);
-            snake(t2, C, al2[j]);
-            c2[j].forward(t2.data(), T, xt);
-            for (size_t i = 0; i < x.size(); ++i) x[i] += xt[i];
+            { KScope k("  gen.misc"); xt = x; }
+            { KScope k("  gen.adain"); a1[j].forward(xt, T, s); }
+            { KScope k("  gen.snake"); snake(xt, C, al1[j]); }
+            { KScope k("  gen.conv"); c1[j].forward(xt.data(), T, t2); }
+            { KScope k("  gen.adain"); a2[j].forward(t2, T, s); }
+            { KScope k("  gen.snake"); snake(t2, C, al2[j]); }
+            { KScope k("  gen.conv"); c2[j].forward(t2.data(), T, xt); }
+            { KScope k("  gen.misc"); for (size_t i = 0; i < x.size(); ++i) x[i] += xt[i]; }
         }
     }
 };
 
-// Hann window, periodic (scipy.signal.get_window('hann', n, fftbins=True))
-std::vector<double> hann(int n) {
-    std::vector<double> w(static_cast<size_t>(n));
-    for (int i = 0; i < n; ++i) w[size_t(i)] = 0.5 - 0.5 * std::cos(2.0 * kPi * i / n);
-    return w;
-}
 
 }  // namespace
 
@@ -901,110 +718,21 @@ void KokoroModel::decode(const std::vector<float> &asr, int F, const std::vector
     if (!given_har && (nz->rand_ini.size() != 9 || nz->sine_noise.size() != Ls * 9)) fail(VOX_ERR_ARG, "Kokoro: source noise has a wrong size");
     const double SR = double(cfg_.sample_rate);
     const int NF = cfg_.n_fft, HOP = cfg_.hop, NB = NF / 2 + 1;
-    const auto win = hann(NF);
     const int frames = int(Ls / size_t(HOP)) + 1;
     std::vector<float> har(size_t(frames) * size_t(2 * NB));
     if (given_har) {
         if (nz->har.size() != har.size()) fail(VOX_ERR_ARG, "Kokoro: injected source spectrogram has a wrong size");
         har = nz->har;
     } else {
-    // rad = (f0 * h / sr) mod 1 at the sample rate; the first sample gets the random initial phase
-    std::vector<float> rad(Ls * 9);
-    parallel_for(int64_t(Ls), 4096, [&](int64_t a, int64_t e) {
-        for (int64_t i = a; i < e; ++i) {
-            const float f0 = F0[size_t(i / up_total)];
-            for (int hh = 0; hh < 9; ++hh) {
-                const float fn = f0 * float(hh + 1);
-                float r = fn / float(SR);
-                r = r - std::floor(r);   // Python-style remainder (result in [0, 1))
-                rad[size_t(i) * 9 + hh] = r;
-            }
-        }
-    });
-    for (int hh = 1; hh < 9; ++hh) rad[size_t(hh)] += nz->rand_ini[size_t(hh)];   // rand_ini[:, 0] = 0: the fundamental has no random phase
-    // F.interpolate(scale 1/up, linear, align_corners=False): src = up*(i+0.5)-0.5 → mean of samples up*i+up/2-1 and up*i+up/2
-    std::vector<double> phase(size_t(Tg) * 9);
+    std::vector<float> har_src;
     {
-        std::vector<float> rd(size_t(Tg) * 9);
-        for (int i = 0; i < Tg; ++i) {
-            const double src = double(up_total) * (i + 0.5) - 0.5;
-            const int64_t i0 = int64_t(std::floor(src));
-            const int64_t i1 = std::min<int64_t>(i0 + 1, int64_t(Ls) - 1);
-            const float lam = float(src - double(i0));
-            for (int hh = 0; hh < 9; ++hh)
-                rd[size_t(i) * 9 + hh] = (1.0f - lam) * rad[size_t(i0) * 9 + hh] + lam * rad[size_t(i1) * 9 + hh];
-        }
-        std::vector<double> cs(9, 0.0);   // torch.cumsum on the CPU accumulates in double, stores float
-        for (int i = 0; i < Tg; ++i)
-            for (int hh = 0; hh < 9; ++hh) {
-                cs[size_t(hh)] += double(rd[size_t(i) * 9 + hh]);
-                const float c = float(cs[size_t(hh)]);
-                // torch.cumsum(...) * 2 * np.pi, then * upsample_scale — float multiplications in this order
-                phase[size_t(i) * 9 + hh] = double(((c * 2.0f) * float(kPi)) * float(up_total));
-            }
-    }
-    std::vector<float> har_src(Ls);
-    {
-        std::vector<float> lw(9);
-        for (int hh = 0; hh < 9; ++hh) lw[size_t(hh)] = mat_row(P.src_linear.w, 0, lw.data())[hh];
         std::vector<float> tmpw(9);
         const float *wrow = mat_row(P.src_linear.w, 0, tmpw.data());
-        const float lb = P.src_linear.b.empty() ? 0.f : P.src_linear.b[0];
-        parallel_for(int64_t(Ls), 4096, [&](int64_t a, int64_t e) {
-            for (int64_t j = a; j < e; ++j) {
-                // F.interpolate(scale up, linear, align_corners=False) as the CPU kernel does it, in float:
-                // src = fma(float(1/up), j + 0.5, -0.5) (clamped at 0), fma(x0, 1 - lam, x1 * lam) — bit-exact with PyTorch on x86
-                const float scale_f = float(1.0 / double(up_total));
-                float src = std::fma(scale_f, float(j) + 0.5f, -0.5f);   // the CPU kernel's fused multiply-add
-                if (src < 0.f) src = 0.f;
-                const int64_t i0 = std::min<int64_t>(int64_t(std::floor(src)), Tg - 1);
-                const int64_t i1 = i0 + (i0 < Tg - 1 ? 1 : 0);
-                const float lam = std::min(std::max(src - float(i0), 0.f), 1.f), lam0 = 1.0f - lam;
-                const float f0 = F0[size_t(j / up_total)];
-                const float uv = f0 > 10.0f ? 1.0f : 0.0f;
-                const float namp = uv * 0.003f + (1.0f - uv) * (0.1f / 3.0f);
-                float acc = 0.f;
-                for (int hh = 0; hh < 9; ++hh) {
-                    const float ph = std::fma(float(phase[size_t(i0) * 9 + hh]), lam0, float(phase[size_t(i1) * 9 + hh]) * lam);
-                    float sw = std::sin(ph) * 0.1f;
-                    sw = sw * uv + namp * nz->sine_noise[size_t(j) * 9 + hh];
-                    acc += sw * wrow[hh];
-                }
-                har_src[size_t(j)] = std::tanh(acc + lb);
-            }
-        });
+        nsf_source(F0.data(), Tg, up_total, SR, 9, nz->rand_ini.data(), nz->sine_noise.data(), wrow,
+                   P.src_linear.b.empty() ? 0.f : P.src_linear.b[0], har_src);
     }
     if (tr) tr->har_src = har_src;
-    // STFT (n_fft, hop, periodic Hann, center=True with reflect padding) → [frames][mag(nb) | phase(nb)]
-    {
-        std::vector<double> cosT(size_t(NB) * NF), sinT(size_t(NB) * NF);
-        for (int kk = 0; kk < NB; ++kk)
-            for (int n = 0; n < NF; ++n) {
-                cosT[size_t(kk) * NF + n] = std::cos(2.0 * kPi * kk * n / NF);
-                sinT[size_t(kk) * NF + n] = std::sin(2.0 * kPi * kk * n / NF);
-            }
-        const int64_t half = NF / 2, Ln = int64_t(Ls);
-        parallel_for(frames, 256, [&](int64_t a, int64_t e) {
-            std::vector<double> seg(static_cast<size_t>(NF));
-            for (int64_t fr = a; fr < e; ++fr) {
-                for (int n = 0; n < NF; ++n) {
-                    int64_t idx = fr * HOP + n - half;
-                    if (idx < 0) idx = -idx;
-                    if (idx >= Ln) idx = 2 * (Ln - 1) - idx;
-                    seg[size_t(n)] = double(har_src[size_t(idx)]) * win[size_t(n)];
-                }
-                for (int kk = 0; kk < NB; ++kk) {
-                    double re = 0, im = 0;
-                    for (int n = 0; n < NF; ++n) { re += seg[size_t(n)] * cosT[size_t(kk) * NF + n]; im -= seg[size_t(n)] * sinT[size_t(kk) * NF + n]; }
-                    if (kk == 0 || kk == NB - 1) im = 0.0;   // real input: DC and Nyquist are exactly real (+0 imaginary, as the FFT gives)
-                    const float fre = float(re), fim = float(im);
-                    har[size_t(fr) * (2 * NB) + kk] = std::sqrt(fre * fre + fim * fim);
-                    har[size_t(fr) * (2 * NB) + NB + kk] = std::atan2(fim, fre);
-                }
-            }
-        });
-    }
-
+    stft_center(har_src, NF, HOP, true, har);
     }
     if (tr) tr->har = har;
     // ---------------- generator: upsampling ----------------
@@ -1019,7 +747,7 @@ void KokoroModel::decode(const std::vector<float> &asr, int F, const std::vector
         const int Ts = int(xs.size() / size_t(P.noise_convs[i].cout));
         P.noise_res[i].forward(xs, Ts, s_dec);
         std::vector<float> u;
-        P.ups[i].forward(gx.data(), Tcur, u);
+        { KScope k("  gen.ups"); P.ups[i].forward(gx.data(), Tcur, u); }
         int Tu = int(u.size() / size_t(P.ups[i].cout));
         const int C = P.ups[i].cout;
         if (i + 1 == P.ups.size()) {   // ReflectionPad1d((1, 0))
@@ -1047,38 +775,7 @@ void KokoroModel::decode(const std::vector<float> &asr, int F, const std::vector
     P.conv_post.forward(gx.data(), Tcur, post);   // [frames][n_fft + 2]
     if (Tcur != frames) fail(VOX_ERR_FORMAT, "Kokoro: spectrogram frames mismatch");
     if (tr) tr->post = post;
-    // ---------------- iSTFT (torch.istft, center=True): spec = exp(x[:nb]), phase = sin(x[nb:]) ----------------
-    {
-        const int64_t total = int64_t(frames - 1) * HOP + NF;
-        std::vector<double> yv(size_t(total), 0.0), env(size_t(total), 0.0);
-        std::vector<std::vector<double>> fr_out(static_cast<size_t>(frames), std::vector<double>(static_cast<size_t>(NF)));
-        parallel_for(frames, 256, [&](int64_t a, int64_t e) {
-            for (int64_t fr = a; fr < e; ++fr) {
-                const float *r = &post[size_t(fr) * size_t(NF + 2)];
-                auto &o = fr_out[size_t(fr)];
-                for (int n = 0; n < NF; ++n) {
-                    double acc = 0;
-                    for (int kk = 0; kk < NB; ++kk) {
-                        const double mag = double(std::exp(r[kk])), ph = double(std::sin(r[NB + kk]));
-                        double re = mag * std::cos(ph), im = mag * std::sin(ph);
-                        if (kk == 0 || kk == NB - 1) im = 0;   // irfft ignores the imaginary part of DC / Nyquist
-                        const double w = (kk == 0 || kk == NB - 1) ? 1.0 : 2.0;
-                        const double ang = 2.0 * kPi * kk * n / NF;
-                        acc += w * (re * std::cos(ang) - im * std::sin(ang));
-                    }
-                    o[size_t(n)] = acc / NF;
-                }
-            }
-        });
-        for (int fr = 0; fr < frames; ++fr)
-            for (int n = 0; n < NF; ++n) {
-                yv[size_t(fr) * HOP + n] += fr_out[size_t(fr)][size_t(n)] * win[size_t(n)];
-                env[size_t(fr) * HOP + n] += win[size_t(n)] * win[size_t(n)];
-            }
-        const int64_t start = NF / 2, len = int64_t(frames - 1) * HOP;
-        pcm.resize(size_t(len));
-        for (int64_t i = 0; i < len; ++i) pcm[size_t(i)] = float(yv[size_t(start + i)] / env[size_t(start + i)]);
-    }
+    istft_center(post, frames, NF, HOP, 0.f, pcm);
 }
 
 

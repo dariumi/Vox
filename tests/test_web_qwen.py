@@ -161,9 +161,37 @@ def main(cli):
                 br.close()
                 return 0
             pg.set_default_timeout(1800000)
+            url = f"http://127.0.0.1:{srv.server_address[1]}/harness.html"
+
+            def fresh_eval(js, args):
+                """Each block in its own page (the previous page's GPU devices are released), one retry if headless Chromium loses
+                the WebGPU device mid-block ("A valid external Instance reference no longer exists" on Chromium 156 / SwiftShader):
+                that is the browser's software adapter failing, not vox, and every check of the block is re-run from scratch."""
+                nonlocal pg
+                for attempt in range(2):
+                    try:
+                        pg.context.close() if pg.context is not br.contexts[0] else pg.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    pg = br.new_context().new_page()   # fresh context: an empty Cache API, as the checks of the block expect
+                    pg.on("pageerror", lambda e: errors.append(str(e)))
+                    pg.on("console", lambda m: print("  [console]", m.text) if m.type == "error" else None)
+                    pg.set_default_timeout(1800000)
+                    pg.goto(url)
+                    try:
+                        return pg.evaluate(js, args)
+                    except Exception as e:  # noqa: BLE001
+                        msg = str(e)
+                        lost = "Instance reference" in msg or "device-lost" in msg or "Device was lost" in msg or "lost" in msg.lower()
+                        if attempt == 0 and lost:
+                            print(f"  note: WebGPU device lost in headless Chromium, re-running the block once ({msg.splitlines()[0][:160]})")
+                            errors[:] = [x for x in errors if "lost" not in x.lower() and "Instance reference" not in x]
+                            continue
+                        raise
+
             for var, kw in CASES.items():
                 ref = read_wav_f32(refs[var]["wav"])
-                res = pg.evaluate("""async ([host, repo, text, spk, ins]) => {
+                res = fresh_eval("""async ([host, repo, text, spk, ins]) => {
                   const o = {};
                   const t0 = performance.now(); let prog = 0;
                   const m = await Vox.load('hf:' + repo, { hfHost: host, dtype: 'f32', onProgress: (f) => { prog = f; } });
@@ -215,6 +243,7 @@ def main(cli):
                   const r3 = await m3.synthesize(text, { voice: mk(m3), seed: 1, language: 'english', max_frames: 10 });
                   let d3 = 0; for (let i = 0; i < r.pcm.length; i++) d3 = Math.max(d3, Math.abs(r.pcm[i] - r3.pcm[i]));
                   o.cacheDiff = r3.pcm.length === r.pcm.length ? d3 : -1;
+                  for (const mm of [m, m2, m3]) mm.dispose();   // release the GPU devices (each model has its own)
                   return o;
                 }""", [hf.url, "mock/Qwen3-" + var, TEXT, kw["speaker"], kw["instruct"]])
                 pcm = np.array(res["pcm"], dtype=np.float32)
@@ -233,7 +262,7 @@ def main(cli):
                 check(res["gap"]["u1"] and res["gap"]["n"] >= 2, f"{var}: пауза закрывает высказывание, дальше новое ({res['gap']})")
             # 6. Base: голос из записи в браузере
             from safetensors import safe_open
-            res = pg.evaluate("""async ([host, repo, pcm, text]) => {
+            res = fresh_eval("""async ([host, repo, pcm, text]) => {
               const m = await Vox.load('hf:' + repo, { hfHost: host, dtype: 'f32' });
               const o = { clone: m.capabilities.clone_from_audio, type: m.type };
               const prog = []; const t0 = performance.now();
@@ -250,6 +279,7 @@ def main(cli):
               let err = '';
               try { await m.cloneVoice(Float32Array.from(pcm), '', { sampleRate: 24000 }); } catch (e) { err = e.code; }
               o.errNoText = err;
+              m.dispose();
               return o;
             }""", [hf.url, "mock/Qwen3-base", [float(z) for z in ref_pcm16], ref_text])
             with safe_open(ref_voice, "pt") as f:
@@ -278,7 +308,7 @@ def main(cli):
             ranges = [x for x in hf.log if x[0].startswith("RANGE")]
             check(0 < len(ranges) < 100, f"загрузка шла крупными кусками HTTP Range, а не по запросу на тензор ({len(ranges)} запросов на 300+ тензоров)")
             if core_tokens:
-                toks = pg.evaluate("""async ([host, repo, phrases]) => { const m = await Vox.load('hf:' + repo, { hfHost: host, dtype: 'bf16' }); return phrases.map((p) => Array.from(m.tok.encode(p))); }""",
+                toks = fresh_eval("""async ([host, repo, phrases]) => { const m = await Vox.load('hf:' + repo, { hfHost: host, dtype: 'bf16' }); const t = phrases.map((p) => Array.from(m.tok.encode(p))); m.dispose(); return t; }""",
                                    [hf.url, "mock/Qwen3-custom_voice", phrases])
                 check(toks == core_tokens, "токенизатор JS = токенизатор ядра")
             check(not errors, "ошибок страницы нет" if not errors else f"ошибки страницы: {errors[:3]}")

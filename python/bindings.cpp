@@ -282,8 +282,50 @@ NB_MODULE(_vox, m) {
         auto *s = new Session();
         s->engine = eng;
         s->voice = voice;
-        vox_status st = vox_session_create(nb::cast<Engine &>(eng).h, nb::cast<Voice &>(voice).h, &p.p, &s->h);
+        vox_status st;
+        {
+            nb::gil_scoped_release r;   // may build a profile voice for this model (speaker encoder, codec encoder)
+            st = vox_session_create(nb::cast<Engine &>(eng).h, nb::cast<Voice &>(voice).h, &p.p, &s->h);
+        }
         if (st < 0) { delete s; raise(st); }
         return s;
     }, nb::rv_policy::take_ownership);
+
+    // ---- profiles (ABI 0.5) ----
+    m.def("profile_new", [](const std::string &name) {
+        auto *v = new Voice();
+        vox_status st = vox_profile_new(name.c_str(), &v->h);
+        if (st < 0) { delete v; raise(st); }
+        return v;
+    }, nb::rv_policy::take_ownership);
+    m.def("profile_open", [](const std::string &path) {
+        auto *v = new Voice();
+        vox_status st = vox_profile_open(path.c_str(), &v->h);
+        if (st < 0) { delete v; raise(st); }
+        return v;
+    }, nb::rv_policy::take_ownership);
+    m.def("voice_add_recording", [](Voice &v, const std::string &voice, std::optional<std::string> style, F32In pcm, uint32_t sr,
+                                    std::optional<std::string> text, std::optional<std::string> language) {
+        check(vox_voice_add_recording(v.h, voice.c_str(), style ? style->c_str() : nullptr, pcm.data(), pcm.shape(0), sr,
+                                      text ? text->c_str() : nullptr, language ? language->c_str() : nullptr));
+    });
+    m.def("voice_merge", [](Voice &dst, Voice &src, std::optional<std::string> src_voice, std::optional<std::string> as_voice,
+                            std::optional<std::string> as_style) {
+        check(vox_voice_merge(dst.h, src.h, src_voice ? src_voice->c_str() : nullptr, as_voice ? as_voice->c_str() : nullptr,
+                              as_style ? as_style->c_str() : nullptr));
+    });
+    m.def("voice_update", [](Voice &v, const std::string &patch) { check(vox_voice_update(v.h, patch.c_str())); });
+    m.def("voice_prepare", [](nb::object eng, Voice &v, std::optional<std::string> voice, std::optional<std::string> style) {
+        Engine &e = nb::cast<Engine &>(eng);
+        std::string out(1 << 20, '\0');
+        size_t n = 0;
+        vox_status st;
+        {
+            nb::gil_scoped_release r;
+            st = vox_voice_prepare(e.h, v.h, voice ? voice->c_str() : nullptr, style ? style->c_str() : nullptr, out.data(), out.size(), &n);
+        }
+        if (st < 0) raise(st);
+        out.resize(std::min(n, out.size() - 1));
+        return out;
+    });
 }

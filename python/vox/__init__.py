@@ -29,8 +29,8 @@ except ImportError as _e:  # нативный модуль не собран: vo
     _vox = None
     _import_error = _e
 
-__version__ = _vox.VERSION if _vox else "0.14.0"
-__all__ = ["Engine", "Voice", "Session", "Duplex", "Resources", "VoxError", "OutOfMemory", "DeviceError", "devices", "inspect", "plan",
+__version__ = _vox.VERSION if _vox else "0.16.0"
+__all__ = ["Engine", "Voice", "Profile", "Session", "Duplex", "Resources", "VoxError", "OutOfMemory", "DeviceError", "devices", "inspect", "plan",
            "make_test_model", "register_family", "Family", "Backend", "Tmod", "load_wav", "save_wav", "__version__"]
 
 AudioInput = Union[str, os.PathLike, "tuple[np.ndarray, int]"]
@@ -66,7 +66,9 @@ _PARAM_NAMES = ("temperature", "top_k", "top_p", "repetition_penalty", "sub_temp
 
 # параметры моделей без покадровых кодов (F5-TTS и др.): уходят в extra_json; можно и целиком словарём extra={...}
 _EXTRA_NAMES = ("nfe_step", "cfg_strength", "sway_sampling_coef", "speed", "target_rms", "cross_fade_duration", "fix_duration",
-                "phonemes", "lang")
+                "phonemes", "lang", "style", "markup")
+# profiles (0.15): voice_id = which voice of the profile, style = its style or an emotion, markup = "auto" | "strict" | "off"
+_RENAMED = {"voice_id": "voice"}
 # двусторонний стриминг: commit = "auto" | "sentence" | "manual", idle_ms — автокоммит после простоя (см. vox.h, ABI 0.4)
 _STREAM_NAMES = ("commit", "idle_ms")
 
@@ -77,6 +79,11 @@ def _params(kw: dict) -> "_vox.Params":
     for k in _EXTRA_NAMES:
         if k in kw:
             extra[k] = kw.pop(k)
+    for k, to in _RENAMED.items():
+        if k in kw:
+            v = kw.pop(k)
+            if v is not None:
+                extra[to] = v
     stream = dict(extra.get("stream") or {})
     for k in _STREAM_NAMES:
         if k in kw:
@@ -239,11 +246,37 @@ def _native():
     return _vox
 
 
+def _pcm(audio: AudioInput):
+    if isinstance(audio, (str, os.PathLike)):
+        pcm, sr = load_wav(audio)
+    else:
+        pcm, sr = audio
+    pcm = np.asarray(pcm, dtype=np.float32)
+    if pcm.ndim == 2:
+        pcm = pcm.mean(axis=1)
+    return np.ascontiguousarray(pcm, dtype=np.float32), int(sr)
+
+
 class Voice:
-    """Профиль голоса (.tvoice)."""
+    """A voice profile (.tvoice): one or several voices, each with styles (emotions, delivery), the recordings any cloning model can
+    rebuild it from, built-in speakers to use on models that cannot clone, and a cache of voices already built for concrete models.
+    A profile from one model works on another: what is missing is built from the stored recording on first use (save() keeps it).
+
+        p = vox.Profile("Cast")
+        p.add_recording("anna", "anna.wav", "What Anna says in it")
+        p.add_recording("anna", "anna_happy.wav", "Something cheerful", style="happy")
+        p.set_style("anna", "whisper", instruct="Whisper softly", speed=0.95)
+        p.set_voice("boris", speakers={"kokoro": "am_adam"})
+        engine.synthesize("anna: Hi! [happy] Great news. [pause 300ms]\nboris: [whisper] Really?", p)
+    """
 
     def __init__(self, handle: "_vox.Voice"):
         self._h = handle
+
+    @classmethod
+    def open(cls, path: Union[str, os.PathLike]) -> "Voice":
+        """Open a .tvoice without a model (nothing is rebuilt): to edit it, merge it, or use it with any engine later."""
+        return cls(_native().profile_open(os.fspath(path)))
 
     @property
     def info(self) -> dict:
@@ -257,17 +290,88 @@ class Voice:
     def name(self, value: str) -> None:
         self._h.set_name(value)
 
+    @property
+    def voices(self) -> dict:
+        """{voice name: {description, language, default_style, styles: {…}, speakers: {…}, options: {…}}}"""
+        return self.info.get("voices", {})
+
+    @property
+    def default_voice(self) -> str:
+        return self.info.get("default_voice", "")
+
     def set_defaults(self, **params) -> "Voice":
-        """Сохраняет в профиль параметры по умолчанию: seed, temperature, top_k, …"""
+        """Generation defaults of the default voice: seed, temperature, top_k, speed, …"""
         _vox.voice_set_defaults(self._h, _params(params))
         return self
+
+    def add_recording(self, voice: str, audio: AudioInput, text: Optional[str] = None, *, style: Optional[str] = None,
+                      language: Optional[str] = None) -> "Voice":
+        """A reference recording of `voice` (created if new) for `style` (None = its default style). No model is needed."""
+        pcm, sr = _pcm(audio)
+        _vox.voice_add_recording(self._h, voice, style, pcm, sr, text, language)
+        return self
+
+    def add(self, other: "Voice", *, voice: Optional[str] = None, as_voice: Optional[str] = None, style: Optional[str] = None) -> "Voice":
+        """Copy a voice of another profile (its recordings, settings and built caches). style=…: the other voice becomes one style of as_voice."""
+        _vox.voice_merge(self._h, other._h, voice, as_voice, style)
+        return self
+
+    def update(self, patch: dict) -> "Voice":
+        """JSON merge patch of the description (voices / styles / speakers / options / default_voice); None removes."""
+        _vox.voice_update(self._h, json.dumps(patch))
+        return self
+
+    def set_voice(self, voice: str, *, description: Optional[str] = None, language: Optional[str] = None,
+                  speakers: Optional[dict] = None, default_style: Optional[str] = None, default: bool = False, **options) -> "Voice":
+        """Voice settings. speakers: {"kokoro": "af_heart", "qwen3-tts/custom_voice": "serena"} (None as a value removes one);
+        options: generation defaults for the voice (speed, temperature, …)."""
+        v = {}
+        if description is not None:
+            v["description"] = description
+        if language is not None:
+            v["language"] = language
+        if speakers is not None:
+            v["speakers"] = speakers
+        if default_style is not None:
+            v["default_style"] = default_style
+        if options:
+            v["options"] = options
+        patch = {"voices": {voice: v}}
+        if default:
+            patch["default_voice"] = voice
+        return self.update(patch)
+
+    def set_style(self, voice: str, style: str, *, instruct: Optional[str] = None, **options) -> "Voice":
+        """A style of a voice: an instruction (models that take one) and generation options (speed, …). Its recording comes from
+        add_recording(…, style=…); without one the style uses the voice's default recording."""
+        st = {}
+        if instruct is not None:
+            st["instruct"] = instruct
+        if options:
+            st["options"] = options
+        return self.update({"voices": {voice: {"styles": {style: st}}}})
+
+    def remove(self, voice: str, style: Optional[str] = None) -> "Voice":
+        return self.update({"voices": {voice: None if style is None else {"styles": {style: None}}}})
+
+    def prepare(self, engine: "Engine", voice: Optional[str] = None, style: Optional[str] = None) -> dict:
+        """Build the voices (all, or one) for engine's model now; save() keeps them. Returns {"model", "voices", "notes"}."""
+        return json.loads(_vox.voice_prepare(engine._h, self._h, voice, style))
 
     def save(self, path: Union[str, os.PathLike]) -> None:
         self._h.save(os.fspath(path))
 
     def __repr__(self) -> str:
         i = self.info
-        return f"<vox.Voice {i['name']!r} mode={i['mode']} model={i['model']['family']}>"
+        vs = list(i.get("voices", {}))
+        return f"<vox.Voice {i['name']!r} voices={vs} built={len(i.get('cache', []))}>"
+
+
+class Profile(Voice):
+    """A new, empty voice profile (vox.Profile("Cast")) — the same object as vox.Voice. Open a file with vox.Voice.open(path)."""
+
+    def __init__(self, name: str = "profile"):
+        super().__init__(_native().profile_new(name))
 
 
 class Session:
@@ -349,15 +453,39 @@ class Session:
 class _KokoroSession(Session):
     """Session whose text goes through misaki: complete lines become phoneme pieces (one per line for the engine)."""
 
-    def __init__(self, handle, chunk_samples: int, frontend):
+    def __init__(self, handle, chunk_samples: int, frontend, names=()):
         super().__init__(handle, chunk_samples)
         self._fe = frontend
         self._buf = ""
+        self._names = {n.lower() for n in names}
+
+    _TAG = None
 
     def _push(self, text: str) -> None:
-        pieces = self._fe.chunks(text)
-        if pieces:
-            self._h.feed("\n".join(pieces) + "\n")
+        # markup ([happy], [pause 300ms], "anna: " at a line start) passes through as is; only the text between it is phonemized
+        import re
+        if _KokoroSession._TAG is None:
+            _KokoroSession._TAG = re.compile(r"(\\\[|\[[^\[\]\n]{1,64}\]|(?m:^[ \t]*[^\s:\[\]]{1,64}:(?=\s)))")
+        out = []
+        for part in _KokoroSession._TAG.split(text):
+            if not part:
+                continue
+            if _KokoroSession._TAG.fullmatch(part):
+                name = part.strip()[:-1] if part.rstrip().endswith(":") else None
+                if name is not None and name.lower() not in self._names:
+                    pieces = self._fe.chunks(part)
+                    if pieces:
+                        out.append("\n".join(pieces) + "\n")
+                    continue
+                out.append(part.strip() if name is not None else part)
+            elif part.strip():
+                pieces = self._fe.chunks(part)
+                if pieces:
+                    out.append("\n".join(pieces) + "\n")
+            elif "\n" in part:
+                out.append("\n")
+        if out:
+            self._h.feed("".join(out))
 
     def feed(self, text: str) -> "Session":
         self._buf += unicodedata.normalize("NFC", text)
@@ -478,10 +606,15 @@ class Engine:
         if self.info.get("family") == "kokoro" and not params.get("phonemes"):
             from . import kokoro_frontend as kf
             if g2p == "misaki" or (g2p is None and kf.available()):
-                spk = v.info.get("speaker") or v.name
+                info = v.info
+                spk = info.get("speaker") or v.name
+                vid = params.get("voice_id") or info.get("default_voice")
+                for key in (f"kokoro/{self.info['manifest']['model'].get('variant', '')}", "kokoro"):
+                    spk = (info.get("voices", {}).get(vid, {}).get("speakers", {}) or {}).get(key) or spk
                 fe = kf.frontend(kf.is_british(spk, params.get("lang")))
                 params = dict(params, phonemes=True)
-                return _KokoroSession(_vox.session_create(self._h, v._h, _params(params)), chunk_samples, fe)
+                names = list(info.get("voices", {})) if len(info.get("voices", {})) > 1 else []
+                return _KokoroSession(_vox.session_create(self._h, v._h, _params(params)), chunk_samples, fe, names)
             if g2p not in (None, "builtin"):
                 raise ValueError('g2p must be "misaki", "builtin" or None')
         return Session(_vox.session_create(self._h, v._h, _params(params)), chunk_samples)

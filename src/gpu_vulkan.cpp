@@ -282,6 +282,8 @@ void init_impl(const std::string &spec) {
             g.extra_modules[16 + i] = make_module(f5c[i], f5s[i]);
             g.pipe[P_F5ATTN + i] = make_pipe(g.extra_modules[16 + i], nullptr);
         }
+        g.extra_modules[21] = make_module(k_gemmb_spv, sizeof(k_gemmb_spv));
+        for (uint32_t t = 0; t < 4; ++t) { uint32_t wtype = t; g.pipe[P_GEMMB + int(t)] = make_pipe(g.extra_modules[21], &wtype); }
     }
     VkDescriptorPoolSize dps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * 4096};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -594,7 +596,7 @@ const char *kPipeNames[] = {"matmul.f32", "matmul.f16", "matmul.bf16", "matmul.q
                             "silumul", "gemm.f32", "gemm.f16", "gemm.bf16", "gemm.q8", "gemm.q4", "snake", "dwconv", "layernorm",
                             "overlap_add", "history", "attn_window", "ring_put", "qkv_split", "swiglu", "sample",
                             "gather.f32", "gather.f16", "gather.bf16", "f5.attention", "f5.conv", "f5.layernorm", "f5.elementwise",
-                            "f5.rope"};
+                            "f5.rope", "gemm8x8.f32", "gemm8x8.f16", "gemm8x8.bf16", "gemm8x8.q8"};
 static_assert(sizeof(kPipeNames) / sizeof(kPipeNames[0]) == kNumPipes, "kPipeNames must list every pipeline in enum Pipe order");
 void disp(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_words, uint32_t gx, uint32_t gy) {
     disp3(pipe, b, pc, pc_words, gx, gy, 1);

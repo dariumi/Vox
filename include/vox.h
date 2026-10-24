@@ -35,7 +35,7 @@ extern "C" {
 #endif
 
 #define VOX_ABI_VERSION_MAJOR 0
-#define VOX_ABI_VERSION_MINOR 4
+#define VOX_ABI_VERSION_MINOR 5
 
 typedef struct vox_engine  vox_engine;
 typedef struct vox_voice   vox_voice;
@@ -160,6 +160,34 @@ VOX_API vox_status vox_voice_set_name(vox_voice *v, const char *name);
 VOX_API vox_status vox_voice_set_defaults(vox_voice *v, const vox_gen_params *p);
 VOX_API vox_status vox_voice_info(const vox_voice *v, char *json_buf, size_t cap, size_t *len);
 VOX_API void       vox_voice_free(vox_voice *v);
+
+/* ---- Профили голосов (ABI 0.5) ----
+   vox_voice — это профиль: один или несколько голосов, у голоса — стили (эмоции, подача), записи-образцы с текстом, готовые дикторы
+   для моделей без клонирования (Kokoro, Qwen CustomVoice) и описание для VoiceDesign, плюс кэш голосов, уже собранных под конкретные
+   модели. Один профиль работает на любой модели: голоса, которых нет в кэше, собираются при первом использовании (из записи — на
+   моделях с клонированием, из имени диктора — на моделях с дикторами, из описания — на VoiceDesign) и сохраняются vox_voice_save.
+   Файл тот же .tvoice: однофайловый голос 1.x открывается как профиль с одним голосом, а профиль с собранным голосом по умолчанию
+   читается старыми версиями vox и vox.js как обычный голос (format 1.1).
+   Выбор в сессии — extra_json: {"voice": "anna", "style": "happy", "markup": "auto" | "strict" | "off"}; разметка в тексте —
+   [voice:anna] / "anna: …", [happy] / [style:happy], [pause 500ms], [speed 1.2], [laugh], [/] (см. src/markup.hpp).
+   Описание профиля (JSON):
+     {"name", "default_voice", "voices": {"anna": {"description", "language", "default_style", "options": {…},
+       "speakers": {"kokoro": "af_heart", "qwen3-tts/custom_voice": "serena"},
+       "styles": {"default": {"ref": "r1", "instruct": "", "options": {"speed": 1.0}}, "happy": {…}}}},
+      "recordings": {"r1": {"text", "language", "seconds"}}, "cache": [{"voice", "style", "model", "mode"}]} */
+VOX_API vox_status vox_profile_new(const char *name, vox_voice **out);
+/* Открыть профиль без модели (ничего не пересобирается; пригодно для правки и для vox_voice_merge). */
+VOX_API vox_status vox_profile_open(const char *path, vox_voice **out);
+/* Добавить запись-образец голосу voice (создаётся, если его нет) для стиля style (NULL = стиль по умолчанию). Модель не нужна. */
+VOX_API vox_status vox_voice_add_recording(vox_voice *v, const char *voice, const char *style, const float *pcm, size_t n_samples,
+                                           uint32_t sample_rate, const char *ref_text, const char *language);
+/* Скопировать голос src_voice (NULL = по умолчанию) из профиля src в dst под именем as_voice (NULL = то же). as_style != NULL: стиль
+   по умолчанию исходного голоса становится стилем as_style голоса as_voice (так из голосов «спокойный» и «радостный» собирается один). */
+VOX_API vox_status vox_voice_merge(vox_voice *dst, const vox_voice *src, const char *src_voice, const char *as_voice, const char *as_style);
+/* JSON merge patch (RFC 7386) описания профиля: голоса, стили, дикторы, описания, параметры, default_voice; null удаляет. */
+VOX_API vox_status vox_voice_update(vox_voice *v, const char *patch_json);
+/* Собрать голоса профиля под модель движка заранее (voice/style NULL = все). JSON: {"model", "voices": [{voice, style, built}], "notes"}. */
+VOX_API vox_status vox_voice_prepare(vox_engine *e, vox_voice *v, const char *voice, const char *style, char *json_buf, size_t cap, size_t *len);
 
 /* ---- Session ---- */
 VOX_API vox_status vox_session_create(vox_engine *e, const vox_voice *v, const vox_gen_params *p, vox_session **out);

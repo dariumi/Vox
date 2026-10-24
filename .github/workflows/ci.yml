@@ -86,6 +86,12 @@ jobs:
           pip install --no-deps kokoro misaki
           pip install loguru num2words spacy phonemizer-fork espeakng-loader
           python tests/test_kokoro_tiny.py build/vox
+      - name: CosyVoice2 vs the official CosyVoice code (tiny random model; frontend, LLM, flow, HiFT, text frontend)
+        run: |
+          git clone https://github.com/FunAudioLLM/CosyVoice ../CosyVoice && git -C ../CosyVoice checkout 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
+          git -C ../CosyVoice submodule update --init third_party/Matcha-TTS
+          pip install onnx onnxruntime s3tokenizer inflect pyyaml omegaconf conformer diffusers einops hyperpyyaml
+          VOX_COSYVOICE_SRC=../CosyVoice VOX_QWEN2_GGUF=qwen2.gguf python tests/test_cosyvoice_tiny.py build/vox
       - name: vox.js in Chromium (WebGPU via SwiftShader) vs official f5_tts / vocos
         run: |
           pip install playwright
@@ -98,6 +104,10 @@ jobs:
         run: VOX_QWEN2_GGUF=qwen2.gguf python tests/test_web_cpu.py build/vox
       - name: Duplex streaming (core, Python, CLI, WebSocket)
         run: VOX_QWEN2_GGUF=qwen2.gguf python tests/test_duplex.py build/vox
+      - name: Voice profiles and markup
+        run: python tests/test_profiles.py build/vox
+      - name: vox web and the Studio page
+        run: python tests/test_web_studio.py
 
   aarch64:
     name: aarch64 cross build (qemu)

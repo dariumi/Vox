@@ -1,4 +1,4 @@
-/*! vox.js 0.14.0 — универсальный TTS-движок vox в браузере (WebGPU). Лицензия — как у проекта: https://github.com/dariumi/Vox */
+/*! vox.js 0.16.0 — универсальный TTS-движок vox в браузере (WebGPU). Лицензия — как у проекта: https://github.com/dariumi/Vox */
 "use strict";
 // Сгенерировано tools/gen_wgsl.py из webgpu/wgsl/*.wgsl — не править вручную.
 const KERNELS = {
@@ -744,7 +744,7 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
 // Эта часть: утилиты, формат .tmod, форматы весов, Philox-шум, расписание шагов.
 // ============================================================================
 
-const VOX_VERSION = "0.14.0";
+const VOX_VERSION = "0.16.0";
 // Папка, откуда загружен vox.js: рядом лежат pinyin.json и прочие ресурсы. Меняется через Vox.config({ baseUrl }).
 let VOX_BASE_URL = "";
 try { if (typeof document !== "undefined" && document.currentScript && document.currentScript.src) VOX_BASE_URL = document.currentScript.src.replace(/[^/]*$/, ""); } catch (e) { /* ок */ }
@@ -3493,7 +3493,7 @@ async function sha256Hex(parts) {
 }
 
 // ---------- сборка F5 ----------
-// o: { ckpt: Uint8Array, ckptName, vocab: string, vocos: Uint8Array, vocosName, dtype: "bf16"|"f16"|"f32", quant: ""|"q8",
+// o: { ckpt: Uint8Array, ckptName, vocab: string, vocos: Uint8Array, vocosName, dtype: "bf16"|"f16"|"f32", quant: ""|"q8", vocosDtype (default "f32"),
 //      vocosConfig: text of the vocoder's config.yaml (or vocosPadding: "center"|"same"; default center),
 //      tokenizer: "pinyin"|"char", variant, dimHead, pinyin: {char: syllable}|null, mel, hash: bool, onProgress(stage, frac) }
 // F5TTS_Base / F5TTS_Small (v0): text_mask_padding=false, pe_attn_head=1; F5TTS_v1_*: true / all heads. The weights do not say which, so the
@@ -3571,7 +3571,8 @@ async function convertF5(o) {
 
   const blobs = [];
   for (const [k, t] of dit) addBlob(blobs, "dit." + k, t.shape, t.get, dtype, quant === "q8" && F5_BLOCK_LINEAR.test(k));
-  for (const [k, t] of voc) addBlob(blobs, "vocos." + k, t.shape, t.get, dtype, false);
+  // Vocos stays f32 by default, as in python -m vox.build_f5 (--vocos-dtype): small, but bf16 weights there add waveform error
+  for (const [k, t] of voc) addBlob(blobs, "vocos." + k, t.shape, t.get, (o.vocosDtype || "f32").toUpperCase(), false);
   const fb = melFilterbank(mel.sample_rate, mel.n_fft, mel.n_mels);
   blobs.push({ name: "mel.fb", dtype: "F32", shape: [mel.n_mels, (mel.n_fft >> 1) + 1], async fill(u8) { new Float32Array(u8.buffer, u8.byteOffset, u8.byteLength >> 2).set(fb); } });
 
@@ -3759,8 +3760,8 @@ async function acquireTmod(src, opts = {}, keepSource = false) {
 }
 async function acquireTmodRaw(src, opts = {}) {
   const status = (s) => { if (opts.onStatus) opts.onStatus(s); };
-  const cvtOpts = () => ({ dtype: opts.dtype || "bf16", quant: opts.quant || "", tokenizer: opts.tokenizer, hash: opts.hash, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, vocosPadding: opts.vocosPadding });
-  const cacheKeyFor = (parts) => "tmod/2|" + JSON.stringify(parts) + "|" + JSON.stringify(cvtOpts());
+  const cvtOpts = () => ({ dtype: opts.dtype || "bf16", quant: opts.quant || "", tokenizer: opts.tokenizer, hash: opts.hash, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, vocosPadding: opts.vocosPadding, vocosDtype: opts.vocosDtype });
+  const cacheKeyFor = (parts) => "tmod/3|" + JSON.stringify(parts) + "|" + JSON.stringify(cvtOpts());   // 3: Vocos in f32 since 0.14.1
   const useCache = opts.cache !== false;
   // config.yaml вокодера (ради padding головы ISTFT); не нашёлся — конвертер считает, что это charactr/vocos-mel-24khz (center)
   const vocosConfigAt = async (url) => { try { return await fetchText(url, Object.assign({}, opts, { onProgress: null }), "config.yaml"); } catch (e) { return null; } };
@@ -3772,7 +3773,7 @@ async function acquireTmodRaw(src, opts = {}) {
     const pinyin = tokenizer === "pinyin" ? await loadPinyin(opts) : null;
     return convertF5({
       ckpt: ckptBytes, ckptName, vocab: vocabText, vocos: vocosBytes, vocosName, dtype: opts.dtype || "bf16", quant: opts.quant || "",
-      tokenizer, variant: opts.variant || variant, vocosConfig, vocosPadding: opts.vocosPadding, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, pinyin, dimHead: opts.dimHead, mel: opts.mel, hash: opts.hash, onWarn: status,
+      tokenizer, variant: opts.variant || variant, vocosConfig, vocosPadding: opts.vocosPadding, vocosDtype: opts.vocosDtype, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, pinyin, dimHead: opts.dimHead, mel: opts.mel, hash: opts.hash, onWarn: status,
       onProgress: (st, f) => { if (opts.onProgress && st === "convert") opts.onProgress(f, 0, 0, "convert"); },
     });
   };

@@ -72,6 +72,7 @@ public:
     static Capabilities caps(const TmodFile &f) {
         Capabilities c;
         c.named_speakers = true;
+        c.speed = true;
         c.streaming_text = true;
         c.text_in = "chunk";
         c.audio_out = "chunks";

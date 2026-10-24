@@ -60,7 +60,7 @@ def save_wav(path: Union[str, os.PathLike], audio: np.ndarray, sample_rate: int,
         fmt, bits, payload = 3, 32, a.astype("<f4").tobytes()
     else:
         fmt, bits = 1, 16
-        payload = (np.clip(a, -1.0, 1.0) * 32767.0).astype("<i2").tobytes()
+        payload = np.clip(np.rint(a.astype(np.float64) * 32768.0), -32768, 32767).astype("<i2").tobytes()   # inverse of x / 32768
     hdr = struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + len(payload), b"WAVE", b"fmt ", 16, fmt, 1,
                       sample_rate, sample_rate * bits // 8, bits // 8, bits, b"data", len(payload))
     with open(path, "wb") as f:

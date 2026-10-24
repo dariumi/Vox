@@ -3,8 +3,9 @@
 // One workgroup = 32 query rows of one head of one sequence; K/V are streamed in tiles of 32 rows with an online
 // softmax, so the N x N score matrix never exists in memory. head_dim <= 64 (columns past HD are zero-padded).
 //   q, k, v, o: [B*N][INNER], head h occupies columns h*HD .. h*HD+HD-1 (the layout of the to_q/to_k/to_v outputs).
-// Threads: 256 = 32 rows x 8 lanes. The query row lives in registers; a lane owns score columns lane+8u (u < 4)
-// and output dims lane+8u (u < 8). Shared memory: K, V tiles + scores + probabilities (~25 KB).
+// Threads: 256 = 32 rows x 8 lanes. The query row lives in registers as 16 vec4; a lane owns score columns lane+8u (u < 4)
+// and the 8 consecutive output dims lane*8 .. lane*8+7. K and V tiles sit in shared memory as vec4 rows, so a score is
+// 16 vec4 reads + 16 dot() and P·V is 2 vec4 reads per 8 FMAs (0.14.0 read one scalar per FMA).
 layout(local_size_x = 256) in;
 layout(std430, set = 0, binding = 0) readonly buffer QB { float q[]; };
 layout(std430, set = 0, binding = 1) readonly buffer KB { float k[]; };
@@ -12,8 +13,8 @@ layout(std430, set = 0, binding = 2) readonly buffer VB { float v[]; };
 layout(std430, set = 0, binding = 4) writeonly buffer OB { float o[]; };
 layout(push_constant) uniform PC { uint N; uint HD; uint INNER; uint scale_bits; } pc;
 
-shared float Ks[32][65];
-shared float Vs[32][65];
+shared vec4 Ks[32][17];   // [key][d / 4], one vec4 of padding against bank conflicts between the 8 lanes' keys
+shared vec4 Vs[32][16];   // [key][d / 4]
 shared float Ps[32][33];
 shared float Pe[32][33];
 
@@ -25,30 +26,32 @@ void main() {
     // query tile → shared (coalesced) → registers (scaled)
     for (uint e = 0u; e < 8u; ++e) {
         const uint idx = lid + e * 256u, r = idx >> 6u, d = idx & 63u;
-        Ks[r][d] = (i0 + r < pc.N && d < pc.HD) ? q[(seq0 + i0 + r) * pc.INNER + hoff + d] : 0.0;
+        Ks[r][d >> 2u][d & 3u] = (i0 + r < pc.N && d < pc.HD) ? q[(seq0 + i0 + r) * pc.INNER + hoff + d] : 0.0;
     }
     barrier();
-    float qr[64];
-    for (uint d = 0u; d < 64u; ++d) qr[d] = Ks[row][d] * scale;
+    vec4 qr[16];
+    for (uint d4 = 0u; d4 < 16u; ++d4) qr[d4] = Ks[row][d4] * scale;
     barrier();
 
     float m_i = -1e30, l_i = 0.0;
-    float acc[8];
-    for (uint u = 0u; u < 8u; ++u) acc[u] = 0.0;
+    vec4 acc0 = vec4(0.0), acc1 = vec4(0.0);   // output dims lane*8 .. +3, lane*8+4 .. +7
 
     for (uint j0 = 0u; j0 < pc.N; j0 += 32u) {
         for (uint e = 0u; e < 8u; ++e) {
             const uint idx = lid + e * 256u, r = idx >> 6u, d = idx & 63u;
             const bool ok = j0 + r < pc.N && d < pc.HD;
             const uint gi = (seq0 + j0 + r) * pc.INNER + hoff + d;
-            Ks[r][d] = ok ? k[gi] : 0.0;
-            Vs[r][d] = ok ? v[gi] : 0.0;
+            Ks[r][d >> 2u][d & 3u] = ok ? k[gi] : 0.0;
+            Vs[r][d >> 2u][d & 3u] = ok ? v[gi] : 0.0;
         }
         barrier();
-        float a[4] = float[4](0.0, 0.0, 0.0, 0.0);
-        for (uint d = 0u; d < 64u; ++d) {
-            const float qd = qr[d];
-            for (uint u = 0u; u < 4u; ++u) a[u] += qd * Ks[lane + 8u * u][d];
+        vec4 a = vec4(0.0);
+        for (uint d4 = 0u; d4 < 16u; ++d4) {
+            const vec4 qd = qr[d4];
+            a.x += dot(qd, Ks[lane][d4]);
+            a.y += dot(qd, Ks[lane + 8u][d4]);
+            a.z += dot(qd, Ks[lane + 16u][d4]);
+            a.w += dot(qd, Ks[lane + 24u][d4]);
         }
         for (uint u = 0u; u < 4u; ++u) {
             const uint c = lane + 8u * u;
@@ -65,22 +68,24 @@ void main() {
         barrier();
         const float alpha = exp(m_i - m_new);
         float rs = 0.0;
-        float pv[8];
-        for (uint u = 0u; u < 8u; ++u) pv[u] = 0.0;
+        vec4 pv0 = vec4(0.0), pv1 = vec4(0.0);
         for (uint c = 0u; c < 32u; ++c) {
             const float p = Pe[row][c];
             rs += p;
-            for (uint u = 0u; u < 8u; ++u) pv[u] += p * Vs[c][lane + 8u * u];
+            pv0 += p * Vs[c][lane * 2u];
+            pv1 += p * Vs[c][lane * 2u + 1u];
         }
         l_i = l_i * alpha + rs;
-        for (uint u = 0u; u < 8u; ++u) acc[u] = acc[u] * alpha + pv[u];
+        acc0 = acc0 * alpha + pv0;
+        acc1 = acc1 * alpha + pv1;
         m_i = m_new;
         barrier();
     }
     if (i0 + row >= pc.N) return;
     const float inv = 1.0 / l_i;
-    for (uint u = 0u; u < 8u; ++u) {
-        const uint d = lane + 8u * u;
-        if (d < pc.HD) o[(seq0 + i0 + row) * pc.INNER + hoff + d] = acc[u] * inv;
+    const uint ob = (seq0 + i0 + row) * pc.INNER + hoff + lane * 8u;
+    for (uint u = 0u; u < 4u; ++u) {
+        if (lane * 8u + u < pc.HD) o[ob + u] = acc0[u] * inv;
+        if (lane * 8u + 4u + u < pc.HD) o[ob + 4u + u] = acc1[u] * inv;
     }
 }

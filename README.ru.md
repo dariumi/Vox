@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.14.0-2a78d6" alt="версия 0.14.0">
+  <img src="https://img.shields.io/badge/version-0.16.0-2a78d6" alt="версия 0.16.0">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -19,6 +19,7 @@
   <a href="https://dariumi.github.io/Vox/index.ru.html">Страница проекта и живое демо</a> ·
   <a href="#быстрый-старт">Быстрый старт</a> ·
   <a href="#модели">Модели</a> ·
+  <a href="#vox-studio-движок-из-браузера">Vox Studio</a> ·
   <a href="#производительность">Производительность</a> ·
   <a href="#что-проверено">Что проверено</a> ·
   <a href="CHANGELOG.md">Изменения</a>
@@ -30,7 +31,7 @@
 
 | | |
 |---|---|
-| 🧩 **Несколько семейств моделей, один рантайм** | Qwen3-TTS (клонирование, готовые дикторы, голос по описанию), F5-TTS (клонирование, flow matching), Kokoro-82M (именные голоса и их смеси). Новые семейства подключаются на C++ или Python. |
+| 🧩 **Несколько семейств моделей, один рантайм** | Qwen3-TTS (клонирование, готовые дикторы, голос по описанию), F5-TTS (клонирование, flow matching), Kokoro-82M (именные голоса и их смеси), CosyVoice2-0.5B (клонирование, инструкции, собственные теги смеха и дыхания). Новые семейства подключаются на C++ или Python. |
 | 🎛️ **Ресурсы под контролем** | устройство, лимиты RAM и VRAM, потоки и приоритет, режим (speed / balanced / memory / background); `vox plan` показывает, куда пойдёт каждая стадия, не загружая веса. |
 | 🔁 **Стриминг в обе стороны** | текст может приходить по словам от LLM, аудио уходит чанками; правки ещё не произнесённого хвоста применяются. |
 | 🎯 **Сверено с официальным кодом** | каждое семейство сравнивается по стадиям с официальной реализацией на PyTorch (см. [Что проверено](#что-проверено)). |
@@ -55,6 +56,7 @@ flowchart LR
         Q["Qwen3-TTS<br/>авторегрессионная"]
         F["F5-TTS<br/>flow matching"]
         K["Kokoro-82M<br/>StyleTTS2 + iSTFTNet"]
+        C["CosyVoice2<br/>LM + flow + HiFT"]
         P["Семейства на Python<br/>vox.register_family"]
     end
     subgraph hw["Бэкенды"]
@@ -66,7 +68,7 @@ flowchart LR
     CLI & PY & SRV --> ABI --> engine
     engine --> fam
     Q & F --> CPU & VK
-    K & P --> CPU
+    K & C & P --> CPU
     TM -.-> fam
     TV -.-> SES
     JS["vox.js в браузере<br/>WebGPU · JS-запасной путь"] -.те же форматы и seed.-> TM
@@ -81,8 +83,9 @@ flowchart LR
 | **Qwen3-TTS VoiceDesign** | голос по текстовому описанию | те же | ✅ | ✅ | ✅ | по словам |
 | **F5-TTS** v1 / v0 и дообучения | клон по записи и её тексту | зависят от чекпойнта (база en/zh, русские дообучения) | ✅ | ✅ весь граф | ✅ | по предложениям |
 | **Kokoro-82M** *(новое в 0.14)* | именные голоса из `voices/*.pt` и смеси `af_heart,bf_emma` | английский со встроенным G2P | ✅ | — | — | по предложениям / строкам |
+| **CosyVoice2-0.5B** *(новое в 0.16)* | клон по записи (с её текстом — zero-shot, без — cross-lingual), инструкции и эмоции (instruct2) | zh, en, ja, ko, yue (как обучена) | ✅ | — | — | группами предложений |
 
-В очереди: XTTS, CosyVoice, Chatterbox. Семейство описывает себя само (`vox inspect`, `engine.capabilities`), а нарезку,
+В очереди: Chatterbox (у него общие с CosyVoice2 вокодер и flow), XTTS. Семейство описывает себя само (`vox inspect`, `engine.capabilities`), а нарезку,
 кроссфейды и политику коммита берёт на себя движок.
 
 ## Быстрый старт
@@ -124,6 +127,18 @@ Vulkan включается сам, если найдены заголовки (
 </details>
 
 <details>
+<summary><b>CosyVoice2-0.5B</b>: конвертация, клон, инструкции</summary>
+
+    pip install torch pyyaml onnx onnxruntime s3tokenizer   # нужно только конвертеру
+    python -m vox.build_cosyvoice --model ./CosyVoice2-0.5B -o cosyvoice2.tmod      # LLM в bf16, flow и HiFT в f32
+    vox voice create ref.wav --model cosyvoice2.tmod --text "Текст, который звучит в ref.wav" -o me.tvoice
+    vox say "Привет! [смех] Это CosyVoice2 в vox." --model cosyvoice2.tmod --voice me.tvoice -o out.wav
+    vox say "[радостно] Какой хороший день!" --model cosyvoice2.tmod --voice me.tvoice -o happy.wav   # эмоция → instruct2
+    vox phonemize --model cosyvoice2.tmod "It costs 25 dollars."                                     # на какие куски разрежет
+
+</details>
+
+<details>
 <summary><b>F5-TTS</b>: конвертация, клон, синтез</summary>
 
     python -m vox.build_f5 --ckpt F5TTS_v1_Base/model_1250000.safetensors --vocab F5TTS_v1_Base/vocab.txt \
@@ -152,47 +167,65 @@ k.phonemize("Hello there!")        # {'phonemes': …, 'chunks': […], 'g2p': '
 
 ## Производительность
 
-Замер пользователя на vox 0.12.2 (`tools/run_full_check.py`, Ryzen 7 5700X + RTX 3050 6 ГБ, Qwen3-TTS 1.7B-Base, ~13 с речи), qwentts.cpp —
-на той же машине и том же тексте:
+Замер пользователя на vox 0.14.0: `tools/run_full_check.py` на CPU с 16 потоками и RTX 3050 6 ГБ, Qwen3-TTS 1.7B-Base, около 13 с речи.
+qwentts.cpp (Q8_0) запускался на той же машине с тем же текстом. WER и CER — 0 у всех девяти вариантов vox и у обоих прогонов qwentts.cpp.
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/qwen-rtf-dark.ru.svg">
-    <img src="docs/img/qwen-rtf-light.ru.svg" alt="RTF Qwen3-TTS 1.7B: vox Vulkan q4 0.41, q8 0.44, bf16 0.59, qwentts.cpp CUDA 0.43; CPU: vox q4 1.64, q8 1.96, bf16 2.98, qwentts.cpp 2.16" width="760">
+    <img src="docs/img/qwen-rtf-light.ru.svg" alt="RTF Qwen3-TTS 1.7B: vox Vulkan q4 0,42, q8 0,44, bf16 0,59, qwentts.cpp CUDA 0,426; CPU: vox q4 1,35, q8 1,65, bf16 2,61, qwentts.cpp 1,84" width="760">
   </picture>
 </p>
 
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/img/qwen-memory-dark.ru.svg">
-    <img src="docs/img/qwen-memory-light.ru.svg" alt="Пиковый RSS: vox q8 Vulkan 0.47 ГБ против qwentts.cpp CUDA 2.97 ГБ; CPU: vox q8 2.4 ГБ против qwentts.cpp 7.1 ГБ" width="760">
+    <img src="docs/img/qwen-memory-light.ru.svg" alt="Пиковый RSS, q8: vox Vulkan 0,48 ГБ против qwentts.cpp CUDA 2,97 ГБ; CPU: vox 2,44 ГБ против qwentts.cpp 7,14 ГБ" width="760">
   </picture>
 </p>
 
 <details>
-<summary>Таблица всех измеренных конфигураций</summary>
+<summary>Таблица всех измеренных конфигураций (тёплый RTF / первый чанк / пиковый RSS)</summary>
 
-| Формат | Vulkan | Vulkan, `codec=cpu` | CPU |
+| Формат | CPU | Vulkan | Vulkan, `codec=cpu` |
 |---|---|---|---|
-| bf16 | 0.63 | 0.59 | 2.98 |
-| q8 | 0.47 | 0.44 | 1.96 |
-| q4 | 0.44 | 0.41 | 1.64 |
+| bf16 | 2,61 / 2133 мс / 3,7 ГБ | 0,62 / 508 мс / 0,47 ГБ | 0,59 / 565 мс / 0,93 ГБ |
+| q8 | 1,65 / 2339 мс / 2,4 ГБ | 0,47 / 490 мс / 0,48 ГБ | 0,44 / 563 мс / 0,91 ГБ |
+| q4 | 1,35 / 1913 мс / 1,7 ГБ | 0,44 / 481 мс / 0,46 ГБ | 0,42 / 546 мс / 0,90 ГБ |
 
-qwentts.cpp: CUDA 0.429 (RSS 2.97 ГБ), CPU 2.164 (RSS 7.1 ГБ). RSS vox q8: 0.47 ГБ на GPU, 2.4 ГБ на CPU.
-q4 быстрее и занимает на треть меньше VRAM, но не проходит стандартный допуск (KL ≤ 0.02, top-5 ≥ 97%), поэтому по умолчанию q8.
+qwentts.cpp: CUDA 0,426 (2,97 ГБ), CPU 1,84 (7,1 ГБ). Итого vox q8 на CPU примерно на 10% быстрее qwentts.cpp при памяти в 2,9 раза меньше,
+а на GPU примерно на 10% медленнее при памяти в 6 раз меньше. q4 не проходит штатный допуск (KL ≤ 0,02, top-5 ≥ 97%), поэтому по умолчанию q8.
+На GPU около 70% времени уходит на матрично-векторные умножения talker'а и predictor'а. У predictor'а 160 тысяч мелких вызовов по 33–50 мкс,
+поэтому следующее ускорение Qwen3 на GPU — там.
 </details>
 
-F5-TTS на процессоре до и после 0.13 (DiT с настоящей шириной слоёв F5, но 2 слоя, 2 шага, 12,8 с звука, 2 ядра машины разработки):
+F5-TTS на настоящих весах (`hotstone228/F5-TTS-Russian`), фраза 2,3 с. С 0.13 весь шаг DiT и Vocos считаются на GPU:
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/img/f5-cpu-dark.ru.svg">
-    <img src="docs/img/f5-cpu-light.ru.svg" alt="F5-TTS на CPU, секунды: f32 16.6 → 7.7, bf16 17.4 → 8.0, q8 17.1 → 7.2" width="760">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/f5-speed-dark.ru.svg">
+    <img src="docs/img/f5-speed-light.ru.svg" alt="RTF F5-TTS при 4 шагах: CPU 12,5 → 6,71, RTX 3050 35,1 → 1,39, RTX 5050 0,76" width="760">
   </picture>
 </p>
 
-**Пока не измерено на железе:** F5 на настоящей видеокарте (GPU-граф 0.13) и Kokoro на настоящих весах. На 2-ядерной машине разработки,
-на тестовой модели с настоящей шириной декодера и генератора Kokoro (генератор — ~88% времени), за время работы над 0.14 Kokoro ускорился с RTF 2.68 до 1.05.
+Kokoro-82M на настоящих весах, на процессоре:
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/kokoro-cpu-dark.ru.svg">
+    <img src="docs/img/kokoro-cpu-light.ru.svg" alt="RTF Kokoro-82M на CPU: vox f32 0,39, bf16 0,35, PyTorch 0,21" width="760">
+  </picture>
+</p>
+
+В 0.14.1 ускорено любое умножение на CPU с многими строками входа. Каждый выход считается в том же порядке суммирования, что и раньше, поэтому звук совпадает бит в бит.
+На 2-ядерной машине разработки это дало Kokoro RTF 0,89 → 0,56, а F5 — 0,52 → 0,35 (f32) и 0,42 (bf16). Ваши цифры даст новый прогон.
+
+**CosyVoice2-0.5B** (0.16, только CPU) замерена с настоящими размерами и случайными весами (`tools/make_tiny_cosyvoice.py --full`) на той же 2-ядерной машине.
+LLM тратит 96 мс на речевой токен в bf16 и 59 мс с `--quant q8` (на секунду речи нужно 25 токенов, то есть одна LLM даёт RTF 2,4 / 1,5).
+Основная нагрузка — flow: в его эстиматоре 56 трансформерных и 14 остаточных блоков, и он проходит 10 шагов × 2 (classifier-free guidance) по кадрам подсказки
+и новым кадрам вместе — 16 с на 2,4 с речи при подсказке 2,3 с (≈ 1 ТФЛОП на 4 с речи). HiFT добавляет ~0,6 с на секунду звука. Всего RTF ≈ 7–10 на 2 ядрах;
+настольный процессор на 8–16 ядер будет в разы быстрее, но этой модели по-настоящему нужна видеокарта, а на GPU vox её пока не запускает.
+О качестве эти цифры ничего не говорят: веса были случайные.
 
 ## Как работает каждая модель
 
@@ -242,6 +275,11 @@ flowchart LR
   flash attention, FFN) и выход; Vocos тоже на GPU, на CPU только iSTFT. `VOX_F5_GPU=0` — старый путь.
 - **Конфиг v0 / v1** (`F5TTS_Base` и дообучения вроде `hotstone228/F5-TTS-Russian`): `--model-cfg v0|v1`, конвертер угадывает по пути,
   неверный конфиг даёт шум. Модели, сконвертированные 0.12.1 и старше, пересоберите (CRLF в `vocab.txt`, паддинг Vocos).
+- **Vocos остаётся в f32** с 0.14.1 (`--vocos-dtype`, +26 МБ): он маленький, но превращает мел в фазу, и bf16-веса в нём добавляли ошибку волны
+  поверх ошибки DiT. `--dtype` и `--quant` относятся к DiT. Чтобы получить это, пересоберите модель.
+- **Ядра GPU в 0.14.1**: линейные слои с многими строками считает GEMM с регистровыми плитками (`gemmb.comp`: плитка 128×128, 8×8 выходов на поток,
+  64 FMA на 4 чтения vec4 из shared-памяти). Внимание читает K и V как vec4. `VOX_F5_GEMM=old` возвращает GEMM из 0.14.0. Оба проверены на lavapipe
+  (звук совпадает с CPU до 4e-9). **Скорость на настоящей видеокарте ещё не измерена.** `VOX_PROFILE=gpu` показывает долю каждого шейдера.
 - Параметры названы как в официальном коде: `nfe_step`, `cfg_strength`, `sway_sampling_coef`, `speed`, `cross_fade_duration`, `target_rms`,
   `use_epss`, `max_chars` — через `--extra` / `extra={...}`, короткие флаги CLI `--nfe --cfg --sway --speed`.
 - Отличия от официального пайплайна: китайский переводится в пиньинь посимвольно, без словаря слов; нет обрезки тишины образца (берутся первые 12 с);
@@ -284,6 +322,159 @@ flowchart LR
 - **API**: `vox phonemize --model M [--lang en-gb] "текст"`, `vox_engine_phonemize()` в C ABI, `Engine.phonemize()` в Python.
 - Каждый кусок синтезируется целиком, поэтому аудио выходит по кускам (строки, затем куски до 510 фонем).
 </details>
+
+<details open>
+<summary><b>CosyVoice2-0.5B</b> <i>(новое в 0.16)</i>: Qwen2 LM по речевым токенам → flow matching → HiFT</summary>
+
+```mermaid
+flowchart LR
+    T["текст"] --> TN["text_normalize<br/>числа словами, группы по 60–80 токенов"]
+    TN --> TOK["Qwen2 BPE"]
+    V[".tvoice<br/>речевые токены · mel · x-vector"] --> LM
+    TOK --> LM["Qwen2 LM 0.5B<br/>25 речевых токенов / с, сэмплинг RAS"]
+    LM --> ENC["энкодер flow<br/>Conformer, ×2 → 50 Гц"]
+    V --> CFM
+    ENC --> CFM["flow matching<br/>U-Net, 10 шагов Эйлера, CFG 0.7"]
+    CFM --> HIFT["вокодер HiFT<br/>F0 → источник NSF, iSTFT"]
+    HIFT --> PCM["PCM 24 кГц"]
+```
+
+- **Конвертация**: `python -m vox.build_cosyvoice --model DIR` (или `python -m vox build --model DIR`) читает папку релиза
+  (`cosyvoice2.yaml`, `llm.pt`, `flow.pt`, `hift.pt`, `campplus.onnx`, `speech_tokenizer_v2.onnx`, `CosyVoice-BlankEN/`).
+  LLM хранится в `--dtype` (по умолчанию bf16; `--quant q8` — её линейные слои в 8 битах), flow и HiFT — в `--flow-dtype` (f32). Фиксированный шум flow matching
+  (`CausalConditionalCFM` берёт его с зерном 0) тоже сохраняется, поэтому flow детерминирован, как в оригинале.
+  Энкодер диктора CAM++ читается из `campplus.onnx` по узлам графа (пары Conv + BatchNorm, которые экспортёр склеил, так и остаются склеенными)
+  и при конвертации сверяется с onnxruntime; токенизатор речи идёт через `s3tokenizer.utils.onnx2torch`. `--no-clone` их не берёт.
+- **Голос клонируется нативно**, как это делает `CosyVoiceFrontEnd`: запись (до 30 с) передискретизируется алгоритмом torchaudio, затем
+  считаются mel 24 кГц (подсказка для flow), x-vector CAM++ по Kaldi fbank на 16 кГц и речевые токены S3 (S3TokenizerV2: log-mel Whisper, энкодер
+  из свёрток и внимания с FSMN, FSQ). С текстом записи голос **zero-shot** (LLM подсказывают текст и речевые токены), без него
+  (`--xvector-only` или запись профиля без текста) — **cross-lingual** (подсказка только для flow).
+- **Инструкции** (`instruct2`): стиль с `--instruct "…"` или тег эмоции (`[happy]`, `[радостно]`), если в профиле нет стиля с таким именем.
+  В `.tmod` лежат формулировки эмоций самой модели (китайские фразы, на которых учили CosyVoice2), `<|endofprompt|>` добавляется.
+- **Теги**: `[laugh]` превращается в токен модели `[laughter]`; `[breath]`, `[cough]`, `[sigh]` — её собственные. Другие токены модели
+  (`[noise]`, `<strong>…</strong>`, `<laughter>…</laughter>`) можно писать в тексте как есть.
+- **Текст**: `text_normalize` без ttsfrd / wetext — китайские правила пунктуации и скобок, в остальном тексте числа словами по правилам inflect,
+  предложения собираются в группы по 60–80 токенов (`vox phonemize` показывает куски). Текст с `<|…|>` передаётся как есть. Каждый кусок проходит
+  LLM → flow → HiFT целиком (`stream=False` оригинала); куски идут друг за другом без кроссфейда.
+- **Параметры**: `speed` (mel растягивается, как в `token2wav`), зерно. LLM сэмплирует по официальным правилам RAS
+  (top-p 0.8, top-k 25, окно 10 против повторов, конец речи не раньше 2 токенов на токен текста) на Philox: одно зерно — один и тот же звук,
+  но не те же токены, что дал бы генератор PyTorch.
+</details>
+
+## Профили голосов: несколько голосов, эмоции, любые модели
+
+*Новое в 0.15.* `.tvoice` теперь **профиль**: в одном файле несколько голосов. У каждого голоса есть стили (эмоции, подача), записи, с
+которых его клонировали, готовые дикторы для моделей без клонирования и кэш голоса, уже собранного под каждую модель, на которой он звучал.
+
+```mermaid
+flowchart LR
+    subgraph P["cast.tvoice"]
+        A["anna<br/>стили: default · happy · whisper<br/>записи + текст"]
+        B["boris<br/>дикторы: kokoro=am_adam<br/>описание для VoiceDesign"]
+        C[("кэш<br/>anna/default на qwen3 base<br/>anna/happy на f5 …")]
+    end
+    P -->|"из кэша или клон по записи"| Q["Qwen3 Base · F5"]
+    P -->|"диктор, указанный для модели"| K["Kokoro · Qwen3 CustomVoice"]
+    P -->|"описание + инструкция стиля"| D["Qwen3 VoiceDesign"]
+```
+
+    vox profile new cast.tvoice --name "Cast"
+    vox profile add cast.tvoice --voice anna anna.wav --text "Что Анна говорит в записи"
+    vox profile add cast.tvoice --voice anna --style happy anna_happy.wav --text "Что-то радостное"
+    vox profile set cast.tvoice --voice anna --style whisper --instruct "Whisper softly" --speed 0.95
+    vox profile add cast.tvoice --voice boris --from boris.tvoice          # голос из другого файла (любой модели)
+    vox profile set cast.tvoice --voice boris --speaker "kokoro=am_adam;qwen3-tts/custom_voice=ryan"
+    vox profile show cast.tvoice
+    vox profile prepare cast.tvoice --model f5.tmod                        # собрать все голоса под модель сразу и сохранить в файл
+    vox say "anna: Привет! [happy] Отличные новости.
+    boris: [whisper] Правда? [pause 400ms] Рассказывай." --model f5.tmod --voice cast.tvoice -o dialogue.wav
+
+```python
+p = vox.Profile("Cast")
+p.add_recording("anna", "anna.wav", "Что Анна говорит в записи")
+p.add_recording("anna", "anna_happy.wav", "Что-то радостное", style="happy")
+p.set_style("anna", "whisper", instruct="Whisper softly", speed=0.95)
+p.set_voice("boris", speakers={"kokoro": "am_adam"})
+p.save("cast.tvoice")
+audio = engine.synthesize("Привет.", p, voice_id="anna", style="happy")
+audio = engine.synthesize("anna: Привет! [pause 300ms]\nboris: [laugh] Здравствуй.", p)     # разметка
+```
+
+**Один профиль на любой модели.** Если модели нужен голос, которого в профиле под неё ещё нет, движок собирает его при первом использовании,
+а `save()` / `vox profile prepare` сохраняют результат:
+
+| модель | из чего собирается голос |
+|---|---|
+| Qwen3 Base, F5-TTS (клон по записи) | запись стиля и её текст (запись стиля по умолчанию, если у стиля своей нет) |
+| Kokoro, Qwen3 CustomVoice (готовые дикторы) | `speakers` голоса: `kokoro`, `qwen3-tts/custom_voice` (семейство или семейство/вариант); CustomVoice 1.7B получает ещё инструкцию стиля |
+| Qwen3 VoiceDesign (голос по описанию) | описание голоса плюс инструкция стиля |
+
+Если голос на модели собрать нельзя (например, для Kokoro не указан диктор), будет понятная ошибка с тем, что добавить.
+
+**Разметка в тексте** (`markup`: по умолчанию `auto`, ещё `strict`, `off`):
+
+| разметка | что значит | если модель так не умеет |
+|---|---|---|
+| `[voice:anna]`, `[anna]`, `anna: …` в начале строки | сменить голос (реплики — в профилях с двумя и больше голосами) | — |
+| `[happy]`, `[style:happy]`, `[радостно]` | стиль голоса; эмоция без своего стиля переводится для модели | инструкция (Qwen CustomVoice 1.7B, VoiceDesign), иначе темп (F5, Kokoro), иначе заметка |
+| `[/]`, `[neutral]` | вернуть стиль и темп по умолчанию | — |
+| `[pause 500ms]`, `[pause 1.5s]`, `[break]`, `[пауза 300мс]` | тишина точной длины | — |
+| `[speed 1.2]` | темп речи | заметка (у Qwen3 темпа нет) |
+| `[laugh]`, `[sigh]`, `[cough]`, `[смех]` … | невербальный звук | собственный тег модели, если он есть, иначе короткая пауза |
+| `\[` | обычная скобка | — |
+
+В `auto` скобка, которая ничем из этого не является, остаётся текстом; в `strict` удаляется, а с `off` всё читается как текст. Текст вокруг
+тегов звучит ровно так, как если бы каждый кусок произнесли отдельно. Что движок не смог сделать как просили, перечислено в `notes` сессии
+(`session.info["notes"]`). Тег может прийти разрезанным между вызовами `feed()`.
+
+**Совместимость.** `.tvoice` 1.0 открывается как профиль с одним голосом и звучит бит в бит как раньше. Профиль, у голоса по умолчанию
+которого есть сборка, сохраняется в формате **1.1**: на верхнем уровне в нём этот голос в раскладке 1.0, поэтому vox 0.14 и vox.js читают его
+как обычный голос. Профиль совсем без сборок — формат 2.0, старые версии отказываются от него с понятным сообщением. Записи хранятся в
+профиле один раз, как WAV.
+
+## Vox Studio: движок из браузера
+
+*Новое в 0.15.* `vox web` (или `vox -web`) запускает движок со встроенным сервером и печатает ссылки с секретом. Откройте страницу
+**Vox Studio**, и движком можно управлять из браузера:
+- сценарий с несколькими голосами и разметкой, звук играет по мере синтеза;
+- профили голосов: запись с микрофона, стили, готовые дикторы для разных моделей;
+- модели и устройства;
+- история всего озвученного.
+
+Страница статичная: она живёт на `vox.arkonova.network/studio/`, и её же раздаёт сам движок. Речь делается на вашей машине, а страница
+говорит с движком HTTP-запросами — как панель Clash со своим ядром.
+
+    vox web --models ./models --voices ./voices
+      Vox Studio:  https://vox.arkonova.network/studio/#url=http%3A%2F%2F127.0.0.1%3A7860&secret=…
+      this engine: http://127.0.0.1:7860/studio/#secret=…
+    vox web --models ./models --host 0.0.0.0 --tls      # для других компьютеров: https с самоподписанным сертификатом
+
+```mermaid
+sequenceDiagram
+    participant B as Браузер: страница Vox Studio
+    participant E as vox web (ваш компьютер)
+    B->>E: GET /health
+    B->>E: GET /v1/info  (Authorization: Bearer секрет)
+    E-->>B: модели, профили, устройства
+    B->>E: POST /v1/speak {text, model, profile, voice_id, params}
+    E-->>B: куски PCM по мере синтеза (сразу играют)
+    E-->>B: X-Vox-Clip → /v1/history/<id> (заметки, RTF)
+```
+
+- **Секрет.** Он нужен для каждого запроса к `/v1` (`Authorization: Bearer …` или `?token=` для ссылок на звук и WebSocket). В ссылке секрет
+  стоит после `#`, а эту часть браузер никогда не отправляет сайту со страницей. Хранится в `~/.vox/web_secret`; `--new-secret` делает новый.
+- **Доступ к движку.** Страница по https может обращаться к `http://127.0.0.1` / `localhost` (Chrome может один раз спросить разрешение на
+  доступ к локальной сети). С другого компьютера к обычному http ей нельзя, поэтому есть три способа:
+  - `--tls`: самоподписанный сертификат создаётся на имена и адреса машины; откройте `https://…/health` движка один раз и примите его;
+  - `--cert` / `--key` со своим сертификатом;
+  - Studio, которую раздаёт сам движок (`http://ХОСТ:ПОРТ/studio/`).
+- **API** (и для своих клиентов):
+  - модели: `/v1/models` (открыть, закрыть, добавить);
+  - профили: `/v1/profiles` (создать, PATCH, записи, prepare, скачать и загрузить);
+  - синтез: `POST /v1/speak` (потоком pcm16 / f32 / wav);
+  - `/v1/history` и WebSocket `/v1/duplex` (протокол `vox serve`).
+
+  Полный список — в начале `python/vox/web.py`.
 
 ## Ресурсы: устройство, память, режим
 
@@ -398,8 +589,9 @@ sequenceDiagram
 | Семейство | Эталон | Результат |
 |---|---|---|
 | Qwen3-TTS | `qwen_tts` 0.1.1 (`generate_voice_clone`, `generate_custom_voice`, `generate_voice_design`) | speaker embedding ≤ 4e-7; коды референса совпадают на 100%; логиты talker / predictor ≤ 1e-6 / 1e-5, argmax 100%; аудио декодера ≤ 3e-4; на **настоящей 1.7B-Base**: логиты ≤ 2.6e-4, argmax 100% |
-| F5-TTS | `f5_tts` + `vocos` | токенизатор, мел, текстовый энкодер, DiT (обе ветки CFG), Vocos, цикл CFM ~1e-6; сквозное аудио 3e-9; GPU-граф на lavapipe 4e-9; настоящий чекпойнт hotstone: аудио f32 1.8e-4 |
-| Kokoro-82M | `kokoro` 0.7.16 + `misaki` 0.7.4 (`KModel`, `KPipeline`) | каждая стадия (PL-BERT, энкодер длительностей, длительности, F0/N, текстовый энкодер, выравнивание, источник NSF, STFT, генератор) до ~1e-6; во всех сквозных сценариях та же длина, log-mel 0.16–0.71 дБ (2.64 дБ при другом шуме); G2P — 92.1% слов против misaki |
+| F5-TTS | `f5_tts` + `vocos` | токенизатор, мел, текстовый энкодер, DiT (обе ветки CFG), Vocos, цикл CFM ~1e-6; сквозное аудио 3e-9; GPU-граф на lavapipe 4e-9; **настоящий** `hotstone228/F5-TTS-Russian`: мел ~5e-6 (f32), ошибка одна и та же на CPU, RTX 3050 и RTX 5050 |
+| CosyVoice2 | репозиторий CosyVoice (`CosyVoice2Model`, `CosyVoiceFrontEnd`), onnxruntime, s3tokenizer | mel 24 кГц 2e-6, fbank 3e-5, x-vector CAM++ 2.5e-7, mel Whisper 2e-5, речевые токены 100%, лог-вероятности LLM 2e-7 при совпадении argmax 100%, mel flow 3e-7, звук HiFT 1.4e-4 (отн.); целые фразы через движок (голос из WAV, официальные токены и шум) — max \|Δ\| 7e-6–1.4e-5 во всех трёх режимах; куски текста совпадают с `text_normalize` на 8 текстах. **Настоящие веса пока не проверены** |
+| Kokoro-82M | `kokoro` 0.7.16 + `misaki` 0.7.4 (`KModel`, `KPipeline`) | каждая стадия (PL-BERT, энкодер длительностей, длительности, F0/N, текстовый энкодер, выравнивание, источник NSF, STFT, генератор) до ~1e-6; во всех сквозных сценариях та же длина, log-mel 0.16–0.71 дБ (2.64 дБ при другом шуме); G2P — 92.1% слов против misaki; **настоящая Kokoro-82M**: длина как у официальной (8,000 с), средний \|Δ log-mel\| 0,125, whisper слышит те же слова |
 | vox.js | ядро и официальные дампы | аудио F5 3.7e-9; конвертация Qwen3 байт в байт, аудио = `vox say --seed`; CPU-путь < 1e-4 |
 | Привязки | `vox say --seed 42` | C, C++, Rust, Go, Node.js, Python ctypes — бит в бит |
 
@@ -428,7 +620,8 @@ top-5 (≥ 97%) вместо argmax.
 ## Форматы
 
 - `.tmod`: заголовок `VOXM`, JSON-манифест (стадии, точность, токенизатор, параметры генерации, голоса), блобы с выравниванием 4096 под mmap.
-- `.tvoice`: safetensors с `speaker_emb`, `ref_codes`, `ref_text_tokens`, исходным WAV и параметрами по умолчанию, привязан к весам по sha256.
+- `.tvoice`: safetensors. С 0.15 это профиль (метаданные `profile`: голоса, стили, записи, индекс кэша; тензоры `ref.<id>` и `c<N>.*`);
+  сборка голоса по умолчанию лежит на верхнем уровне в раскладке 1.0 (`speaker_emb`, `ref_codes`, `ref_text_tokens`, `ref_audio`, метаданные `voice`). Сборка привязана к весам по sha256.
   Голос в режиме `speaker` (готовый диктор, описание, голос Kokoro или смесь) хранит имя диктора и привязан к варианту модели.
 - **Q4**: 4 бита на вес, блоки по 32. `--quant q4` — внимание и MLP talker'а, `q4mlp` — только MLP, `q4full` — всё. На RTX 3050 он быстрее и
   занимает на треть меньше VRAM, но допуск KL/top-5 не проходит; WER на пяти фразах 0.12–0.18 против 0.07 у q8, на слух разницы в клонах нет.
@@ -455,11 +648,14 @@ Python ctypes. `tests/test_examples.py` собирает каждую и тре�
 | `src/f5.cpp`, `src/f5_ops.cpp`, `src/backend_f5.cpp`, `src/gpu_f5.cpp` | F5-TTS: токенизатор, DiT + CFM, Vocos, нарезка текста и кроссфейд, граф DiT на Vulkan |
 | `src/kokoro.cpp`, `src/backend_kokoro.cpp` | Kokoro-82M: PL-BERT, предиктор просодии, текстовый энкодер, декодер, генератор iSTFTNet |
 | `src/kokoro_g2p.cpp`, `src/kokoro_g2p_en.cpp` | английский G2P (порт misaki.en) и нарезка на куски как в KPipeline |
+| `src/cosyvoice.cpp`, `src/cosyvoice_front.cpp`, `src/backend_cosyvoice.cpp` | CosyVoice2: Qwen2 LM, flow (Conformer + CFM), HiFT; mel / fbank / CAM++ / токенизатор S3; текстовый фронтенд |
+| `src/nn.cpp` | общие слои свёрточных моделей (свёртки, источник NSF, STFT / iSTFT, внимание, ресэмплер torchaudio) |
+| `src/profile.cpp`, `src/markup.cpp` | профили голосов (формат, правка, сборка под разные модели) и разметка текста |
 | `src/resources.cpp`, `src/family.cpp` | планировщик ресурсов и бюджет сессий; реестр семейств моделей (C++ и Python) |
 | `src/kernels.cpp` | пулы потоков, matmul (f32/f16/bf16, q8 и q4 int8-dot AVX2), трансформер (включая гибрид GPU/CPU) |
 | `src/gpu_vulkan.cpp`, `src/gpu_codec.cpp`, `src/shaders/*.comp` | Vulkan: matmul, трансформер, декодер кодека, профайлер; шейдеры GLSL (SPIR-V в `src/vk_shaders.inc`) |
 | `webgpu/wgsl/`, `webgpu/web/src/` | WGSL-шейдеры и исходники `vox.js` (`tools/build_web.py`) |
-| `python/vox` | Python API, конвертеры `vox.build` / `vox.build_f5` / `vox.build_kokoro`, сервер `vox.serve`, фронтенд misaki |
+| `python/vox` | Python API, конвертеры `vox.build` / `vox.build_f5` / `vox.build_kokoro` / `vox.build_cosyvoice`, сервер `vox.serve`, фронтенд misaki |
 | `site/`, `docs/` | страница проекта и её сборка для GitHub Pages; в `docs/img/` графики |
 | `tools/` | эталоны, полный прогон, крошечные модели (`make_tiny_*.py`), графики |
 | `tests/`, `examples/` | модульные и эталонные тесты; клиенты на шести языках |
@@ -470,6 +666,7 @@ Python ctypes. `tests/test_examples.py` собирает каждую и тре�
                               # примеры на 6 языках, vox.js в Chromium (если есть playwright), Python, сервер, дуплекс, Q4
     VOX_QWEN2_GGUF=qwen2.gguf VOX_TEST_DEVICES="cpu;vulkan:0" python tests/test_official.py build/vox
     python tests/test_kokoro_tiny.py build/vox
+    VOX_COSYVOICE_SRC=CosyVoice VOX_QWEN2_GGUF=qwen2.gguf python tests/test_cosyvoice_tiny.py build/vox   # клон FunAudioLLM/CosyVoice
 
 Словарь для тестов: `curl -L -o qwen2.gguf https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/ggml-vocab-qwen2.gguf`.
 CI (`.github/workflows/ci.yml`) гоняет всё это на CPU и на lavapipe.
@@ -478,9 +675,11 @@ CI (`.github/workflows/ci.yml`) гоняет всё это на CPU и на lava
 
 - GPU в нативных сборках — только Vulkan (CUDA и Metal нет); шейдеры общие, без тензорных ядер и cooperative matrix; одно Vulkan-устройство на процесс.
 - **Kokoro**: только CPU (ни Vulkan, ни браузера пока нет); встроенный G2P только английский и на части слов расходится с misaki
-  (эвристический теггер вместо spaCy, нет espeak). Настоящие веса Kokoro-82M во время разработки не проверялись (не было доступа к Hugging Face).
-- F5-TTS на GPU на настоящей карте не измерялся; графу нужен `dim_head ≤ 64` (так у всех официальных чекпойнтов).
-- Основной путь рассчитан на авторегрессионные кодековые модели; не-AR подключаются через режим «direct» `Backend` (так сделаны F5 и Kokoro). XTTS, CosyVoice и Chatterbox пока не подключены.
+  (эвристический теггер вместо spaCy, нет espeak). На настоящих весах на 16 потоках примерно в 1,7 раза медленнее PyTorch (замер 0.14.0, до ускорения умножений в 0.14.1).
+- F5-TTS при 32 шагах на GPU всё ещё медленнее реального времени (RTF 5 на RTX 5050); графу нужен `dim_head ≤ 64` (так у всех официальных чекпойнтов).
+- **CosyVoice2**: только CPU. В текстовом фронтенде нет ttsfrd / wetext (в китайском тексте числа остаются цифрами — как в официальном коде без них). Звук выходит
+  группами предложений, а не по токенам (официальный двусторонний стриминг не реализован). С официальным кодом сверено только на крошечной модели.
+- Основной путь рассчитан на авторегрессионные кодековые модели; не-AR подключаются через режим «direct» `Backend` (так сделаны F5, Kokoro и CosyVoice2). XTTS и Chatterbox пока не подключены.
 - Официальный `non_streaming_mode=True` (весь текст в prefill) не реализован. Python-бэкенд считает на CPU в интерпретаторе — для прототипов.
 - Сэмплинг на GPU считает в float, на CPU — в double. Тот же seed на том же устройстве даёт то же аудио.
 - Ресемплинг входа для голоса — sinc/Kaiser; бит в бит с `qwen_tts` (soxr) только для WAV 24 кГц.

@@ -36,11 +36,12 @@ constexpr int64_t kMaxCtx = 3072;            // предел контекста 
 // snake, depthwise conv, layernorm, overlap-add, история, внимание со скользящим окном, запись в кольцо
 // + слитые QKV/SwiGLU, выборка эмбеддинга по индексу из буфера (f32/f16/bf16), сэмплинг на GPU
 // + F5-TTS: flash-внимание, групповая свёртка, LayerNorm/AdaLN, поэлементные операции, RoPE
-constexpr int kNumPipes = 32;
+// + большой GEMM с регистровыми плитками 8×8 для многих строк входа (F5: DiT и Vocos), f32/f16/bf16/q8
+constexpr int kNumPipes = 36;
 // P_MM и P_GEMM — по одному конвейеру на тип весов (f32, f16, bf16, q8, q4)
 enum Pipe { P_MM = 0, P_RMS = 5, P_ROPE = 6, P_ATTN = 7, P_SILU = 8, P_GEMM = 9, P_SNAKE = 14, P_DW = 15, P_LN = 16,
             P_OLA = 17, P_HIST = 18, P_ATTNW = 19, P_RING = 20, P_QKV = 21, P_SWIGLU = 22, P_SAMPLE = 23, P_GATHER = 24,
-            P_F5ATTN = 27, P_F5CONV = 28, P_F5LN = 29, P_F5EW = 30, P_F5ROPE = 31 };
+            P_F5ATTN = 27, P_F5CONV = 28, P_F5LN = 29, P_F5EW = 30, P_F5ROPE = 31, P_GEMMB = 32 };
 
 struct GpuXfmr {
     std::string name;
@@ -72,7 +73,7 @@ struct Ctx {
     VkFence fence = VK_NULL_HANDLE;
     VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
     VkPipelineLayout pl = VK_NULL_HANDLE;
-    VkShaderModule sm = VK_NULL_HANDLE, extra_modules[21] = {};
+    VkShaderModule sm = VK_NULL_HANDLE, extra_modules[22] = {};
     VkPipeline pipe[kNumPipes] = {};
     VkDescriptorPool dyn = VK_NULL_HANDLE;
     VkBuffer csb = VK_NULL_HANDLE;

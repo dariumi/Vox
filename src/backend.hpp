@@ -69,9 +69,12 @@ struct Capabilities {
     std::string text_in = "token", audio_out = "frames";
     bool stream_exact = false;
     std::vector<std::string> speakers, languages;
+    bool speed = false;            // the "speed" option changes the speaking rate (F5, Kokoro): markup [speed] and emotions use it
+    std::vector<std::string> tags; // non-verbal tags the model reads natively ("laugh", "breath", …), passed through as [tag]
     json to_json() const {
         return {{"clone_icl", clone_icl}, {"clone_xvector", clone_xvector}, {"named_speakers", named_speakers}, {"instruct", instruct},
                 {"streaming_text", streaming_text}, {"requires_instruct", requires_instruct}, {"speakers", speakers}, {"languages", languages},
+                {"speed", speed}, {"tags", tags},
                 {"stream", {{"text_in", text_in}, {"audio_out", audio_out}, {"exact", stream_exact}, {"commit", {"auto", "sentence", "manual"}}}}};
     }
 };
@@ -153,6 +156,8 @@ public:
     // Движок объявляет: весь поданный до сих пор текст — законченные куски (flush или конец предложения при commit=sentence);
     // ждать продолжения последнего куска не нужно.
     virtual void direct_seal(GenState &) {}
+    // What the model did in this generation (pieces of text, mode…): the "model" field of vox_session_info; null = nothing.
+    virtual json state_info(const GenState &) const { return nullptr; }
     // Сверка внутренних стадий с эталонным дампом (safetensors) для `vox verify`; пишет отчёт, true → в допуске.
     virtual bool debug_check(const std::string & /*dump*/, double /*tol*/, std::string &report) {
         report = "this model has no reference check";
@@ -172,6 +177,7 @@ std::shared_ptr<Family> make_qwen3_family();
 std::shared_ptr<Family> make_test_family();
 std::shared_ptr<Family> make_f5_family();
 std::shared_ptr<Family> make_kokoro_family();
+std::shared_ptr<Family> make_cosyvoice_family();
 
 void write_test_model(const std::string &path);
 // Короткий путь: строка устройства → план → бэкенд (CLI verify, тесты). Движок использует plan_for_model + create_backend.

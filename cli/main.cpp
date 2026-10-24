@@ -43,7 +43,7 @@ struct Args {
 };
 
 // Флаги без значения; всё остальное в виде --key value.
-const char *kFlags[] = {"--no-argmax", "--xvector-only", "--stream", "--stdin", "--float", "--help", "-h", "--strict", "--json", "--no-release"};
+const char *kFlags[] = {"--no-argmax", "--xvector-only", "--stream", "--stdin", "--float", "--help", "-h", "--strict", "--json", "--no-release", "--default"};
 
 Args parse(int argc, char **argv, int from) {
     Args a;
@@ -80,6 +80,12 @@ void usage() {
         "                   [--xvector-only] [--name N] [--lang ru] [--seed 42] [--temperature 0.7]\n"
         "  vox say \"текст\" --model M.tmod --voice V.tvoice -o out.wav [--seed 42] [--float]\n"
         "  vox say --stdin --stream --model M.tmod --voice V.tvoice   (сырой float32 PCM в stdout)\n"
+        "      профиль: --voice-id ИМЯ --style СТИЛЬ --markup auto|strict|off; разметка в тексте: [anna] / \"anna: …\", [happy], [pause 500ms], [speed 1.2], [laugh], [/]\n"
+        "  vox profile new P.tvoice [--name N]                       (профиль: несколько голосов, стили-эмоции, любые модели)\n"
+        "  vox profile add P.tvoice --voice anna [--style happy] REC.wav --text \"…\" [--lang ru]   |   --from V.tvoice [--from-voice X]\n"
+        "  vox profile set P.tvoice --voice anna [--style happy] [--instruct …] [--description …] [--speaker \"kokoro=af_heart;qwen3-tts=serena\"]\n"
+        "                  [--speed 1.1] [--options JSON] [--language ru] [--default-style S] [--default]\n"
+        "  vox profile rm|show|patch P.tvoice …;  vox profile prepare P.tvoice --model M.tmod   (собрать голоса под модель и сохранить)\n"
         "  vox live --model M.tmod --voice V.tvoice (-o out.wav | --raw) [--commit auto|sentence|manual] [--idle-ms N] [--flush-nl]\n"
         "                                                   (текст из stdin на лету → звук на лету; двусторонний стриминг)\n"
         "  vox tokenize --model M.tmod   (JSON-строки из stdin → id токенов)\n"
@@ -94,7 +100,7 @@ void usage() {
         "                 --decoder stream|reference (reference = нарезка декодера как в qwen_tts, для сверки)\n"
         "                 --context N|all (кадры референса для прогрева декодера в режиме stream)\n\n"
         "  vox build --model <папка HF> --dtype bf16 -o model.tmod   (через Python-пакет vox)\n"
-        "  vox serve --model M.tmod --voices ./voices --port 8080     (через Python-пакет vox)\n"
+        "  vox serve --model M.tmod --voices ./voices --port 8080     (через Python-пакет vox)\n"        "  vox web [--models DIR] [--voices DIR] [--host 0.0.0.0 --tls]   (движок для Vox Studio: печатает ссылку с секретом; Python-пакет)\n"
         "  vox verify --model M.tmod --dump case.safetensors          (сверка с эталонным дампом)");
 }
 
@@ -156,6 +162,16 @@ std::string json_call(vox_status (*fn)(char *, size_t, size_t *)) {
     return s;
 }
 
+template <typename F>
+std::string json_of(F &&fn) {
+    size_t n = 0;
+    fn(nullptr, 0, &n);
+    std::string s(n + 1, '\0');
+    check(fn(s.data(), s.size(), &n), "query");
+    s.resize(n);
+    return s;
+}
+
 vox_gen_params gen_params(const Args &a, std::string &lang_store) {
     static std::string extra_store;  // на неё указывает extra_json
     vox_gen_params p;
@@ -185,6 +201,9 @@ vox_gen_params gen_params(const Args &a, std::string &lang_store) {
         if (a.has("--cfg")) ex["cfg_strength"] = std::stod(a.get("--cfg"));
         if (a.has("--sway")) ex["sway_sampling_coef"] = std::stod(a.get("--sway"));
         if (a.has("--speed")) ex["speed"] = std::stod(a.get("--speed"));
+        if (a.has("--voice-id")) ex["voice"] = a.get("--voice-id");   // голос и стиль профиля, разметка (0.15)
+        if (a.has("--style")) ex["style"] = a.get("--style");
+        if (a.has("--markup")) ex["markup"] = a.get("--markup");
         if (a.has("--commit") || a.has("--idle-ms")) {   // двусторонний стриминг: политика коммита текста
             vox::json st = ex.value("stream", vox::json::object());
             if (a.has("--commit")) st["commit"] = a.get("--commit");
@@ -248,9 +267,11 @@ int cmd_info(const Args &a) {
     if (a.pos.empty()) die("usage: vox info <file>");
     const std::string &path = a.pos[0];
     if (path.size() > 7 && path.substr(path.size() - 7) == ".tvoice") {
-        vox::VoiceData v = vox::voice_load(path);
-        vox::json j = vox::voice_to_json(v);
-        std::cout << j.dump(2) << "\n";
+        vox_voice *v = nullptr;
+        check(vox_profile_open(path.c_str(), &v), "open profile");
+        std::string s = json_of([&](char *b, size_t c, size_t *l) { return vox_voice_info(v, b, c, l); });
+        std::cout << vox::json::parse(s).dump(2) << "\n";
+        vox_voice_free(v);
         return 0;
     }
     vox_engine_opts o;
@@ -287,6 +308,158 @@ int cmd_voice_speaker(const Args &a) {
     std::fprintf(stderr, "voice saved: %s\n", a.get("-o").c_str());
     vox_voice_free(v);
     vox_engine_close(e);
+    return 0;
+}
+
+// ---- vox profile: voice profiles (several voices, styles, any model) ----
+//   vox profile new P.tvoice [--name NAME]
+//   vox profile add P.tvoice --voice anna [--style happy] (REC.wav --text "…" [--lang ru] | --from V.tvoice [--from-voice X])
+//   vox profile set P.tvoice --voice anna [--style happy] [--instruct …] [--description …] [--speaker "kokoro=af_heart;qwen3-tts=serena"]
+//                    [--speed 1.1] [--options '{"temperature":0.8}'] [--language ru] [--default]
+//   vox profile rm P.tvoice --voice anna [--style happy]
+//   vox profile patch P.tvoice '{JSON merge patch}'
+//   vox profile show P.tvoice [--json]
+//   vox profile prepare P.tvoice --model M.tmod [--voice anna] [--style happy] [-o OUT.tvoice]
+std::string profile_json(vox_voice *v) {
+    return json_of([&](char *b, size_t c, size_t *l) { return vox_voice_info(v, b, c, l); });
+}
+
+void print_profile(const vox::json &j) {
+    std::printf("profile \"%s\": %zu voice(s), default %s\n", j.value("name", "").c_str(), j["voices"].size(),
+                j.value("default_voice", "-").c_str());
+    for (auto it = j["voices"].begin(); it != j["voices"].end(); ++it) {
+        const vox::json &v = it.value();
+        std::printf("  %s%s  language %s", it.key().c_str(), it.key() == j.value("default_voice", "") ? " (default)" : "",
+                    v.value("language", "auto").c_str());
+        if (!v.value("description", "").empty()) std::printf("  \"%s\"", v["description"].get<std::string>().c_str());
+        std::printf("\n");
+        for (auto sp = v["speakers"].begin(); sp != v["speakers"].end(); ++sp)
+            std::printf("      speaker on %s: %s\n", sp.key().c_str(), sp.value().get<std::string>().c_str());
+        for (auto st = v["styles"].begin(); st != v["styles"].end(); ++st) {
+            const vox::json &s = st.value();
+            std::printf("    style %s%s", st.key().c_str(), st.key() == v.value("default_style", "") ? " (default)" : "");
+            const std::string ref = s.value("ref", "");
+            if (!ref.empty() && j["recordings"].contains(ref)) {
+                const vox::json &r = j["recordings"][ref];
+                std::printf("  recording %s (%.1f s): \"%s\"", ref.c_str(), r.value("seconds", 0.0), r.value("text", "").c_str());
+            }
+            if (!s.value("instruct", "").empty()) std::printf("  instruct \"%s\"", s["instruct"].get<std::string>().c_str());
+            if (!s["options"].empty()) std::printf("  options %s", s["options"].dump().c_str());
+            std::printf("\n");
+        }
+    }
+    if (!j["cache"].empty()) {
+        std::printf("  built for:\n");
+        for (const auto &c : j["cache"])
+            std::printf("    %s/%s on %s/%s (%s)\n", c.value("voice", "").c_str(), c.value("style", "").c_str(),
+                        c["model"].value("family", "").c_str(), c["model"].value("variant", "").c_str(), c.value("mode", "").c_str());
+    }
+}
+
+int cmd_profile(const Args &a) {
+    const char *use = "usage: vox profile new|add|set|rm|patch|show|prepare FILE.tvoice … (vox --help)";
+    if (a.pos.size() < 2) die(use);
+    const std::string sub = a.pos[0], path = a.pos[1];
+    vox_voice *v = nullptr;
+    auto save = [&](const std::string &out) {
+        check(vox_voice_save(v, out.c_str()), "save profile");
+        std::fprintf(stderr, "profile saved: %s\n", out.c_str());
+    };
+    if (sub == "new") {
+        check(vox_profile_new(a.get("--name", "profile").c_str(), &v), "new profile");
+        save(path);
+        vox_voice_free(v);
+        return 0;
+    }
+    check(vox_profile_open(path.c_str(), &v), "open profile");
+    const std::string voice = a.get("--voice"), style = a.get("--style");
+    if (sub == "show") {
+        const vox::json j = vox::json::parse(profile_json(v));
+        if (a.has("--json")) std::puts(j.dump(2).c_str());
+        else print_profile(j);
+    } else if (sub == "add") {
+        if (voice.empty()) die("vox profile add FILE --voice NAME [--style S] (REC.wav --text \"…\" | --from V.tvoice)");
+        if (a.has("--from")) {
+            vox_voice *src = nullptr;
+            check(vox_profile_open(a.get("--from").c_str(), &src), "open source voice");
+            check(vox_voice_merge(v, src, a.has("--from-voice") ? a.get("--from-voice").c_str() : nullptr, voice.c_str(),
+                                  style.empty() ? nullptr : style.c_str()), "add voice");
+            vox_voice_free(src);
+        } else {
+            if (a.pos.size() < 3) die("vox profile add FILE --voice NAME [--style S] REC.wav --text \"what is said in it\"");
+            const vox::Audio rec = vox::wav_read(a.pos[2]);
+            check(vox_voice_add_recording(v, voice.c_str(), style.empty() ? nullptr : style.c_str(), rec.pcm.data(), rec.pcm.size(),
+                                          rec.sample_rate, a.get("--text").c_str(), a.has("--lang") ? a.get("--lang").c_str() : nullptr), "add recording");
+        }
+        save(a.get("-o", path));
+    } else if (sub == "set" || sub == "rm") {
+        if (voice.empty()) die(std::string("vox profile ") + sub + " FILE --voice NAME [--style S] …");
+        vox::json pv = vox::json::object();
+        if (sub == "rm") {
+            if (style.empty()) pv = nullptr;
+            else pv["styles"][style] = nullptr;
+        } else {
+            vox::json st = vox::json::object();
+            if (a.has("--instruct")) st["instruct"] = a.get("--instruct");
+            if (a.has("--speed")) st["options"]["speed"] = std::stod(a.get("--speed"));
+            if (a.has("--options")) {
+                vox::json o = vox::json::parse(a.get("--options"));
+                for (auto it = o.begin(); it != o.end(); ++it) st["options"][it.key()] = it.value();
+            }
+            if (!style.empty()) pv["styles"][style] = st;
+            else if (!st.empty()) {   // no --style: voice-level options; an instruction goes to the default style
+                if (st.contains("options")) pv["options"] = st["options"];
+                if (st.contains("instruct")) {
+                    const vox::json j = vox::json::parse(profile_json(v));
+                    std::string ds = "default";
+                    if (j["voices"].contains(voice)) ds = j["voices"][voice].value("default_style", "default");
+                    pv["styles"][ds]["instruct"] = st["instruct"];
+                }
+            }
+            if (a.has("--description")) pv["description"] = a.get("--description");
+            if (a.has("--language")) pv["language"] = a.get("--language");
+            if (a.has("--default-style")) pv["default_style"] = a.get("--default-style");
+            if (a.has("--speaker")) {   // "kokoro=af_heart;qwen3-tts/custom_voice=serena", empty value removes
+                std::string spec = a.get("--speaker");
+                size_t i0 = 0;
+                while (i0 <= spec.size()) {
+                    size_t i1 = spec.find(';', i0);
+                    if (i1 == std::string::npos) i1 = spec.size();
+                    const std::string item = spec.substr(i0, i1 - i0);
+                    const size_t eq = item.find('=');
+                    if (eq == std::string::npos) die("--speaker wants MODEL=NAME[;MODEL=NAME…] (MODEL: family or family/variant, e.g. kokoro=af_heart)");
+                    const std::string val = item.substr(eq + 1);
+                    pv["speakers"][item.substr(0, eq)] = val.empty() ? vox::json(nullptr) : vox::json(val);
+                    i0 = i1 + 1;
+                }
+            }
+        }
+        vox::json patch = {{"voices", {{voice, pv}}}};
+        if (a.has("--default")) patch["default_voice"] = voice;
+        check(vox_voice_update(v, patch.dump().c_str()), "update profile");
+        save(a.get("-o", path));
+    } else if (sub == "patch") {
+        if (a.pos.size() < 3) die("vox profile patch FILE '{\"voices\": {…}}'");
+        check(vox_voice_update(v, a.pos[2].c_str()), "update profile");
+        save(a.get("-o", path));
+    } else if (sub == "prepare") {
+        if (!a.has("--model")) die("vox profile prepare FILE --model M.tmod [--voice V] [--style S] [-o OUT]");
+        vox_engine *e = open_engine(a);
+        std::string r(1 << 20, '\0');   // one call: preparing builds voices, a second call would report them as already built
+        size_t n = 0;
+        check(vox_voice_prepare(e, v, voice.empty() ? nullptr : voice.c_str(), style.empty() ? nullptr : style.c_str(), r.data(), r.size(), &n),
+              "prepare profile");
+        r.resize(std::min(n, r.size() - 1));
+        const vox::json j = vox::json::parse(r);
+        for (const auto &x : j["voices"])
+            std::fprintf(stderr, "  %s/%s: %s\n", x.value("voice", "").c_str(), x.value("style", "").c_str(), x.value("built", false) ? "built" : "already built");
+        for (const auto &n : j["notes"]) std::fprintf(stderr, "  note: %s\n", n.get<std::string>().c_str());
+        save(a.get("-o", path));
+        vox_engine_close(e);
+    } else {
+        die(use);
+    }
+    vox_voice_free(v);
     return 0;
 }
 
@@ -549,7 +722,9 @@ int cmd_phonemize(const Args &a) {
     } else {
         std::string text;
         for (const auto &p : a.pos) text += (text.empty() ? "" : " ") + p;
-        std::cout << vox::json::parse(one(text))["phonemes"].get<std::string>() << "\n";
+        const vox::json r = vox::json::parse(one(text));
+        if (r.contains("phonemes") && r["phonemes"].is_string()) std::cout << r["phonemes"].get<std::string>() << "\n";
+        else std::cout << r.dump(1) << "\n";   // models without phonemes (CosyVoice): the pieces of text they will speak
     }
     vox_engine_close(e);
     return 0;
@@ -778,12 +953,14 @@ int main(int argc, char **argv) {
     if (argc < 2) { usage(); return 1; }
     std::string cmd = argv[1];
     Args a = parse(argc, argv, 2);
+    if (cmd == "-web" || cmd == "--web") cmd = "web";   // vox -web: the engine for Vox Studio
     if (cmd == "-h" || cmd == "--help" || cmd == "help" || a.has("--help")) { usage(); return 0; }
     try {
         if (cmd == "devices") return cmd_devices(a);
         if (cmd == "plan") return cmd_plan(a);
         if (cmd == "info") return cmd_info(a);
         if (cmd == "voice") return cmd_voice(a);
+        if (cmd == "profile") return cmd_profile(a);
         if (cmd == "say") return cmd_say(a);
         if (cmd == "live") return cmd_live(a);
         if (cmd == "bench") return cmd_bench(a);
@@ -791,7 +968,7 @@ int main(int argc, char **argv) {
         if (cmd == "phonemize") return cmd_phonemize(a);
         if (cmd == "verify") return cmd_verify(a);
         if (cmd == "make-test-model") return cmd_make_test_model(a);
-        if (cmd == "build" || cmd == "serve") {
+        if (cmd == "build" || cmd == "serve" || cmd == "web") {
             // сборка модели и сервер живут в Python-пакете vox: пробрасываем аргументы как есть
             std::string line = "python3 -m vox " + cmd;
             for (int i = 2; i < argc; ++i) {

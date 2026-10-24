@@ -1,0 +1,752 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vox Studio</title>
+<meta name="description" content="Vox Studio: speak with your own vox engine from the browser — voices, emotions, dialogue, history.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23170f2b'/%3E%3Cpath d='M5 16h3l2-7 4 14 4-18 3 11h6' fill='none' stroke='%23ff6b8f' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Unbounded:wght@600;700&display=swap" rel="stylesheet">
+<style>
+:root {
+  --ink: #170f2b; --panel: #211641; --panel-2: #2b1d52; --line: #3d2d6b; --text: #efe9fa; --muted: #b3a7d3; --dim: #8476ad;
+  --accent: #ff6b8f; --accent-ink: #2a0b17; --ok: #7fe3c7; --warn: #ffc27a; --bad: #ff8f8f; --code: #130b25;
+  --v0: #ff6b8f; --v1: #7fe3c7; --v2: #ffc27a; --v3: #9db8ff; --v4: #e0a3ff; --v5: #b8e986;
+  --body: "Golos Text", system-ui, -apple-system, "Segoe UI", sans-serif; --display: "Unbounded", "Golos Text", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace; --r: 10px;
+}
+[hidden] { display: none !important; }
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body { margin: 0; overflow-x: hidden; background: var(--ink); color: var(--text); font: 400 15px/1.5 var(--body); -webkit-font-smoothing: antialiased; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+button, input, select, textarea { font: inherit; color: inherit; }
+a { color: inherit; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border-radius: 99px; border: 1px solid var(--line); background: transparent; cursor: pointer; font-weight: 500; font-size: 14px; white-space: nowrap; }
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn:disabled { opacity: .45; cursor: default; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.small { padding: 4px 10px; font-size: 13px; }
+.btn.quiet { border-color: transparent; color: var(--muted); }
+.btn.quiet:hover { color: var(--text); }
+input[type=text], input[type=url], input[type=password], input[type=number], select, textarea {
+  background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; width: 100%; min-width: 0; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+label.f { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+label.f > span { color: var(--muted); }
+.muted { color: var(--muted); }
+.dim { color: var(--dim); }
+.err { color: var(--bad); }
+code { font-family: var(--mono); font-size: .88em; background: var(--code); padding: .1em .35em; border-radius: 4px; }
+
+/* ---------- connect ---------- */
+#connect { min-height: 100%; display: grid; place-items: center; padding: 24px 16px; }
+.cbox { width: min(560px, 100%); }
+.wordmark { font: 700 34px/1 var(--display); letter-spacing: -.03em; display: flex; align-items: center; gap: 12px; margin: 0 0 6px; }
+.wordmark svg { width: 40px; height: 28px; }
+.cbox p.lead { color: var(--muted); margin: 0 0 24px; }
+.cform { display: grid; gap: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+.cform .row { display: flex; gap: 10px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.howto { margin-top: 20px; color: var(--muted); font-size: 14px; }
+.howto pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; overflow-x: auto; font: 13px/1.5 var(--mono); color: var(--text); }
+.hint { border-left: 3px solid var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent); padding: 10px 12px; border-radius: 0 8px 8px 0; font-size: 14px; }
+.hint a { color: var(--warn); }
+
+/* ---------- app shell ---------- */
+#app { height: 100%; display: grid; grid-template-rows: auto 1fr; }
+header.bar { min-width: 0; overflow: hidden; display: flex; align-items: center; gap: 14px; padding: 10px 16px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--ink) 90%, black); }
+header.bar .wm { font: 700 18px/1 var(--display); letter-spacing: -.02em; display: flex; gap: 8px; align-items: center; text-decoration: none; }
+header.bar .wm svg { width: 26px; height: 18px; }
+nav.tabs { display: flex; gap: 2px; margin-left: 8px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+nav.tabs button { border: 0; background: transparent; padding: 7px 12px; border-radius: 8px; color: var(--muted); cursor: pointer; font-weight: 500; }
+nav.tabs button[aria-selected=true] { background: var(--panel-2); color: var(--text); }
+.pill { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); border: 1px solid var(--line); border-radius: 99px; padding: 5px 6px 5px 12px; max-width: 46%; }
+.pill b { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); flex: none; }
+.dot.off { background: var(--bad); }
+main.view { min-height: 0; }
+
+/* ---------- script view ---------- */
+.script { height: 100%; display: grid; grid-template-columns: 250px minmax(0, 1fr) 280px; min-height: 0; }
+aside { border-right: 1px solid var(--line); overflow-y: auto; padding: 14px; min-height: 0; }
+aside.right { border-right: 0; border-left: 1px solid var(--line); }
+aside h3 { font-size: 13px; color: var(--muted); font-weight: 500; margin: 14px 0 8px; }
+aside h3:first-child { margin-top: 0; }
+.cast { display: grid; gap: 2px; }
+.cast button { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0; background: transparent; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
+.cast button:hover { background: var(--panel); }
+.cast button[aria-pressed=true] { background: var(--panel-2); }
+.cast .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.cast small { color: var(--dim); display: block; font-size: 12px; }
+.cast .nm { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.stage { display: grid; grid-template-rows: 1fr auto; min-height: 0; }
+.lines { overflow-y: auto; padding: 24px clamp(16px, 4vw, 48px); display: flex; flex-direction: column; gap: 18px; }
+.empty { margin: auto; text-align: center; color: var(--muted); max-width: 440px; }
+.empty .big { font: 600 22px/1.25 var(--display); color: var(--text); letter-spacing: -.02em; margin-bottom: 10px; }
+.line { display: grid; grid-template-columns: 4px minmax(0, 1fr); gap: 14px; }
+.line .stripe { border-radius: 2px; background: var(--c, var(--accent)); }
+.line .who { font-size: 13px; color: var(--muted); display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+.line .who b { color: var(--c, var(--text)); font-weight: 600; }
+.line .txt { margin: 4px 0 8px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 16px; }
+.tag { font: 12.5px var(--mono); color: var(--warn); background: var(--code); border-radius: 4px; padding: 0 4px; }
+.vname { font-weight: 600; color: var(--c, var(--text)); }
+.wave { width: 100%; height: 56px; display: block; background: var(--code); border-radius: 8px; cursor: pointer; }
+.line .ctl { display: flex; gap: 8px; align-items: center; margin-top: 6px; flex-wrap: wrap; font-size: 13px; color: var(--dim); }
+.line .notes { font-size: 13px; color: var(--warn); margin: 6px 0 0; padding-left: 16px; }
+.line.failed .txt { color: var(--muted); }
+
+.composer { border-top: 1px solid var(--line); padding: 12px clamp(16px, 4vw, 48px) 16px; background: color-mix(in srgb, var(--ink) 92%, black); }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; align-items: center; }
+.chips button { border: 1px solid var(--line); background: transparent; border-radius: 99px; padding: 2px 10px; font-size: 13px; cursor: pointer; color: var(--muted); }
+.chips button:hover { color: var(--text); border-color: var(--muted); }
+.chips button.v { color: var(--c); border-color: color-mix(in srgb, var(--c) 45%, var(--line)); }
+.chips .sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; }
+.cbar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+#text { resize: none; min-height: 72px; max-height: 40vh; font-size: 16px; line-height: 1.5; padding: 10px 12px; }
+.cbar .go { display: grid; gap: 6px; justify-items: end; }
+.kbd { font-size: 12px; color: var(--dim); }
+
+.set { display: grid; gap: 12px; }
+.set .two { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.range { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+.range output { font: 13px var(--mono); color: var(--muted); min-width: 3.2em; text-align: right; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+
+/* ---------- panels (voices, models, history) ---------- */
+.page { height: 100%; overflow-y: auto; padding: 24px clamp(16px, 4vw, 48px); }
+.page h2 { font: 600 22px/1.2 var(--display); letter-spacing: -.02em; margin: 0 0 6px; }
+.page > p.sub { color: var(--muted); margin: 0 0 20px; max-width: 70ch; }
+.split { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 24px; align-items: start; }
+.list { display: grid; gap: 4px; }
+.list button { text-align: left; border: 1px solid transparent; background: transparent; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+.list button:hover { background: var(--panel); }
+.list button[aria-pressed=true] { background: var(--panel-2); border-color: var(--line); }
+.list small { display: block; color: var(--dim); font-size: 12px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+.card + .card { margin-top: 14px; }
+.card h4 { margin: 0 0 10px; font-size: 16px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.styles { display: grid; gap: 8px; margin-top: 10px; }
+.style { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px; border-radius: 8px; background: var(--code); }
+.style .nm { font-weight: 600; }
+.style .nm small { display: block; font-weight: 400; color: var(--dim); }
+.style .body { display: grid; gap: 6px; min-width: 0; }
+.style audio { width: 100%; height: 34px; }
+.rowf { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
+.rowf > * { flex: 1 1 140px; }
+.rowf > .btn { flex: 0 0 auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 500; font-size: 13px; }
+td .btn { margin-right: 4px; }
+.rec { display: inline-flex; align-items: center; gap: 8px; }
+.rec.on .btn { border-color: var(--bad); color: var(--bad); }
+.toast { position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%); background: var(--panel-2); border: 1px solid var(--line); padding: 10px 16px; border-radius: 10px; max-width: min(640px, 92vw); z-index: 30; box-shadow: 0 10px 30px rgba(0,0,0,.35); }
+.toast.bad { border-color: var(--bad); }
+
+@media (max-width: 1100px) { .script { grid-template-columns: 220px minmax(0, 1fr); } aside.right { display: none; } .script.show-set aside.right { display: block; position: fixed; right: 0; top: 52px; bottom: 0; width: min(320px, 90vw); background: var(--ink); z-index: 20; } }
+@media (max-width: 760px) {
+  .script { grid-template-columns: minmax(0, 1fr); } aside.left { display: none; } header.bar { gap: 8px; padding: 8px 10px; } nav.tabs { margin-left: 0; }
+  nav.tabs button { padding: 6px 8px; } .cbar { grid-template-columns: 1fr; } .cbar .go { grid-auto-flow: column; justify-content: end; align-items: center; }
+  .split { grid-template-columns: 1fr; } nav.tabs { overflow-x: auto; } .pill { display: none; }
+  .style { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<section id="connect" hidden>
+  <div class="cbox">
+    <h1 class="wordmark"><svg viewBox="0 0 28 20" aria-hidden="true"><path d="M1 10h3l2-6 3.5 12L13 1l3.4 15L19 7l2 3h6" fill="none" stroke="#ff6b8f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Vox Studio</h1>
+    <p class="lead" data-t="lead">Speak with the vox engine on your computer: voices, emotions, dialogue. The page runs here, the speech is made by your engine.</p>
+    <form class="cform" id="cform">
+      <label class="f"><span data-t="engineAddr">Engine address</span><input type="url" id="cUrl" placeholder="http://127.0.0.1:7860" required autocomplete="url"></label>
+      <label class="f"><span data-t="secret">Secret</span><input type="password" id="cSecret" required autocomplete="current-password"></label>
+      <div class="row">
+        <label class="muted" style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="cRemember" checked> <span data-t="remember">Remember on this device</span></label>
+        <button class="btn primary" type="submit" id="cGo" data-t="connect">Connect</button>
+      </div>
+      <div id="cErr" class="hint" hidden></div>
+    </form>
+    <div class="howto">
+      <p data-t="howto">Start the engine and open the link it prints, or paste its address and secret above:</p>
+      <pre>git clone https://github.com/dariumi/Vox && cd Vox && pip install .
+vox web --models ./models --voices ./voices</pre>
+      <p data-t="howtoNet">From another computer, start it with <code>--host 0.0.0.0 --tls</code>: an https page can only reach plain http on the same computer.</p>
+    </div>
+  </div>
+</section>
+
+<div id="app" hidden>
+  <header class="bar">
+    <a class="wm" href="../" title="vox"><svg viewBox="0 0 28 20" aria-hidden="true"><path d="M1 10h3l2-6 3.5 12L13 1l3.4 15L19 7l2 3h6" fill="none" stroke="#ff6b8f" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Studio</a>
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-view="script" aria-selected="true" data-t="tScript">Script</button>
+      <button role="tab" data-view="voices" aria-selected="false" data-t="tVoices">Voices</button>
+      <button role="tab" data-view="models" aria-selected="false" data-t="tModels">Models</button>
+      <button role="tab" data-view="history" aria-selected="false" data-t="tHistory">History</button>
+    </nav>
+    <div class="pill"><span class="dot" id="pDot"></span><b id="pTxt">…</b><button class="btn small quiet" id="pOff" data-t="disconnect">Disconnect</button></div>
+  </header>
+
+  <main class="view" id="vScript">
+    <div class="script" id="scriptGrid">
+      <aside class="left">
+        <h3 data-t="cast">Cast</h3>
+        <div class="cast" id="cast"></div>
+        <p class="dim" id="castEmpty" style="font-size:13px" hidden data-t="castEmpty">No voices yet. Add one in Voices, or pick a model with built-in speakers.</p>
+      </aside>
+      <section class="stage">
+        <div class="lines" id="lines" aria-live="polite">
+          <div class="empty" id="linesEmpty">
+            <div class="big" data-t="emptyBig">Write a line, pick a voice, press Speak.</div>
+            <p data-t="emptySmall">Several voices in one take: start lines with a name, like <code>anna: Hi!</code>. Add emotion with <code>[happy]</code>, silence with <code>[pause 500ms]</code>.</p>
+          </div>
+        </div>
+        <div class="composer">
+          <div class="chips" id="chips"></div>
+          <div class="cbar">
+            <textarea id="text" rows="3" data-tp="placeholder"></textarea>
+            <div class="go">
+              <button class="btn small quiet" id="setToggle" data-t="settings">Settings</button>
+              <button class="btn primary" id="speak" data-t="speak">Speak</button>
+              <span class="kbd">Ctrl + Enter</span>
+            </div>
+          </div>
+        </div>
+      </section>
+      <aside class="right">
+        <div class="set">
+          <label class="f"><span data-t="model">Model</span><select id="sModel"></select></label>
+          <label class="f"><span data-t="voice">Voice</span><select id="sVoice"></select></label>
+          <div class="two">
+            <label class="f"><span data-t="style">Style</span><select id="sStyle"></select></label>
+            <label class="f"><span data-t="markup">Markup</span><select id="sMarkup"><option value="auto">auto</option><option value="strict">strict</option><option value="off">off</option></select></label>
+          </div>
+          <label class="f" id="sInstrWrap" hidden><span data-t="instruct">Instruction</span><input type="text" id="sInstr"></label>
+          <div class="two">
+            <label class="f"><span data-t="seed">Seed</span><input type="number" id="sSeed" min="1" placeholder="random"></label>
+            <label class="f"><span data-t="language">Language</span><select id="sLang"><option value="">auto</option></select></label>
+          </div>
+          <label class="f"><span data-t="speed">Speed</span><span class="range"><input type="range" id="sSpeed" min="0.6" max="1.6" step="0.05" value="1"><output id="oSpeed">1.00</output></span></label>
+          <label class="f" id="sTempWrap"><span data-t="temperature">Temperature</span><span class="range"><input type="range" id="sTemp" min="0.1" max="1.5" step="0.05" value="0.9"><output id="oTemp">0.90</output></span></label>
+          <label class="f" id="sNfeWrap" hidden><span data-t="nfe">Flow steps</span><span class="range"><input type="range" id="sNfe" min="4" max="64" step="1" value="32"><output id="oNfe">32</output></span></label>
+          <p class="dim" style="font-size:13px;margin:0" id="sNote"></p>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <main class="view" id="vVoices" hidden>
+    <div class="page">
+      <h2 data-t="vTitle">Voices</h2>
+      <p class="sub" data-t="vSub">A profile is one file with several voices. Each voice has styles (emotions); a style is a recording of how it should sound, an instruction, or both. One profile works on every model: voices are cloned from the recordings where the model can, and mapped to built-in speakers where it cannot.</p>
+      <div class="split">
+        <div>
+          <div class="list" id="profList"></div>
+          <div class="rowf" style="margin-top:12px">
+            <input type="text" id="newProf" data-tp="newProf">
+            <button class="btn small" id="newProfGo" data-t="create">Create</button>
+          </div>
+          <label class="btn small" style="margin-top:10px"><input type="file" id="upProf" accept=".tvoice" hidden><span data-t="upload">Upload .tvoice</span></label>
+        </div>
+        <div id="profDetail"></div>
+      </div>
+    </div>
+  </main>
+
+  <main class="view" id="vModels" hidden>
+    <div class="page">
+      <h2 data-t="mTitle">Models</h2>
+      <p class="sub" data-t="mSub">Models are opened when first used. Device: auto, cpu, gpu, gpu:1, vulkan:0 (add ,codec=cpu etc.).</p>
+      <table><thead><tr><th data-t="model">Model</th><th data-t="family">Family</th><th data-t="state">State</th><th data-t="device">Device</th><th></th></tr></thead><tbody id="mRows"></tbody></table>
+      <div class="rowf" style="margin-top:16px;max-width:720px">
+        <label class="f" style="flex:3 1 300px"><span data-t="addPath">Add a model file on the engine's computer</span><input type="text" id="mPath" placeholder="/path/to/model.tmod"></label>
+        <button class="btn small" id="mAdd" data-t="add">Add</button>
+      </div>
+    </div>
+  </main>
+
+  <main class="view" id="vHistory" hidden>
+    <div class="page">
+      <h2 data-t="hTitle">History</h2>
+      <p class="sub" data-t="hSub">Everything spoken through this engine, newest first. Clips stay on the engine's computer.</p>
+      <table><thead><tr><th data-t="text">Text</th><th data-t="voice">Voice</th><th data-t="length">Length</th><th></th></tr></thead><tbody id="hRows"></tbody></table>
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast" role="status" hidden></div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- i18n
+const RU = (new URLSearchParams(location.search).get("lang") || navigator.language || "en").toLowerCase().startsWith("ru");
+const T = RU ? {
+  lead: "Говорите голосами движка vox на вашем компьютере: голоса, эмоции, диалоги. Страница работает здесь, речь делает ваш движок.",
+  engineAddr: "Адрес движка", secret: "Секрет", remember: "Запомнить на этом устройстве", connect: "Подключиться",
+  howto: "Запустите движок и откройте ссылку, которую он напечатает, или вставьте адрес и секрет выше:",
+  howtoNet: "С другого компьютера запускайте с <code>--host 0.0.0.0 --tls</code>: страница по https достучится до обычного http только на этом же компьютере.",
+  tScript: "Сценарий", tVoices: "Голоса", tModels: "Модели", tHistory: "История", disconnect: "Отключиться", cast: "Голоса",
+  castEmpty: "Голосов пока нет. Добавьте голос во вкладке «Голоса» или выберите модель с готовыми дикторами.",
+  emptyBig: "Напишите реплику, выберите голос, нажмите «Озвучить».",
+  emptySmall: "Несколько голосов в одном дубле: начинайте строки с имени, например <code>anna: Привет!</code>. Эмоция — <code>[happy]</code>, пауза — <code>[pause 500ms]</code>.",
+  placeholder: "Текст. Например:\nanna: Привет! [happy] Отличные новости.\nboris: [whisper] Правда?",
+  settings: "Настройки", speak: "Озвучить", stop: "Стоп", model: "Модель", style: "Стиль", markup: "Разметка", instruct: "Инструкция",
+  seed: "Seed", language: "Язык", speed: "Темп", temperature: "Температура", nfe: "Шаги потока",
+  vTitle: "Голоса", vSub: "Профиль — один файл с несколькими голосами. У голоса есть стили (эмоции): стиль — это запись того, как он должен звучать, инструкция или и то и другое. Один профиль работает на любой модели: где модель умеет клонировать, голос собирается из записей, где не умеет — берётся указанный готовый диктор.",
+  newProf: "Имя нового профиля", create: "Создать", upload: "Загрузить .tvoice",
+  mTitle: "Модели", mSub: "Модель открывается при первом обращении. Устройство: auto, cpu, gpu, gpu:1, vulkan:0 (можно добавить ,codec=cpu и т. п.).",
+  family: "Семейство", state: "Состояние", device: "Устройство", addPath: "Добавить файл модели с компьютера движка", add: "Добавить",
+  hTitle: "История", hSub: "Всё, что озвучено через этот движок, новые сверху. Записи хранятся на компьютере движка.",
+  text: "Текст", voice: "Голос", length: "Длина",
+  loaded: "открыта", notLoaded: "не открыта", load: "Открыть", unload: "Закрыть", play: "Слушать", download: "Скачать", del: "Удалить",
+  noModels: "Движок запущен без моделей: добавьте файл .tmod во вкладке «Модели».",
+  connecting: "Подключаюсь…", builtIn: "встроенный диктор", design: "голос по описанию", profileWord: "профиль",
+  fail: "Не получилось", segments: (n) => n + " сегм.", rtf: (r) => "RTF " + r, firstChunk: (s) => "первый звук через " + s + " с",
+  recNew: "Добавить запись", recVoice: "Голос", recStyle: "Стиль (пусто — основной)", recText: "Что сказано в записи", recRecord: "Записать", recStop: "Остановить",
+  recFile: "Файл", recAdd: "Добавить в профиль", recLang: "Язык записи",
+  speakers: "Готовые дикторы для моделей", speakersHint: "семейство=диктор через «;», например kokoro=af_heart;qwen3-tts/custom_voice=serena",
+  description: "Описание голоса (для VoiceDesign)", save: "Сохранить", prepare: (m) => "Собрать под " + m, downloadProf: "Скачать .tvoice", deleteProf: "Удалить профиль",
+  styleInstruct: "Инструкция", styleSpeed: "Темп", builtFor: "Собран для", noRec: "без записи — берёт запись основного стиля",
+  removeStyle: "Убрать стиль", removeVoice: "Убрать голос", saved: "Сохранено", prepared: "Голоса собраны", confirmDelete: (n) => "Удалить профиль «" + n + "»? Файл на компьютере движка будет удалён.",
+  hintMixed: (u) => "Страница открыта по https, а движок — по http на другом компьютере: браузер запрещает такие запросы. Запустите движок с <code>--tls</code> (адрес станет https) и откройте <a href=\"" + u + "/health\" target=\"_blank\" rel=\"noopener\">" + u + "/health</a>, чтобы принять сертификат; либо откройте Studio самого движка: <a href=\"" + u + "/studio/\">" + u + "/studio/</a>.",
+  hintNet: (u) => "Движок не отвечает. Проверьте, что <code>vox web</code> запущен и адрес верный. Если адрес https с самоподписанным сертификатом — откройте <a href=\"" + u + "/health\" target=\"_blank\" rel=\"noopener\">" + u + "/health</a> и примите его. Chrome может один раз спросить разрешение на доступ к локальной сети.",
+  hintAuth: "Секрет не подошёл. Возьмите его из вывода vox web (или запустите с --new-secret).",
+  micDenied: "Нет доступа к микрофону.", needText: "Текст пустой.", needVoice: "Выберите голос слева.", needModel: "Выберите модель в настройках.",
+  played: "Готово", voicesOf: (m) => "Дикторы " + m,
+} : {
+  lead: "Speak with the vox engine on your computer: voices, emotions, dialogue. The page runs here, the speech is made by your engine.",
+  engineAddr: "Engine address", secret: "Secret", remember: "Remember on this device", connect: "Connect",
+  howto: "Start the engine and open the link it prints, or paste its address and secret above:",
+  howtoNet: "From another computer, start it with <code>--host 0.0.0.0 --tls</code>: an https page can only reach plain http on the same computer.",
+  tScript: "Script", tVoices: "Voices", tModels: "Models", tHistory: "History", disconnect: "Disconnect", cast: "Cast",
+  castEmpty: "No voices yet. Add one in Voices, or pick a model with built-in speakers.",
+  emptyBig: "Write a line, pick a voice, press Speak.",
+  emptySmall: "Several voices in one take: start lines with a name, like <code>anna: Hi!</code>. Add emotion with <code>[happy]</code>, silence with <code>[pause 500ms]</code>.",
+  placeholder: "Text. For example:\nanna: Hi! [happy] Great news.\nboris: [whisper] Really?",
+  settings: "Settings", speak: "Speak", stop: "Stop", model: "Model", style: "Style", markup: "Markup", instruct: "Instruction",
+  seed: "Seed", language: "Language", speed: "Speed", temperature: "Temperature", nfe: "Flow steps",
+  vTitle: "Voices", vSub: "A profile is one file with several voices. Each voice has styles (emotions); a style is a recording of how it should sound, an instruction, or both. One profile works on every model: voices are cloned from the recordings where the model can, and mapped to built-in speakers where it cannot.",
+  newProf: "New profile name", create: "Create", upload: "Upload .tvoice",
+  mTitle: "Models", mSub: "Models are opened when first used. Device: auto, cpu, gpu, gpu:1, vulkan:0 (add ,codec=cpu etc.).",
+  family: "Family", state: "State", device: "Device", addPath: "Add a model file on the engine's computer", add: "Add",
+  hTitle: "History", hSub: "Everything spoken through this engine, newest first. Clips stay on the engine's computer.",
+  text: "Text", voice: "Voice", length: "Length",
+  loaded: "open", notLoaded: "not open", load: "Open", unload: "Close", play: "Play", download: "Download", del: "Delete",
+  noModels: "The engine has no models: add a .tmod file in Models.",
+  connecting: "Connecting…", builtIn: "built-in speaker", design: "voice from a description", profileWord: "profile",
+  fail: "Failed", segments: (n) => n + " segments", rtf: (r) => "RTF " + r, firstChunk: (s) => "first sound after " + s + " s",
+  recNew: "Add a recording", recVoice: "Voice", recStyle: "Style (empty = the main one)", recText: "What is said in it", recRecord: "Record", recStop: "Stop",
+  recFile: "File", recAdd: "Add to profile", recLang: "Language of the recording",
+  speakers: "Built-in speakers per model", speakersHint: "family=speaker separated by ;, e.g. kokoro=af_heart;qwen3-tts/custom_voice=serena",
+  description: "Voice description (for VoiceDesign)", save: "Save", prepare: (m) => "Build for " + m, downloadProf: "Download .tvoice", deleteProf: "Delete profile",
+  styleInstruct: "Instruction", styleSpeed: "Speed", builtFor: "Built for", noRec: "no recording: uses the main style's",
+  removeStyle: "Remove style", removeVoice: "Remove voice", saved: "Saved", prepared: "Voices built", confirmDelete: (n) => "Delete profile \"" + n + "\"? The file on the engine's computer is removed.",
+  hintMixed: (u) => "This page is https and the engine is plain http on another computer: browsers block that. Start the engine with <code>--tls</code> (its address becomes https) and open <a href=\"" + u + "/health\" target=\"_blank\" rel=\"noopener\">" + u + "/health</a> once to accept the certificate, or open the engine's own Studio: <a href=\"" + u + "/studio/\">" + u + "/studio/</a>.",
+  hintNet: (u) => "The engine does not answer. Check that <code>vox web</code> is running and the address is right. For an https address with a self-signed certificate, open <a href=\"" + u + "/health\" target=\"_blank\" rel=\"noopener\">" + u + "/health</a> and accept it. Chrome may ask once to allow local network access.",
+  hintAuth: "Wrong secret. Copy it from the output of vox web (or start it with --new-secret).",
+  micDenied: "No access to the microphone.", needText: "The text is empty.", needVoice: "Pick a voice on the left.", needModel: "Pick a model in Settings.",
+  played: "Done", voicesOf: (m) => "Speakers of " + m,
+};
+document.documentElement.lang = RU ? "ru" : "en";
+for (const el of document.querySelectorAll("[data-t]")) { const v = T[el.dataset.t]; if (typeof v === "string") el.innerHTML = v; }
+for (const el of document.querySelectorAll("[data-tp]")) el.placeholder = T[el.dataset.tp];
+
+// ---------------------------------------------------------------- helpers
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const store = { get(k) { try { return localStorage.getItem("voxstudio." + k); } catch (e) { return null; } },
+                set(k, v) { try { if (v == null) localStorage.removeItem("voxstudio." + k); else localStorage.setItem("voxstudio." + k, v); } catch (e) { /* private mode */ } } };
+let toastTimer = 0;
+function toast(msg, bad) { const t = $("toast"); t.innerHTML = msg; t.className = "toast" + (bad ? " bad" : ""); t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, bad ? 7000 : 2600); }
+const COLORS = ["--v0", "--v1", "--v2", "--v3", "--v4", "--v5"];
+const colorOf = (() => { const m = new Map(); return (k) => { if (!m.has(k)) m.set(k, `var(${COLORS[m.size % COLORS.length]})`); return m.get(k); }; })();
+
+// ---------------------------------------------------------------- connection
+const S = { url: "", secret: "", info: null, model: "", sel: null, speaking: null };
+async function api(method, path, body, opts = {}) {
+  const h = { Authorization: "Bearer " + S.secret };
+  let b = body;
+  if (body !== undefined && !(body instanceof Blob) && !(body instanceof ArrayBuffer)) { h["Content-Type"] = "application/json"; b = JSON.stringify(body); }
+  const r = await fetch(S.url + path, { method, headers: h, body: b, signal: opts.signal });
+  if (opts.raw) { if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || r.status + " " + r.statusText); return r; }
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(j.error || r.status + " " + r.statusText); e.status = r.status; throw e; }
+  return j;
+}
+function parseHash() {
+  const h = new URLSearchParams(location.hash.slice(1));
+  const url = h.get("url"), secret = h.get("secret");
+  if (secret) { history.replaceState(null, "", location.pathname + location.search); }   // the secret leaves the address bar
+  const servedByEngine = location.pathname.replace(/\/+$/, "").endsWith("/studio") && location.protocol.startsWith("http") && !/(^|\.)(github\.io|arkonova\.network)$/.test(location.hostname);
+  return { url: url || (servedByEngine && secret ? location.origin : ""), secret };
+}
+function connectHint(err, url) {
+  if (err && err.status === 401) return T.hintAuth;
+  let u;
+  try { u = new URL(url); } catch (e) { return esc(err && err.message); }
+  const local = ["127.0.0.1", "localhost", "[::1]"].includes(u.hostname);
+  if (location.protocol === "https:" && u.protocol === "http:" && !local) return T.hintMixed(esc(u.origin));
+  return T.hintNet(esc(u.origin));
+}
+async function connect(url, secret, remember) {
+  S.url = url.replace(/\/+$/, ""); S.secret = secret;
+  $("cGo").disabled = true; $("cErr").hidden = true; $("cGo").textContent = T.connecting;
+  try {
+    const hr = await fetch(S.url + "/health").then((r) => r.json());
+    if (!hr || !hr.vox) throw new Error("not a vox engine");
+    S.info = await api("GET", "/v1/info");
+    if (remember) { store.set("url", S.url); store.set("secret", S.secret); }
+    $("connect").hidden = true; $("app").hidden = false;
+    $("pTxt").textContent = `${new URL(S.url).host} · vox ${S.info.vox}`;
+    $("pDot").className = "dot";
+    initApp();
+  } catch (e) {
+    $("cErr").innerHTML = connectHint(e, S.url); $("cErr").hidden = false;
+    $("connect").hidden = false; $("app").hidden = true;
+  } finally { $("cGo").disabled = false; $("cGo").textContent = T.connect; }
+}
+$("cform").addEventListener("submit", (e) => { e.preventDefault(); connect($("cUrl").value.trim(), $("cSecret").value.trim(), $("cRemember").checked); });
+$("pOff").addEventListener("click", () => { store.set("secret", null); S.secret = ""; $("app").hidden = true; $("connect").hidden = false; $("cSecret").value = ""; });
+
+// ---------------------------------------------------------------- tabs
+for (const b of document.querySelectorAll("nav.tabs button")) b.addEventListener("click", () => showView(b.dataset.view));
+function showView(v) {
+  for (const b of document.querySelectorAll("nav.tabs button")) b.setAttribute("aria-selected", String(b.dataset.view === v));
+  for (const [id, name] of [["vScript", "script"], ["vVoices", "voices"], ["vModels", "models"], ["vHistory", "history"]]) $(id).hidden = name !== v;
+  if (v === "voices") renderProfiles(); if (v === "models") renderModels(); if (v === "history") renderHistory();
+}
+
+// ---------------------------------------------------------------- app state
+async function refresh() { S.info = await api("GET", "/v1/info"); }
+function modelRow(name) { return (S.info.models || []).find((m) => m.name === name) || null; }
+function caps() { const m = modelRow(S.model); return (m && m.capabilities) || {}; }
+function initApp() {
+  const ms = S.info.models || [];
+  const saved = store.get("model");
+  S.model = ms.some((m) => m.name === saved) ? saved : (ms[0] || {}).name || "";
+  fillModelSelect();
+  renderCast(); renderChips(); applyCaps();
+  if (!ms.length) toast(T.noModels);
+}
+function fillModelSelect() {
+  const sel = $("sModel");
+  sel.innerHTML = (S.info.models || []).map((m) => `<option value="${esc(m.name)}">${esc(m.name)}${m.family ? " · " + esc(m.family) : ""}</option>`).join("");
+  sel.value = S.model;
+}
+$("sModel").addEventListener("change", () => { S.model = $("sModel").value; store.set("model", S.model); renderCast(); renderChips(); applyCaps(); });
+function applyCaps() {
+  const c = caps(), fam = (modelRow(S.model) || {}).family || "";
+  $("sNfeWrap").hidden = fam !== "f5-tts";
+  $("sTempWrap").hidden = fam === "f5-tts" || fam === "kokoro";
+  $("sInstrWrap").hidden = !c.instruct;
+  const langs = c.languages || [];
+  $("sLang").innerHTML = `<option value="">auto</option>` + langs.filter((l) => l !== "auto").map((l) => `<option>${esc(l)}</option>`).join("");
+  $("sNote").textContent = c.speed ? "" : (fam ? (RU ? "У этой модели нет управления темпом." : "This model has no speed control.") : "");
+}
+for (const [r, o, d] of [["sSpeed", "oSpeed", 2], ["sTemp", "oTemp", 2], ["sNfe", "oNfe", 0]]) $(r).addEventListener("input", () => { $(o).textContent = Number($(r).value).toFixed(d); });
+$("setToggle").addEventListener("click", () => $("scriptGrid").classList.toggle("show-set"));
+
+// cast: profile voices + the model's built-in speakers
+function castItems() {
+  const items = [];
+  for (const p of S.info.profiles || []) for (const [v, d] of Object.entries(p.voices || {})) items.push({ kind: "profile", profile: p.file, voice: v, styles: d.styles || [], label: v, sub: p.name || p.file, key: p.file + ":" + v });
+  const c = caps();
+  if (c.requires_instruct) items.push({ kind: "design", label: T.design, sub: S.model, key: "design:" + S.model });
+  for (const s of (c.speakers || []).slice(0, 80)) items.push({ kind: "speaker", speaker: s, label: s, sub: T.builtIn, key: "spk:" + s });
+  return items;
+}
+function renderCast() {
+  const items = castItems(), box = $("cast");
+  const savedKey = store.get("sel");
+  if (!S.sel || !items.some((i) => i.key === S.sel.key)) S.sel = items.find((i) => i.key === savedKey) || items[0] || null;
+  box.innerHTML = items.map((it, i) => `<button data-i="${i}" aria-pressed="${S.sel && it.key === S.sel.key}"><span class="sw" style="background:${colorOf(it.key)}"></span><span class="nm">${esc(it.label)}<small>${esc(it.sub)}</small></span></button>`).join("");
+  $("castEmpty").hidden = items.length > 0;
+  box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { S.sel = items[+b.dataset.i]; store.set("sel", S.sel.key); renderCast(); renderChips(); }));
+  $("sVoice").innerHTML = items.map((it, i) => `<option value="${i}"${S.sel && it.key === S.sel.key ? " selected" : ""}>${esc(it.label)} (${esc(it.sub)})</option>`).join("");
+  $("sVoice").onchange = () => { S.sel = items[+$("sVoice").value]; store.set("sel", S.sel.key); renderCast(); renderChips(); };
+  const styles = S.sel && S.sel.kind === "profile" ? S.sel.styles : [];
+  $("sStyle").innerHTML = `<option value="">${RU ? "основной" : "main"}</option>` + styles.map((s) => `<option>${esc(s)}</option>`).join("");
+}
+const EMO = ["happy", "sad", "angry", "excited", "calm", "whisper", "shout", "tender", "serious"];
+function renderChips() {
+  const box = $("chips"); let html = "";
+  if (S.sel && S.sel.kind === "profile") {
+    const prof = (S.info.profiles || []).find((p) => p.file === S.sel.profile);
+    const voices = prof ? Object.keys(prof.voices || {}) : [];
+    if (voices.length > 1) html += voices.map((v) => `<button class="v" style="--c:${colorOf(S.sel.profile + ":" + v)}" data-ins="line" data-v="${esc(v)}">${esc(v)}:</button>`).join("") + `<span class="sep"></span>`;
+    const styles = (prof && prof.voices[S.sel.voice] && prof.voices[S.sel.voice].styles) || [];
+    html += styles.filter((s) => s !== "default").map((s) => `<button data-ins="[${esc(s)}] ">[${esc(s)}]</button>`).join("");
+  }
+  const have = new Set((html.match(/data-ins="\[([^\]]+)\] "/g) || []).map((x) => x.slice(11, -3)));
+  html += EMO.filter((e) => !have.has(e)).map((e) => `<button data-ins="[${e}] ">[${e}]</button>`).join("");
+  html += `<span class="sep"></span><button data-ins="[pause 500ms] ">[pause]</button><button data-ins="[speed 1.2] ">[speed]</button><button data-ins="[laugh] ">[laugh]</button><button data-ins="[/] ">[/]</button>`;
+  box.innerHTML = html;
+  box.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
+    const ta = $("text"), s = ta.selectionStart, e = ta.selectionEnd, v = ta.value;
+    let ins = b.dataset.ins;
+    if (ins === "line") { const name = b.dataset.v; const before = v.slice(0, s); ins = (before && !before.endsWith("\n") ? "\n" : "") + name + ": "; }
+    ta.value = v.slice(0, s) + ins + v.slice(e); ta.focus(); ta.selectionStart = ta.selectionEnd = s + ins.length;
+  }));
+}
+
+// ---------------------------------------------------------------- speaking
+function markupHtml(text, prof) {
+  const voices = prof ? Object.keys(prof.voices || {}) : [];
+  return esc(text).split("\n").map((line) => {
+    let out = line;
+    const m = /^(\s*)([^\s:[\]]{1,64}):(\s)/.exec(line);
+    if (m && voices.some((v) => v.toLowerCase() === m[2].toLowerCase())) out = m[1] + `<span class="vname" style="--c:${colorOf(S.sel.profile + ":" + voices.find((v) => v.toLowerCase() === m[2].toLowerCase()))}">${m[2]}:</span>` + m[3] + line.slice(m[0].length);
+    return out.replace(/\[[^\[\]\n]{1,64}\]/g, (t) => `<span class="tag">${t}</span>`);
+  }).join("\n");
+}
+function drawWave(cv, peaks, playedFrac, color) {
+  const dpr = window.devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  const n = peaks.length; if (!n) return;
+  // bars of 2 px with 1 px gaps across the whole width; each bar is the loudest peak of its share of the clip
+  const bars = Math.max(1, Math.floor(w / 3));
+  for (let b = 0; b < bars; b++) {
+    const i0 = Math.floor(b * n / bars), i1 = Math.max(i0 + 1, Math.floor((b + 1) * n / bars));
+    let a = 0; for (let i = i0; i < Math.min(i1, n); i++) a = Math.max(a, peaks[i]);
+    const bh = Math.max(2, Math.min(1, a * 2.2) * (h - 8)), x = b * 3;
+    g.fillStyle = (x / w) <= playedFrac ? color : "rgba(179,167,211,.45)";
+    g.fillRect(x, (h - bh) / 2, 2, bh);
+  }
+}
+function wavBlob(i16, sr) {
+  const b = new ArrayBuffer(44 + i16.length * 2), v = new DataView(b);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + i16.length * 2, true); w(8, "WAVE"); w(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, "data"); v.setUint32(40, i16.length * 2, true);
+  new Int16Array(b, 44).set(i16); return new Blob([b], { type: "audio/wav" });
+}
+let audioCtx = null;
+async function speak() {
+  if (S.speaking) { S.speaking.abort(); return; }
+  const text = $("text").value;
+  if (!text.trim()) return toast(T.needText, true);
+  if (!S.model) return toast(T.needModel, true);
+  if (!S.sel) return toast(T.needVoice, true);
+  const body = { text, model: S.model, markup: $("sMarkup").value, params: {}, format: "pcm16" };
+  const sel = S.sel;
+  if (sel.kind === "profile") { body.profile = sel.profile; body.voice_id = sel.voice; if ($("sStyle").value) body.style = $("sStyle").value; }
+  else if (sel.kind === "speaker") body.speaker = sel.speaker;
+  if (caps().instruct && $("sInstr").value.trim()) body.instruct = $("sInstr").value.trim();
+  if (sel.kind === "design" && !body.instruct) return toast(RU ? "Опишите голос в поле «Инструкция»." : "Describe the voice in Instruction.", true);
+  if ($("sSeed").value) body.params.seed = +$("sSeed").value;
+  if ($("sLang").value) body.language = $("sLang").value;
+  if (caps().speed && +$("sSpeed").value !== 1) body.params.speed = +$("sSpeed").value;
+  if (!$("sTempWrap").hidden) body.params.temperature = +$("sTemp").value;
+  if (!$("sNfeWrap").hidden) body.params.nfe_step = +$("sNfe").value;
+
+  $("linesEmpty").hidden = true;
+  const prof = sel.kind === "profile" ? (S.info.profiles || []).find((p) => p.file === sel.profile) : null;
+  const color = colorOf(sel.key);
+  const el = document.createElement("article");
+  el.className = "line"; el.style.setProperty("--c", color);
+  el.innerHTML = `<div class="stripe"></div><div><div class="who"><b>${esc(sel.label)}</b><span>${esc(S.model)}</span><span class="st"></span></div>
+    <div class="txt">${markupHtml(text, prof)}</div><canvas class="wave"></canvas><div class="ctl"></div></div>`;
+  $("lines").appendChild(el); el.scrollIntoView({ block: "end", behavior: "smooth" });
+  const cv = el.querySelector("canvas"), st = el.querySelector(".st"), ctl = el.querySelector(".ctl");
+  const ac = new AbortController(); S.speaking = ac; $("speak").textContent = T.stop;
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === "suspended") audioCtx.resume();
+  const chunks = [], peaks = []; let total = 0, playAt = 0, sr = 24000, carry = null, t0 = performance.now(), firstAt = 0;
+  const PEAK = 600;
+  try {
+    const r = await api("POST", "/v1/speak", body, { raw: true, signal: ac.signal });
+    sr = +r.headers.get("X-Vox-Sample-Rate") || 24000;
+    const clip = r.headers.get("X-Vox-Clip");
+    const reader = r.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      let bytes = value;
+      if (carry) { const m = new Uint8Array(carry.length + value.length); m.set(carry); m.set(value, carry.length); bytes = m; carry = null; }
+      const even = bytes.length & ~1;
+      if (even < bytes.length) carry = bytes.slice(even);
+      if (!even) continue;
+      const i16 = new Int16Array(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + even));
+      chunks.push(i16); total += i16.length;
+      if (!firstAt) firstAt = performance.now();
+      const f = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f[i] = i16[i] / 32768;
+      for (let i = 0; i < f.length; i += PEAK) { let m = 0; for (let j = i; j < Math.min(i + PEAK, f.length); j++) m = Math.max(m, Math.abs(f[j])); peaks.push(m); }
+      const buf = audioCtx.createBuffer(1, f.length, sr); buf.copyToChannel(f, 0);
+      const src = audioCtx.createBufferSource(); src.buffer = buf; src.connect(audioCtx.destination);
+      playAt = Math.max(playAt, audioCtx.currentTime + 0.05); src.start(playAt); playAt += buf.duration;
+      drawWave(cv, peaks, 0, color);
+      st.textContent = (total / sr).toFixed(1) + " s";
+    }
+    const all = new Int16Array(total); let o = 0; for (const c of chunks) { all.set(c, o); o += c.length; }
+    const blob = wavBlob(all, sr), urlb = URL.createObjectURL(blob);
+    const audio = new Audio(urlb);
+    const tick = () => { drawWave(cv, peaks, audio.duration ? audio.currentTime / audio.duration : 0, color); if (!audio.paused) requestAnimationFrame(tick); };
+    cv.addEventListener("click", (e) => { const fr = e.offsetX / cv.clientWidth; if (audio.duration) audio.currentTime = fr * audio.duration; audio.play(); tick(); });
+    const secs = total / sr;
+    let meta = null;
+    if (clip) meta = await api("GET", "/v1/history/" + clip).catch(() => null);
+    st.textContent = secs.toFixed(1) + " s";
+    const bits = [];
+    if (meta && meta.rtf) bits.push(T.rtf(meta.rtf.toFixed(2)));
+    if (firstAt) bits.push(T.firstChunk(((firstAt - t0) / 1000).toFixed(2)));
+    if (meta && meta.segments > 1) bits.push(T.segments(meta.segments));
+    if (meta && meta.params && meta.params.seed) bits.push("seed " + meta.params.seed);
+    ctl.innerHTML = `<button class="btn small" data-a="play">${T.play}</button><a class="btn small" href="${urlb}" download="vox-${clip || Date.now()}.wav">${T.download}</a><span>${bits.join(" · ")}</span>`;
+    ctl.querySelector('[data-a="play"]').addEventListener("click", () => { audio.currentTime = 0; audio.play(); tick(); });
+    if (meta && meta.notes && meta.notes.length) { const ul = document.createElement("ul"); ul.className = "notes"; ul.innerHTML = meta.notes.map((n) => `<li>${esc(n)}</li>`).join(""); el.querySelector(".ctl").after(ul); }
+    if (prof) refresh().catch(() => {});
+  } catch (e) {
+    if (e.name === "AbortError") { st.textContent = RU ? "остановлено" : "stopped"; }
+    else { el.classList.add("failed"); st.innerHTML = `<span class="err">${T.fail}: ${esc(e.message)}</span>`; }
+  } finally { S.speaking = null; $("speak").textContent = T.speak; }
+}
+$("speak").addEventListener("click", speak);
+$("text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); speak(); } });
+
+// ---------------------------------------------------------------- voices (profiles)
+let curProf = null;
+async function renderProfiles() {
+  await refresh();
+  const list = $("profList"), ps = S.info.profiles || [];
+  if (!curProf || !ps.some((p) => p.file === curProf)) curProf = (ps[0] || {}).file || null;
+  list.innerHTML = ps.map((p) => `<button data-f="${esc(p.file)}" aria-pressed="${p.file === curProf}">${esc(p.name || p.file)}<small>${Object.keys(p.voices || {}).length} ${RU ? "голос(а)" : "voice(s)"} · ${p.file}.tvoice</small></button>`).join("");
+  list.querySelectorAll("button").forEach((b) => b.addEventListener("click", () => { curProf = b.dataset.f; renderProfiles(); }));
+  renderProfile();
+}
+async function renderProfile() {
+  const box = $("profDetail");
+  if (!curProf) { box.innerHTML = `<p class="muted">${RU ? "Создайте профиль слева." : "Create a profile on the left."}</p>`; return; }
+  const p = await api("GET", "/v1/profiles/" + encodeURIComponent(curProf));
+  const recs = p.recordings || {};
+  const built = {};
+  for (const c of p.cache || []) (built[c.voice + "/" + c.style] = built[c.voice + "/" + c.style] || []).push(c.model.family + (c.mode === "speaker" ? " (" + (c.speaker || "design") + ")" : ""));
+  let html = `<div class="card"><h4>${esc(p.name)} <span class="dim" style="font-weight:400;font-size:13px">${esc(curProf)}.tvoice</span></h4>
+    <div class="rowf"><a class="btn small" href="#" id="pDl">${T.downloadProf}</a>${S.model ? `<button class="btn small" id="pPrep">${esc(T.prepare(S.model))}</button>` : ""}<button class="btn small quiet" id="pDel">${T.deleteProf}</button></div></div>`;
+  for (const [vn, v] of Object.entries(p.voices || {})) {
+    const spk = Object.entries(v.speakers || {}).map(([k, s]) => k + "=" + s).join(";");
+    html += `<div class="card" data-voice="${esc(vn)}"><h4><span class="sw" style="width:10px;height:10px;border-radius:3px;background:${colorOf(curProf + ":" + vn)};display:inline-block"></span>${esc(vn)}${vn === p.default_voice ? ` <span class="dim" style="font-weight:400;font-size:13px">${RU ? "по умолчанию" : "default"}</span>` : ""}</h4>
+      <div class="rowf"><label class="f"><span>${T.description}</span><input type="text" data-k="description" value="${esc(v.description)}"></label>
+      <label class="f"><span>${T.speakers}</span><input type="text" data-k="speakers" value="${esc(spk)}" title="${esc(T.speakersHint)}" placeholder="kokoro=af_heart"></label>
+      <button class="btn small" data-a="saveVoice">${T.save}</button></div><div class="styles">`;
+    for (const [sn, s] of Object.entries(v.styles || {})) {
+      const r = s.ref && recs[s.ref];
+      html += `<div class="style" data-style="${esc(sn)}"><div class="nm">${esc(sn)}${sn === v.default_style ? `<small>${RU ? "основной" : "main"}</small>` : ""}<small>${(built[vn + "/" + sn] || []).map(esc).join(", ")}</small></div><div class="body">
+        ${r ? `<audio controls preload="none" src="${S.url}/v1/profiles/${encodeURIComponent(curProf)}/recordings/${encodeURIComponent(s.ref)}.wav?token=${encodeURIComponent(S.secret)}"></audio><span class="muted" style="font-size:13px">“${esc(r.text)}” · ${(r.seconds || 0).toFixed(1)} s</span>` : `<span class="dim" style="font-size:13px">${T.noRec}</span>`}
+        <div class="rowf"><label class="f"><span>${T.styleInstruct}</span><input type="text" data-k="instruct" value="${esc(s.instruct)}"></label>
+        <label class="f" style="flex:0 1 90px"><span>${T.styleSpeed}</span><input type="number" step="0.05" min="0.5" max="2" data-k="speed" value="${s.options && s.options.speed != null ? s.options.speed : ""}"></label>
+        <button class="btn small" data-a="saveStyle">${T.save}</button>${sn !== v.default_style ? `<button class="btn small quiet" data-a="rmStyle">${T.removeStyle}</button>` : ""}</div></div></div>`;
+    }
+    html += `</div><div class="rowf" style="margin-top:10px"><button class="btn small quiet" data-a="rmVoice">${T.removeVoice}</button></div></div>`;
+  }
+  html += `<div class="card" id="recCard"><h4>${T.recNew}</h4>
+    <div class="rowf"><label class="f"><span>${T.recVoice}</span><input type="text" id="rVoice" value="${esc(Object.keys(p.voices || {})[0] || "")}"></label>
+    <label class="f"><span>${T.recStyle}</span><input type="text" id="rStyle"></label><label class="f" style="flex:0 1 120px"><span>${T.recLang}</span><input type="text" id="rLang" placeholder="auto"></label></div>
+    <label class="f" style="margin-top:8px"><span>${T.recText}</span><input type="text" id="rText"></label>
+    <div class="rowf" style="margin-top:10px;align-items:center"><span class="rec" id="rRec"><button class="btn small" id="rRecBtn">${T.recRecord}</button><span class="muted" id="rRecT"></span></span>
+    <label class="btn small"><input type="file" id="rFile" accept="audio/*" hidden>${T.recFile}</label><audio id="rPrev" controls hidden style="height:34px;flex:1 1 200px"></audio>
+    <button class="btn small primary" id="rAdd" disabled>${T.recAdd}</button></div></div>`;
+  box.innerHTML = html;
+  $("pDl").addEventListener("click", async (e) => { e.preventDefault(); const r = await api("GET", "/v1/profiles/" + encodeURIComponent(curProf) + "/download", undefined, { raw: true }); const a = document.createElement("a"); a.href = URL.createObjectURL(await r.blob()); a.download = curProf + ".tvoice"; a.click(); });
+  if ($("pPrep")) $("pPrep").addEventListener("click", async () => { try { const r = await api("POST", "/v1/profiles/" + encodeURIComponent(curProf) + "/prepare", { model: S.model }); toast(T.prepared + (r.notes && r.notes.length ? ": " + esc(r.notes.join("; ")) : "")); renderProfile(); } catch (e) { toast(esc(e.message), true); } });
+  $("pDel").addEventListener("click", async () => { if (!confirm(T.confirmDelete(curProf))) return; await api("DELETE", "/v1/profiles/" + encodeURIComponent(curProf)); curProf = null; renderProfiles(); });
+  const patch = async (pt) => { try { await api("PATCH", "/v1/profiles/" + encodeURIComponent(curProf), pt); toast(T.saved); await refresh(); renderCast(); renderProfile(); } catch (e) { toast(esc(e.message), true); } };
+  box.querySelectorAll("[data-voice]").forEach((card) => {
+    const vn = card.dataset.voice;
+    card.querySelector('[data-a="saveVoice"]').addEventListener("click", () => {
+      const sp = {}; const cur = (p.voices[vn] || {}).speakers || {};
+      for (const k of Object.keys(cur)) sp[k] = null;
+      for (const item of card.querySelector('[data-k="speakers"]').value.split(";")) { const i = item.indexOf("="); if (i > 0) sp[item.slice(0, i).trim()] = item.slice(i + 1).trim() || null; }
+      patch({ voices: { [vn]: { description: card.querySelector('[data-k="description"]').value, speakers: sp } } });
+    });
+    card.querySelector('[data-a="rmVoice"]').addEventListener("click", () => patch({ voices: { [vn]: null } }));
+    card.querySelectorAll("[data-style]").forEach((row) => {
+      const sn = row.dataset.style;
+      row.querySelector('[data-a="saveStyle"]').addEventListener("click", () => {
+        const sp = row.querySelector('[data-k="speed"]').value;
+        patch({ voices: { [vn]: { styles: { [sn]: { instruct: row.querySelector('[data-k="instruct"]').value, options: { speed: sp === "" ? null : +sp } } } } } });
+      });
+      const rm = row.querySelector('[data-a="rmStyle"]'); if (rm) rm.addEventListener("click", () => patch({ voices: { [vn]: { styles: { [sn]: null } } } }));
+    });
+  });
+  setupRecorder();
+}
+let recWav = null;
+async function toWav(blob) {
+  const ctx = new (window.AudioContext || window.webkitAudioContext)();
+  const ab = await ctx.decodeAudioData(await blob.arrayBuffer());
+  const n = ab.length, m = new Float32Array(n);
+  for (let c = 0; c < ab.numberOfChannels; c++) { const d = ab.getChannelData(c); for (let i = 0; i < n; i++) m[i] += d[i] / ab.numberOfChannels; }
+  const i16 = new Int16Array(n); for (let i = 0; i < n; i++) i16[i] = Math.max(-32768, Math.min(32767, Math.round(m[i] * 32768)));
+  ctx.close(); return wavBlob(i16, ab.sampleRate);
+}
+function setupRecorder() {
+  let mr = null, parts = [], t0 = 0, timer = 0;
+  const setWav = (b) => { recWav = b; $("rPrev").src = URL.createObjectURL(b); $("rPrev").hidden = false; $("rAdd").disabled = false; };
+  $("rRecBtn").addEventListener("click", async () => {
+    if (mr) { mr.stop(); return; }
+    let stream; try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false } }); } catch (e) { return toast(T.micDenied, true); }
+    parts = []; mr = new MediaRecorder(stream); mr.ondataavailable = (e) => parts.push(e.data);
+    mr.onstop = async () => { stream.getTracks().forEach((t) => t.stop()); clearInterval(timer); $("rRec").classList.remove("on"); $("rRecBtn").textContent = T.recRecord; mr = null; setWav(await toWav(new Blob(parts))); };
+    mr.start(); t0 = Date.now(); $("rRec").classList.add("on"); $("rRecBtn").textContent = T.recStop;
+    timer = setInterval(() => { $("rRecT").textContent = ((Date.now() - t0) / 1000).toFixed(1) + " s"; }, 100);
+  });
+  $("rFile").addEventListener("change", async () => { const f = $("rFile").files[0]; if (f) setWav(await toWav(f)); });
+  $("rAdd").addEventListener("click", async () => {
+    if (!recWav || !$("rVoice").value.trim()) return toast(RU ? "Нужны имя голоса и запись." : "A voice name and a recording are needed.", true);
+    const b64 = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(",")[1]); fr.readAsDataURL(recWav); });
+    try {
+      await api("POST", "/v1/profiles/" + encodeURIComponent(curProf) + "/recordings", { voice: $("rVoice").value.trim(), style: $("rStyle").value.trim() || null, text: $("rText").value.trim() || null, language: $("rLang").value.trim() || null, audio_b64: b64 });
+      recWav = null; toast(T.saved); await refresh(); renderCast(); renderChips(); renderProfiles();
+    } catch (e) { toast(esc(e.message), true); }
+  });
+}
+$("newProfGo").addEventListener("click", async () => { const n = $("newProf").value.trim(); if (!n) return; try { await api("POST", "/v1/profiles", { name: n }); curProf = n; $("newProf").value = ""; renderProfiles(); } catch (e) { toast(esc(e.message), true); } });
+$("upProf").addEventListener("change", async () => { const f = $("upProf").files[0]; if (!f) return; const n = f.name.replace(/\.tvoice$/i, ""); try { await api("PUT", "/v1/profiles/" + encodeURIComponent(n), f); curProf = n; renderProfiles(); } catch (e) { toast(esc(e.message), true); } });
+
+// ---------------------------------------------------------------- models
+async function renderModels() {
+  const r = await api("GET", "/v1/models"); S.info.models = r.models;
+  $("mRows").innerHTML = r.models.map((m) => `<tr data-m="${esc(m.name)}"><td><b>${esc(m.name)}</b><br><span class="dim" style="font-size:12px">${esc(m.path)} · ${m.size_mb || "?"} MB</span>${m.error ? `<br><span class="err" style="font-size:13px">${esc(m.error)}</span>` : ""}</td>
+    <td>${esc(m.family || "")}<br><span class="dim" style="font-size:12px">${esc(m.variant || "")}</span></td><td>${m.loaded ? `<span style="color:var(--ok)">${T.loaded}</span><br><span class="dim" style="font-size:12px">${esc(m.backend || "")}</span>` : `<span class="dim">${T.notLoaded}</span>`}</td>
+    <td style="min-width:140px"><input type="text" data-k="dev" value="${esc(m.device || "auto")}"></td><td style="white-space:nowrap"><button class="btn small" data-a="load">${T.load}</button>${m.loaded ? `<button class="btn small quiet" data-a="unload">${T.unload}</button>` : ""}</td></tr>`).join("") || `<tr><td colspan="5" class="muted">${T.noModels}</td></tr>`;
+  $("mRows").querySelectorAll("tr[data-m]").forEach((tr) => {
+    const n = tr.dataset.m;
+    tr.querySelector('[data-a="load"]').addEventListener("click", async (e) => { e.target.disabled = true; try { await api("POST", "/v1/models/load", { name: n, device: tr.querySelector('[data-k="dev"]').value.trim() || "auto" }); } catch (er) { toast(esc(er.message), true); } renderModels(); fillModelSelect(); });
+    const u = tr.querySelector('[data-a="unload"]'); if (u) u.addEventListener("click", async () => { await api("POST", "/v1/models/unload", { name: n }); renderModels(); });
+  });
+  fillModelSelect(); applyCaps();
+}
+$("mAdd").addEventListener("click", async () => { const p = $("mPath").value.trim(); if (!p) return; try { await api("POST", "/v1/models/add", { path: p }); $("mPath").value = ""; renderModels(); } catch (e) { toast(esc(e.message), true); } });
+
+// ---------------------------------------------------------------- history
+async function renderHistory() {
+  const r = await api("GET", "/v1/history");
+  $("hRows").innerHTML = r.clips.map((c) => `<tr data-c="${c.id}"><td style="max-width:520px"><div style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(c.text.length > 400 ? c.text.slice(0, 400) + "…" : c.text)}</div><span class="dim" style="font-size:12px">${new Date(c.created * 1000).toLocaleString()} · ${esc(c.model)}${c.rtf ? " · RTF " + c.rtf.toFixed(2) : ""}</span></td>
+    <td>${esc(c.profile ? c.profile + (c.voice_id ? ":" + c.voice_id : "") : c.speaker || "")}${c.style ? `<br><span class="dim">${esc(c.style)}</span>` : ""}</td><td>${(c.seconds || 0).toFixed(1)} s</td>
+    <td style="white-space:nowrap"><button class="btn small" data-a="play">${T.play}</button><button class="btn small" data-a="dl">${T.download}</button><button class="btn small quiet" data-a="del">${T.del}</button></td></tr>`).join("");
+  $("hRows").querySelectorAll("tr[data-c]").forEach((tr) => {
+    const id = tr.dataset.c, src = `${S.url}/v1/history/${id}.wav?token=${encodeURIComponent(S.secret)}`;
+    tr.querySelector('[data-a="play"]').addEventListener("click", () => new Audio(src).play());
+    tr.querySelector('[data-a="dl"]').addEventListener("click", async () => { const b = await (await api("GET", `/v1/history/${id}.wav`, undefined, { raw: true })).blob(); const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `vox-${id}.wav`; a.click(); });
+    tr.querySelector('[data-a="del"]').addEventListener("click", async () => { await api("DELETE", "/v1/history/" + id); tr.remove(); });
+  });
+}
+
+// ---------------------------------------------------------------- start
+(function start() {
+  const h = parseHash();
+  const url = h.url || store.get("url") || "http://127.0.0.1:7860", secret = h.secret || store.get("secret") || "";
+  $("cUrl").value = url; $("cSecret").value = secret;
+  if (url && secret) connect(url, secret, h.secret ? true : !!store.get("secret"));
+  else $("connect").hidden = false;
+})();
+</script>
+</body>
+</html>

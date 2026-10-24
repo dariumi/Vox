@@ -7,7 +7,7 @@ out = ["// Сгенерировано tools/gen_shaders.py — не правит
 VARIANTS = {"matmul_nosg": ("matmul", ["-DNO_SUBGROUP"])}
 for name in ("matmul", "rmsnorm", "qkrope", "attention", "silumul", "convgemm", "snake", "dwconv", "layernorm", "ola", "hist",
              "attnw", "ringput", "qkvsplit", "swiglu", "gather", "sample", "matmul_nosg",
-             "f5attn", "f5conv", "f5ln", "f5ew", "f5rope"):
+             "f5attn", "f5conv", "f5ln", "f5ew", "f5rope", "gemmb"):
     spv = os.path.join(tempfile.mkdtemp(), name + ".spv")
     src, defs = VARIANTS.get(name, (name, []))
     subprocess.run(["glslangValidator", "-V", "--target-env", "vulkan1.1"] + defs + ["-o", spv, os.path.join(root, "src", "shaders", src + ".comp")], check=True)

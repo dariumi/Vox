@@ -390,7 +390,7 @@ async function sha256Hex(parts) {
 }
 
 // ---------- сборка F5 ----------
-// o: { ckpt: Uint8Array, ckptName, vocab: string, vocos: Uint8Array, vocosName, dtype: "bf16"|"f16"|"f32", quant: ""|"q8",
+// o: { ckpt: Uint8Array, ckptName, vocab: string, vocos: Uint8Array, vocosName, dtype: "bf16"|"f16"|"f32", quant: ""|"q8", vocosDtype (default "f32"),
 //      vocosConfig: text of the vocoder's config.yaml (or vocosPadding: "center"|"same"; default center),
 //      tokenizer: "pinyin"|"char", variant, dimHead, pinyin: {char: syllable}|null, mel, hash: bool, onProgress(stage, frac) }
 // F5TTS_Base / F5TTS_Small (v0): text_mask_padding=false, pe_attn_head=1; F5TTS_v1_*: true / all heads. The weights do not say which, so the
@@ -468,7 +468,8 @@ async function convertF5(o) {
 
   const blobs = [];
   for (const [k, t] of dit) addBlob(blobs, "dit." + k, t.shape, t.get, dtype, quant === "q8" && F5_BLOCK_LINEAR.test(k));
-  for (const [k, t] of voc) addBlob(blobs, "vocos." + k, t.shape, t.get, dtype, false);
+  // Vocos stays f32 by default, as in python -m vox.build_f5 (--vocos-dtype): small, but bf16 weights there add waveform error
+  for (const [k, t] of voc) addBlob(blobs, "vocos." + k, t.shape, t.get, (o.vocosDtype || "f32").toUpperCase(), false);
   const fb = melFilterbank(mel.sample_rate, mel.n_fft, mel.n_mels);
   blobs.push({ name: "mel.fb", dtype: "F32", shape: [mel.n_mels, (mel.n_fft >> 1) + 1], async fill(u8) { new Float32Array(u8.buffer, u8.byteOffset, u8.byteLength >> 2).set(fb); } });
 

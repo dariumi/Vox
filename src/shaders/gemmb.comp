@@ -1,0 +1,93 @@
+#version 450
+// Register-blocked GEMM for many input rows (F5-TTS DiT and Vocos linear layers):
+//   Y[t][o] = epilogue( sum_c W[o][c] * X[t][c] ),   X [T][C] row-major, W [O][C] row-major, C % 8 == 0.
+// Tile 128 (t) x 128 (o) per workgroup of 256 threads, 8 x 8 outputs per thread, K step 8. Per K element a thread reads
+// 4 vec4 from shared memory and does 64 FMAs (the older convgemm tile does 16 FMAs per 8 scalar reads, with an integer
+// division per loaded element). Threads along x own output channels, so stores of a row are contiguous.
+// flags: 1 = + bias[o % bias_n]; 2 = GELU (erf); 4 = residual Y = Y + gamma[o] * v (not for q8); 8 = residual with gamma = 1;
+//        16 = clamp to [-1, 1].
+layout(local_size_x = 256) in;
+layout(constant_id = 0) const uint WTYPE = 0u;  // 0 = f32, 1 = f16, 2 = bf16, 3 = q8 (scales in binding 1)
+
+layout(std430, set = 0, binding = 0) readonly buffer WB { uint w[]; };
+layout(std430, set = 0, binding = 1) readonly buffer GB { float gamma[]; };
+layout(std430, set = 0, binding = 2) readonly buffer BB { float bias[]; };
+layout(std430, set = 0, binding = 3) readonly buffer XB { vec4 x4[]; };
+layout(std430, set = 0, binding = 4) buffer YB { float y[]; };
+layout(std430, set = 0, binding = 5) readonly buffer HB { float unused_[]; };
+layout(push_constant) uniform PC { uint T; uint O; uint C; uint flags; uint bias_n; } pc;
+
+shared vec4 Xs[8][32];   // [k][t / 4]
+shared vec4 Ws[8][32];   // [k][o / 4]
+
+// four consecutive weights W[o][k..k+3] (k % 4 == 0)
+vec4 w4(uint o, uint k) {
+    const uint idx = o * pc.C + k;
+    if (WTYPE == 0u) return vec4(uintBitsToFloat(w[idx]), uintBitsToFloat(w[idx + 1u]), uintBitsToFloat(w[idx + 2u]), uintBitsToFloat(w[idx + 3u]));
+    if (WTYPE == 1u) return vec4(unpackHalf2x16(w[idx >> 1u]), unpackHalf2x16(w[(idx >> 1u) + 1u]));
+    if (WTYPE == 2u) {
+        const uint a = w[idx >> 1u], b = w[(idx >> 1u) + 1u];
+        return vec4(uintBitsToFloat(a << 16u), uintBitsToFloat(a & 0xFFFF0000u), uintBitsToFloat(b << 16u), uintBitsToFloat(b & 0xFFFF0000u));
+    }
+    // q8: never -128, so unpackSnorm4x8 * 127 is the exact integer
+    return unpackSnorm4x8(w[idx >> 2u]) * (127.0 * gamma[idx >> 5u]);
+}
+
+float erf_approx(float v) {   // as in convgemm.comp
+    const float z = abs(v);
+    const float t = 1.0 / (1.0 + 0.5 * z);
+    const float r = t * exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 + t * (0.09678418 + t * (-0.18628806 +
+                    t * (0.27886807 + t * (-1.13520398 + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
+    return v >= 0.0 ? 1.0 - r : r - 1.0;
+}
+
+void main() {
+    const uint lid = gl_LocalInvocationID.x;
+    const uint tx = lid & 15u, ty = lid >> 4u;           // tx → output channels, ty → time rows
+    const uint t0 = gl_WorkGroupID.x * 128u, o0 = gl_WorkGroupID.y * 128u;
+    // loader: thread → one row of the tile (0..127) and one half of the K step (4 elements)
+    const uint lrow = lid >> 1u, lk = (lid & 1u) * 4u;
+    const uint lt = t0 + lrow, lo = o0 + lrow;
+    const uint cq = pc.C >> 2u;
+
+    vec4 acc[8][2];   // acc[i][jh]: time row i (0..3 → ty*4+i, 4..7 → 64+ty*4+i-4), channels jh*64 + tx*4 .. +3
+    for (uint i = 0u; i < 8u; ++i) { acc[i][0] = vec4(0.0); acc[i][1] = vec4(0.0); }
+
+    for (uint k0 = 0u; k0 < pc.C; k0 += 8u) {
+        const vec4 xv = (lt < pc.T) ? x4[lt * cq + ((k0 + lk) >> 2u)] : vec4(0.0);
+        const vec4 wv = (lo < pc.O) ? w4(lo, k0 + lk) : vec4(0.0);
+        for (uint j = 0u; j < 4u; ++j) {
+            Xs[lk + j][lrow >> 2u][lrow & 3u] = xv[j];
+            Ws[lk + j][lrow >> 2u][lrow & 3u] = wv[j];
+        }
+        barrier();
+        for (uint k = 0u; k < 8u; ++k) {
+            const vec4 a0 = Xs[k][ty], a1 = Xs[k][ty + 16u];
+            const vec4 b0 = Ws[k][tx], b1 = Ws[k][tx + 16u];
+            for (uint i = 0u; i < 4u; ++i) {
+                acc[i][0] += a0[i] * b0;
+                acc[i][1] += a0[i] * b1;
+                acc[4u + i][0] += a1[i] * b0;
+                acc[4u + i][1] += a1[i] * b1;
+            }
+        }
+        barrier();
+    }
+    for (uint i = 0u; i < 8u; ++i) {
+        const uint t = t0 + ((i < 4u) ? ty * 4u + i : 64u + ty * 4u + (i - 4u));
+        if (t >= pc.T) continue;
+        for (uint jh = 0u; jh < 2u; ++jh)
+            for (uint j = 0u; j < 4u; ++j) {
+                const uint o = o0 + jh * 64u + tx * 4u + j;
+                if (o >= pc.O) continue;
+                float v = acc[i][jh][j];
+                if ((pc.flags & 1u) != 0u) v += bias[o % pc.bias_n];
+                if ((pc.flags & 2u) != 0u) v = 0.5 * v * (1.0 + erf_approx(v * 0.70710678118654752));
+                const uint yi = t * pc.O + o;
+                if ((pc.flags & 4u) != 0u) v = y[yi] + gamma[o] * v;
+                else if ((pc.flags & 8u) != 0u) v = y[yi] + v;
+                if ((pc.flags & 16u) != 0u) v = clamp(v, -1.0, 1.0);
+                y[yi] = v;
+            }
+    }
+}

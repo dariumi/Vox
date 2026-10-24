@@ -70,6 +70,14 @@ req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/tts", data=json.dumps(
 body = urllib.request.urlopen(req).read()
 got = np.frombuffer(body, "<f4")
 assert np.array_equal(got, a), "server f32 stream differs from library output"
+# a profile with two voices: listed as "cast:a" / "cast:b", spoken like the library with voice_id
+cast = vox.Profile("cast"); cast.add(vox.Voice.open(work + "/tiny_icl.tvoice"), as_voice="a"); cast.add(vox.Voice.open(work + "/tiny_icl.tvoice"), as_voice="b")
+cast.set_voice("b", temperature=0.5); cast.save(work + "/voices/cast.tvoice")
+lst = json.load(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/v1/voices"))
+assert "cast:a" in json.dumps(lst) and "cast:b" in json.dumps(lst), lst
+body = urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/tts", data=json.dumps({"text": text, "voice": "cast:b", "seed": 7, "language": "english", "format": "f32"}).encode())).read()
+assert np.array_equal(np.frombuffer(body, "<f4"), eng.synthesize(text, vox.Voice.open(work + "/voices/cast.tvoice"), voice_id="b", seed=7, language="english")), "profile voice over HTTP differs"
+print("profile voices over HTTP: ok")
 req = urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/tts", data=json.dumps({"text": text, "voice": "demo", "format": "wav"}).encode())
 wav = urllib.request.urlopen(req).read(); print("server wav bytes:", len(wav), wav[:4])
 try: urllib.request.urlopen(urllib.request.Request(f"http://127.0.0.1:{PORT}/v1/tts", data=json.dumps({"text": "x", "voice": "nope"}).encode()))

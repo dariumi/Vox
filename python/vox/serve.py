@@ -4,7 +4,7 @@
 
     GET  /health                    → {"status": "ok"}
     GET  /v1/info                   → информация о модели
-    GET  /v1/voices                 → список голосов (*.tvoice из --voices)
+    GET  /v1/voices                 → список голосов (*.tvoice из --voices; у профилей с несколькими голосами — ещё «файл:голос»)
     POST /v1/tts  {"text": "...", "voice": "имя", "language": "russian", "seed": 42, "temperature": 0.7,
                    "format": "wav" | "pcm16" | "f32", "decoder_mode": "stream" | "reference"}
                                                    → аудио, отдаётся чанками по мере генерации
@@ -41,10 +41,10 @@ from pathlib import Path
 
 import numpy as np
 
-from . import Engine, VoxError
+from . import Engine, Voice, VoxError
 
 _GEN_KEYS = ("temperature", "top_k", "top_p", "repetition_penalty", "sub_temperature", "sub_top_k", "sub_top_p",
-             "seed", "chunk_frames", "max_frames", "language", "decoder_mode", "decoder_context_frames")
+             "seed", "chunk_frames", "max_frames", "language", "decoder_mode", "decoder_context_frames", "voice_id", "style", "markup")
 _NAME = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
 
 
@@ -62,8 +62,25 @@ class Server:
 
     def list_voices(self):
         files = sorted(p.stem for p in self.voices_dir.glob("*.tvoice")) if self.voices_dir and self.voices_dir.is_dir() else []
+        # profiles with several voices: "file:voice" for each of them (a plain "file" is its default voice)
+        multi = []
+        for f in files:
+            try:
+                vs = list(Voice.open(self.voices_dir / f"{f}.tvoice").voices)
+            except VoxError:
+                vs = []
+            if len(vs) > 1:
+                multi += [f"{f}:{v}" for v in vs]
+        files = files + multi
         # built-in speakers of the model (Kokoro voices, Qwen3 CustomVoice speakers) are voices too
         return files + [s for s in self.engine.speakers if s not in files]
+
+    def voice_params(self, name):
+        """"file:voice" → (the profile, {"voice_id": voice}); anything else → (voice, {})"""
+        if name and ":" in name and self.voices_dir and (self.voices_dir / f"{name.split(':', 1)[0]}.tvoice").is_file():
+            f, vid = name.split(":", 1)
+            return self.voice(f), {"voice_id": vid}
+        return self.voice(name), {}
 
     def voice(self, name):
         if not name or os.sep in name or name.startswith("."):
@@ -95,8 +112,8 @@ class Server:
             fmt = start.get("format", "pcm16")
             if fmt not in ("pcm16", "f32"):
                 raise ValueError("format must be pcm16 or f32")
-            voice = self.voice(start.get("voice", ""))
-            params = {k: start[k] for k in _GEN_KEYS if k in start and k != "seed"}
+            voice, vp = self.voice_params(start.get("voice", ""))
+            params = dict(vp, **{k: start[k] for k in _GEN_KEYS if k in start and k != "seed"})
             kw = {k: start[k] for k in ("commit", "idle_ms", "utterance_gap_ms", "on_conflict") if k in start}
             if "seed" in start:
                 kw["seed"] = int(start["seed"])
@@ -250,11 +267,11 @@ def make_handler(srv: Server):
                 n = int(self.headers.get("Content-Length", "0"))
                 req = json.loads(self.rfile.read(n) or b"{}")
                 text = req["text"]
-                voice = srv.voice(req.get("voice", ""))
+                voice, vp = srv.voice_params(req.get("voice", ""))
                 fmt = req.get("format", "wav")
                 if fmt not in ("wav", "pcm16", "f32"):
                     raise ValueError("format must be wav, pcm16 or f32")
-                params = {k: req[k] for k in _GEN_KEYS if k in req}
+                params = dict(vp, **{k: req[k] for k in _GEN_KEYS if k in req})
             except KeyError as e:
                 return self._json(404 if str(e).strip("'") != "text" else 400, {"error": f"missing or unknown: {e}"})
             except (ValueError, json.JSONDecodeError) as e:

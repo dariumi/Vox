@@ -21,6 +21,7 @@ F5_DEVICES="cpu"
 if ./build/vox devices 2>/dev/null | grep -q '^vulkan:0'; then F5_DEVICES="cpu;vulkan:0,strict"; fi
 VOX_TEST_DEVICES="$F5_DEVICES" python3 tests/test_f5_tiny.py build/vox   # F5-TTS против f5_tts (нужны torch, f5-tts, vocos; иначе SKIP)
 python3 tests/test_kokoro_tiny.py build/vox   # Kokoro против официального kokoro + misaki (нужны torch, kokoro, misaki; иначе SKIP)
+python3 tests/test_cosyvoice_tiny.py build/vox   # CosyVoice2 против официального кода (нужен клон CosyVoice в VOX_COSYVOICE_SRC; иначе SKIP)
 python3 tests/test_library.py
 python3 tests/test_examples.py build/vox   # примеры на C, C++, Rust, Go, Node.js, Python ctypes: звук = звуку CLI до бита (нет инструментов — SKIP)
 VOX_WEB_FULL="${VOX_WEB_FULL:-}" python3 tests/test_web.py build/vox   # vox.js в Chromium (WebGPU) против эталона f5_tts (нужны playwright + chromium, torch, f5-tts; иначе SKIP)
@@ -28,6 +29,8 @@ python3 tests/test_web_convert.py   # загрузка и конвертация
 python3 tests/test_web_qwen.py build/vox   # Qwen3-TTS в браузере: HF-ссылка, конвертация побайтно = python, WebGPU, duplex (иначе SKIP)
 python3 tests/test_web_cpu.py build/vox   # vox.js без WebGPU: процессорный бэкенд = ядро (f32/bf16/f16), q8 = WebGPU, страница не замирает (иначе SKIP)
 python3 tests/test_duplex.py build/vox   # двусторонний стриминг: ядро, Python, CLI vox live, WebSocket
+python3 tests/test_profiles.py build/vox   # профили: несколько голосов и стилей, разметка, один профиль на разных моделях, совместимость с 1.0
+python3 tests/test_web_studio.py   # vox web: API Vox Studio, секрет, CORS, TLS, страница Studio в Chromium (если есть playwright)
 python3 tests/test_py_family.py
 VOX_TEST_DEVICES="$DEVICES" python3 tests/test_api_serve.py
 VOX_TEST_DEVICES="$DEVICES" python3 tests/test_q4.py build/vox

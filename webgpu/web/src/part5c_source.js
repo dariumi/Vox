@@ -161,8 +161,8 @@ async function acquireTmod(src, opts = {}, keepSource = false) {
 }
 async function acquireTmodRaw(src, opts = {}) {
   const status = (s) => { if (opts.onStatus) opts.onStatus(s); };
-  const cvtOpts = () => ({ dtype: opts.dtype || "bf16", quant: opts.quant || "", tokenizer: opts.tokenizer, hash: opts.hash, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, vocosPadding: opts.vocosPadding });
-  const cacheKeyFor = (parts) => "tmod/2|" + JSON.stringify(parts) + "|" + JSON.stringify(cvtOpts());
+  const cvtOpts = () => ({ dtype: opts.dtype || "bf16", quant: opts.quant || "", tokenizer: opts.tokenizer, hash: opts.hash, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, vocosPadding: opts.vocosPadding, vocosDtype: opts.vocosDtype });
+  const cacheKeyFor = (parts) => "tmod/3|" + JSON.stringify(parts) + "|" + JSON.stringify(cvtOpts());   // 3: Vocos in f32 since 0.14.1
   const useCache = opts.cache !== false;
   // config.yaml вокодера (ради padding головы ISTFT); не нашёлся — конвертер считает, что это charactr/vocos-mel-24khz (center)
   const vocosConfigAt = async (url) => { try { return await fetchText(url, Object.assign({}, opts, { onProgress: null }), "config.yaml"); } catch (e) { return null; } };
@@ -174,7 +174,7 @@ async function acquireTmodRaw(src, opts = {}) {
     const pinyin = tokenizer === "pinyin" ? await loadPinyin(opts) : null;
     return convertF5({
       ckpt: ckptBytes, ckptName, vocab: vocabText, vocos: vocosBytes, vocosName, dtype: opts.dtype || "bf16", quant: opts.quant || "",
-      tokenizer, variant: opts.variant || variant, vocosConfig, vocosPadding: opts.vocosPadding, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, pinyin, dimHead: opts.dimHead, mel: opts.mel, hash: opts.hash, onWarn: status,
+      tokenizer, variant: opts.variant || variant, vocosConfig, vocosPadding: opts.vocosPadding, vocosDtype: opts.vocosDtype, modelCfg: opts.modelCfg, textMaskPadding: opts.textMaskPadding, peAttnHead: opts.peAttnHead, pinyin, dimHead: opts.dimHead, mel: opts.mel, hash: opts.hash, onWarn: status,
       onProgress: (st, f) => { if (opts.onProgress && st === "convert") opts.onProgress(f, 0, 0, "convert"); },
     });
   };

@@ -481,6 +481,10 @@ def main(argv=None):
     if not os.path.isdir(model):
         from huggingface_hub import snapshot_download
         model = snapshot_download(model)
+    if any(Path(model).glob("cosyvoice2*.yaml")):   # CosyVoice2 release folder
+        from .build_cosyvoice import build as build_cosy
+        build_cosy(model, a.out, a.dtype, "f32", True, sha=not a.no_hash)
+        return
     build(model, a.out, a.dtype, a.quant, a.codec_dtype, sha=not a.no_hash)
 
 

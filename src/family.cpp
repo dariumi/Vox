@@ -15,6 +15,7 @@ struct Registry {
         families.push_back(make_test_family());
         families.push_back(make_f5_family());
         families.push_back(make_kokoro_family());
+        families.push_back(make_cosyvoice_family());
     }
 };
 Registry &registry() {
