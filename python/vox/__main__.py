@@ -2,7 +2,7 @@
 import sys
 
 USAGE = """usage: python -m vox COMMAND ...
-  build   Hugging Face Qwen3-TTS checkpoint -> .tmod   (a CosyVoice2 folder too; also: python -m vox.build_f5 / vox.build_kokoro / vox.build_cosyvoice)
+  build   Hugging Face Qwen3-TTS checkpoint -> .tmod   (a CosyVoice2 or Chatterbox folder too; also: python -m vox.build_f5 / vox.build_kokoro / vox.build_cosyvoice / vox.build_chatterbox)
   serve   HTTP synthesis server with streaming (one model)
   web     the engine for Vox Studio: models, voice profiles, history; prints a link with a secret"""
 

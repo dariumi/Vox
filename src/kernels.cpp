@@ -756,6 +756,68 @@ void transformer_forward(const TransformerW &w, KVCache &kv, const float *x_in, 
     if (out_all) for (int64_t i = 0; i < m; ++i) rmsnorm(&h[size_t(i * H)], w.final_norm, H, w.eps, out_all + i * H);
 }
 
+void transformer_forward_steps(const TransformerW &w, KVCache *const *kvs, int64_t B, const float *x_in, float *out) {
+    const int64_t H = w.hidden, nh = w.heads, nkv = w.kv_heads, hd = w.head_dim, I = w.inter;
+    const int64_t qd = nh * hd, kd = nkv * hd, group = nh / nkv;
+    if (w.gpu_id >= 0 || w.window > 0) fail(VOX_ERR_UNSUPPORTED, "transformer_forward_steps: CPU, no sliding window");
+    for (int64_t b = 0; b < B; ++b)
+        if (kvs[b]->k.size() != w.layers.size()) kvs[b]->init(int(w.layers.size()));
+    const float scale = 1.0f / std::sqrt(float(hd));
+    std::vector<float> h(x_in, x_in + B * H), xn(size_t(B * H)), q(size_t(B * qd)), k(size_t(B * kd)), v(size_t(B * kd)),
+        ao(size_t(B * qd)), o(size_t(B * H)), g(size_t(B * I)), u(size_t(B * I)), d(size_t(B * H));
+    for (size_t li = 0; li < w.layers.size(); ++li) {
+        const LayerW &L = w.layers[li];
+        for (int64_t i = 0; i < B; ++i) rmsnorm(&h[size_t(i * H)], L.ln1, H, w.eps, &xn[size_t(i * H)]);
+        matmul(L.q, xn.data(), B, q.data());
+        matmul(L.k, xn.data(), B, k.data());
+        matmul(L.v, xn.data(), B, v.data());
+        for (int64_t i = 0; i < B; ++i) {
+            float *qi = &q[size_t(i * qd)], *ki = &k[size_t(i * kd)];
+            if (L.qn) for (int64_t hh = 0; hh < nh; ++hh) rmsnorm(qi + hh * hd, L.qn, hd, w.eps, qi + hh * hd);
+            if (L.kn) for (int64_t hh = 0; hh < nkv; ++hh) rmsnorm(ki + hh * hd, L.kn, hd, w.eps, ki + hh * hd);
+            rope_apply(qi, nh, hd, w.inv_freq.data(), kvs[i]->len);
+            rope_apply(ki, nkv, hd, w.inv_freq.data(), kvs[i]->len);
+            auto &K = kvs[i]->k[li], &V = kvs[i]->v[li];
+            K.insert(K.end(), ki, ki + kd);
+            V.insert(V.end(), &v[size_t(i * kd)], &v[size_t(i * kd)] + kd);
+        }
+        parallel_for(B * nh, 1, [&](int64_t t0, int64_t t1) {
+            std::vector<float> sc;
+            for (int64_t t = t0; t < t1; ++t) {
+                const int64_t i = t / nh, hh = t % nh, gk = hh / group;
+                const KVCache &c = *kvs[i];
+                const int64_t n = c.len + 1;
+                const std::vector<float> &K = c.k[li], &V = c.v[li];
+                sc.resize(size_t(n));
+                const float *qh = &q[size_t(i * qd + hh * hd)];
+                for (int64_t j = 0; j < n; ++j) sc[size_t(j)] = scale * dot(qh, &K[size_t(j * kd + gk * hd)], hd);
+                softmax_inplace(sc.data(), n);
+                float *oh = &ao[size_t(i * qd + hh * hd)];
+                for (int64_t e = 0; e < hd; ++e) oh[e] = 0;
+                for (int64_t j = 0; j < n; ++j) {
+                    const float p = sc[size_t(j)];
+                    const float *vj = &V[size_t(j * kd + gk * hd)];
+                    for (int64_t e = 0; e < hd; ++e) oh[e] += p * vj[e];
+                }
+            }
+        });
+        matmul(L.o, ao.data(), B, o.data());
+        if (L.attn_scale) for (int64_t i = 0; i < B; ++i) for (int64_t e = 0; e < H; ++e) o[size_t(i * H + e)] *= L.attn_scale[e];
+        for (int64_t i = 0; i < B * H; ++i) h[size_t(i)] += o[size_t(i)];
+        for (int64_t i = 0; i < B; ++i) rmsnorm(&h[size_t(i * H)], L.ln2, H, w.eps, &xn[size_t(i * H)]);
+        matmul(L.gate, xn.data(), B, g.data());
+        matmul(L.up, xn.data(), B, u.data());
+        for (int64_t i = 0; i < B * I; ++i) g[size_t(i)] = silu(g[size_t(i)]) * u[size_t(i)];
+        matmul(L.down, g.data(), B, d.data());
+        if (L.mlp_scale) for (int64_t i = 0; i < B; ++i) for (int64_t e = 0; e < H; ++e) d[size_t(i * H + e)] *= L.mlp_scale[e];
+        for (int64_t i = 0; i < B * H; ++i) h[size_t(i)] += d[size_t(i)];
+    }
+    for (int64_t i = 0; i < B; ++i) {
+        kvs[i]->len += 1;
+        rmsnorm(&h[size_t(i * H)], w.final_norm, H, w.eps, out + i * H);
+    }
+}
+
 bool transformer_step_fused(const TransformerW &w, KVCache &kv, const float *x, int64_t m, const Mat *in_proj, const Mat *head,
                             float *out_last, float *head_out) {
     if (w.gpu_id < 0 || kv.gpu_seq < 0) return false;

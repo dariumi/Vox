@@ -483,7 +483,11 @@ def main(argv=None):
         model = snapshot_download(model)
     if any(Path(model).glob("cosyvoice2*.yaml")):   # CosyVoice2 release folder
         from .build_cosyvoice import build as build_cosy
-        build_cosy(model, a.out, a.dtype, "f32", True, sha=not a.no_hash)
+        build_cosy(model, a.out, a.dtype, "f32", True, sha=not a.no_hash, quant="q8" if a.quant == "q8" else "")
+        return
+    if (Path(model) / "t3_cfg.safetensors").exists() and (Path(model) / "s3gen.safetensors").exists():   # Chatterbox
+        from .build_chatterbox import build as build_cb
+        build_cb(model, a.out, a.dtype, "f32", True, sha=not a.no_hash, quant="q8" if a.quant == "q8" else "")
         return
     build(model, a.out, a.dtype, a.quant, a.codec_dtype, sha=not a.no_hash)
 

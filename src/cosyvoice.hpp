@@ -42,6 +42,10 @@ struct CosyCfg {
     // frontend
     int mel_n_fft = 1920, mel_hop = 480;
     bool has_campplus = false, has_s3 = false;
+    // variants used by Chatterbox's S3Gen (same networks): no LLM in the file, Gaussian noise drawn per utterance instead of the
+    // fixed table, Euler steps dt = t[i+1] − t[i], the older SineGen
+    bool has_llm = true, fixed_noise = true, dt_diff = false;
+    int sinegen = 2;
     int s3_dim = 1280, s3_heads = 20, s3_layers = 6, s3_mels = 128;
 };
 
@@ -83,8 +87,10 @@ public:
     // ---- flow ----
     struct FlowTrace { std::vector<float> spk, mu, mel; };
     // tokens = prompt tokens + new tokens; prompt_feat [Tp][80]; xvec [192] → mel of the new tokens [T][80]
+    // seed / piece: the starting noise when the model has no fixed table; z0 [80][T] (prompt + new frames) overrides it (tests)
     void flow(const std::vector<int32_t> &prompt_tokens, const std::vector<int32_t> &tokens, const std::vector<float> &prompt_feat,
-              const std::vector<float> &xvec, std::vector<float> &mel, FlowTrace *tr = nullptr) const;
+              const std::vector<float> &xvec, std::vector<float> &mel, FlowTrace *tr = nullptr, uint64_t seed = 1, uint32_t piece = 0,
+              const std::vector<float> *z0 = nullptr) const;
 
     // ---- HiFT ----
     struct HiftTrace { std::vector<float> f0, source; };

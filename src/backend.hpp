@@ -178,6 +178,7 @@ std::shared_ptr<Family> make_test_family();
 std::shared_ptr<Family> make_f5_family();
 std::shared_ptr<Family> make_kokoro_family();
 std::shared_ptr<Family> make_cosyvoice_family();
+std::shared_ptr<Family> make_chatterbox_family();
 
 void write_test_model(const std::string &path);
 // Короткий путь: строка устройства → план → бэкенд (CLI verify, тесты). Движок использует plan_for_model + create_backend.

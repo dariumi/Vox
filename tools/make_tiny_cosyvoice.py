@@ -138,7 +138,7 @@ feat_extractor: !name:matcha.utils.audio.mel_spectrogram
     hop_size: 480
     win_size: 1920
     fmin: 0
-    fmax: null
+    fmax: 8000
     center: False
 
 get_tokenizer: !name:cosyvoice.tokenizer.tokenizer.get_qwen_tokenizer
@@ -215,7 +215,7 @@ def to_weight_g_v(sd):
 def matcha_mel(torch, y):
     """matcha.utils.audio.mel_spectrogram with the parameters of cosyvoice2.yaml (feat_extractor)."""
     from matcha.utils.audio import mel_spectrogram
-    return mel_spectrogram(y, n_fft=1920, num_mels=80, sampling_rate=24000, hop_size=480, win_size=1920, fmin=0, fmax=None,
+    return mel_spectrogram(y, n_fft=1920, num_mels=80, sampling_rate=24000, hop_size=480, win_size=1920, fmin=0, fmax=8000,
                            center=False)
 
 

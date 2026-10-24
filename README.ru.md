@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.16.0-2a78d6" alt="версия 0.16.0">
+  <img src="https://img.shields.io/badge/version-0.17.0-2a78d6" alt="версия 0.17.0">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -31,7 +31,7 @@
 
 | | |
 |---|---|
-| 🧩 **Несколько семейств моделей, один рантайм** | Qwen3-TTS (клонирование, готовые дикторы, голос по описанию), F5-TTS (клонирование, flow matching), Kokoro-82M (именные голоса и их смеси), CosyVoice2-0.5B (клонирование, инструкции, собственные теги смеха и дыхания). Новые семейства подключаются на C++ или Python. |
+| 🧩 **Несколько семейств моделей, один рантайм** | Qwen3-TTS (клонирование, готовые дикторы, голос по описанию), F5-TTS (клонирование, flow matching), Kokoro-82M (именные голоса и их смеси), CosyVoice2-0.5B (клонирование, инструкции, собственные теги смеха и дыхания), Chatterbox (клонирование без расшифровки, «преувеличение» эмоций). Новые семейства подключаются на C++ или Python. |
 | 🎛️ **Ресурсы под контролем** | устройство, лимиты RAM и VRAM, потоки и приоритет, режим (speed / balanced / memory / background); `vox plan` показывает, куда пойдёт каждая стадия, не загружая веса. |
 | 🔁 **Стриминг в обе стороны** | текст может приходить по словам от LLM, аудио уходит чанками; правки ещё не произнесённого хвоста применяются. |
 | 🎯 **Сверено с официальным кодом** | каждое семейство сравнивается по стадиям с официальной реализацией на PyTorch (см. [Что проверено](#что-проверено)). |
@@ -57,6 +57,7 @@ flowchart LR
         F["F5-TTS<br/>flow matching"]
         K["Kokoro-82M<br/>StyleTTS2 + iSTFTNet"]
         C["CosyVoice2<br/>LM + flow + HiFT"]
+        CB["Chatterbox<br/>T3 + S3Gen"]
         P["Семейства на Python<br/>vox.register_family"]
     end
     subgraph hw["Бэкенды"]
@@ -68,7 +69,7 @@ flowchart LR
     CLI & PY & SRV --> ABI --> engine
     engine --> fam
     Q & F --> CPU & VK
-    K & C & P --> CPU
+    K & C & CB & P --> CPU
     TM -.-> fam
     TV -.-> SES
     JS["vox.js в браузере<br/>WebGPU · JS-запасной путь"] -.те же форматы и seed.-> TM
@@ -84,8 +85,9 @@ flowchart LR
 | **F5-TTS** v1 / v0 и дообучения | клон по записи и её тексту | зависят от чекпойнта (база en/zh, русские дообучения) | ✅ | ✅ весь граф | ✅ | по предложениям |
 | **Kokoro-82M** *(новое в 0.14)* | именные голоса из `voices/*.pt` и смеси `af_heart,bf_emma` | английский со встроенным G2P | ✅ | — | — | по предложениям / строкам |
 | **CosyVoice2-0.5B** *(новое в 0.16)* | клон по записи (с её текстом — zero-shot, без — cross-lingual), инструкции и эмоции (instruct2) | zh, en, ja, ko, yue (как обучена) | ✅ | — | — | группами предложений |
+| **Chatterbox** (английский) *(новое в 0.17)* | клон по записи без её текста; встроенный голос; эмоции через «exaggeration» | en | ✅ | — | — | группами предложений |
 
-В очереди: Chatterbox (у него общие с CosyVoice2 вокодер и flow), XTTS. Семейство описывает себя само (`vox inspect`, `engine.capabilities`), а нарезку,
+В очереди: XTTS, Chatterbox Multilingual / Turbo. Семейство описывает себя само (`vox inspect`, `engine.capabilities`), а нарезку,
 кроссфейды и политику коммита берёт на себя движок.
 
 ## Быстрый старт
@@ -135,6 +137,18 @@ Vulkan включается сам, если найдены заголовки (
     vox say "Привет! [смех] Это CosyVoice2 в vox." --model cosyvoice2.tmod --voice me.tvoice -o out.wav
     vox say "[радостно] Какой хороший день!" --model cosyvoice2.tmod --voice me.tvoice -o happy.wav   # эмоция → instruct2
     vox phonemize --model cosyvoice2.tmod "It costs 25 dollars."                                     # на какие куски разрежет
+
+</details>
+
+<details>
+<summary><b>Chatterbox</b>: конвертация, встроенный голос, клон, exaggeration</summary>
+
+    pip install torch safetensors   # только для конвертера
+    python -m vox.build_chatterbox --model ./chatterbox -o chatterbox.tmod      # T3 в bf16 (--quant q8 — 8 бит), S3Gen в f32
+    vox say "Hello from Chatterbox in vox." --model chatterbox.tmod --speaker default -o out.wav
+    vox voice create ref.wav --model chatterbox.tmod --xvector-only -o me.tvoice     # текст записи не нужен
+    vox say "[excited] We won!" --model chatterbox.tmod --voice me.tvoice -o won.wav  # эмоция → exaggeration / cfg_weight
+    vox say "Calm down." --model chatterbox.tmod --voice me.tvoice --extra '{"exaggeration":0.3,"cfg_weight":0.5}' -o calm.wav
 
 </details>
 
@@ -226,6 +240,11 @@ LLM тратит 96 мс на речевой токен в bf16 и 59 мс с `-
 и новым кадрам вместе — 16 с на 2,4 с речи при подсказке 2,3 с (≈ 1 ТФЛОП на 4 с речи). HiFT добавляет ~0,6 с на секунду звука. Всего RTF ≈ 7–10 на 2 ядрах;
 настольный процессор на 8–16 ядер будет в разы быстрее, но этой модели по-настоящему нужна видеокарта, а на GPU vox её пока не запускает.
 О качестве эти цифры ничего не говорят: веса были случайные.
+
+**Chatterbox** (0.17, только CPU) замерен так же (`tools/make_tiny_chatterbox.py --full`, 2 ядра, 60 речевых токенов = 2,4 с, встроенная подсказка 3,2 с):
+T3 (Llama на 30 слоёв, два прохода на токен для classifier-free guidance, считаются одним пакетом) — 15,1 с в bf16 и 9,3 с с `--quant q8` вместе с prefill,
+то есть около 250 / 150 мс на токен; flow из S3Gen (те же сети, что у CosyVoice2) — 23,7 с, HiFT — 1,8 с. Всего RTF ≈ 15–17 на 2 ядрах, пик памяти 1,8 ГБ (1,4 ГБ с q8).
+И этой модели тоже нужна видеокарта, а на GPU vox её пока не запускает.
 
 ## Как работает каждая модель
 
@@ -359,6 +378,39 @@ flowchart LR
 - **Параметры**: `speed` (mel растягивается, как в `token2wav`), зерно. LLM сэмплирует по официальным правилам RAS
   (top-p 0.8, top-k 25, окно 10 против повторов, конец речи не раньше 2 токенов на токен текста) на Philox: одно зерно — один и тот же звук,
   но не те же токены, что дал бы генератор PyTorch.
+</details>
+
+<details open>
+<summary><b>Chatterbox</b> <i>(новое в 0.17)</i>: T3 (Llama по речевым токенам, CFG) → S3Gen (flow matching + HiFT)</summary>
+
+```mermaid
+flowchart LR
+    T["текст"] --> PN["punc_norm<br/>tokenizer.json (BPE по символам)"]
+    V[".tvoice<br/>эмбеддинг диктора · 6 с речевых токенов<br/>mel · токены · x-vector"] --> COND
+    COND["условие<br/>диктор · perceiver · exaggeration"] --> T3
+    PN --> T3["T3: Llama 0.5B, 30 слоёв<br/>CFG, min-p, штраф за повторы"]
+    T3 --> ENC["энкодер flow<br/>Conformer, ×2 → 50 Гц"]
+    V --> CFM
+    ENC --> CFM["flow matching<br/>10 шагов Эйлера, CFG 0.7"]
+    CFM --> HIFT["вокодер HiFT"]
+    HIFT --> PCM["PCM 24 кГц"]
+```
+
+- **Конвертация**: `python -m vox.build_chatterbox --model DIR` (или `python -m vox build --model DIR`) читает `t3_cfg.safetensors`, `s3gen.safetensors`,
+  `ve.safetensors`, `tokenizer.json` и `conds.pt` (встроенный голос, он называется `default`). T3 хранится в `--dtype` (bf16), его линейные слои с `--quant q8` —
+  в 8 битах; S3Gen остаётся в f32. Размеры S3Gen читаются из весов, batch norm в CAM++ сворачиваются в масштаб и сдвиг.
+- **T3** — английская модель ChatterboxTTS: строки условия (эмбеддинг VoiceEncoder через проекцию, perceiver по ≤ 150 речевым токенам подсказки,
+  `exaggeration` × выученный вектор), текст с выученными позициями, две строки начала речи; дальше по токену с classifier-free guidance (в безусловном
+  проходе эмбеддинги текста обнулены), штраф за повторы → температура → min-p → top-p → выбор на Philox.
+- **S3Gen** — flow и HiFT из CosyVoice2 без LLM, с тремя отличиями Chatterbox: начальный шум тянется на каждую фразу, шаги Эйлера берут
+  `dt = t[i+1] − t[i]`, источник HiFT — первый SineGen. Первые 40 мс каждого куска получают официальное плавное нарастание.
+- **Голоса** клонируются по записи без её текста, как в `prepare_conditionals`: 24 кГц (первые 10 с) → mel, речевые токены и x-vector CAM++ для S3Gen;
+  16 кГц → эмбеддинг VoiceEncoder (LSTM по окнам 1,6 с) и 6-секундная речевая подсказка T3.
+- **Эмоции**: манифест сопоставляет тегам эмоций движка настройки Chatterbox (`[радостно]` → exaggeration 0.8, cfg_weight 0.3; `[спокойно]` → 0.3 …).
+  Опции: `exaggeration`, `cfg_weight` (0 — один проход без guidance; официальный код так не умеет), `temperature`, `repetition_penalty`, `min_p`, `top_p`,
+  `max_new_tokens` (1000), `max_chars` (300: текст режется на группы предложений такой длины; официальный код читает его целиком).
+- **Без водяного знака**: официальный `ChatterboxTTS` помечает всё, что говорит, водяным знаком Perth от Resemble. vox этого не делает.
+
 </details>
 
 ## Профили голосов: несколько голосов, эмоции, любые модели
@@ -591,6 +643,7 @@ sequenceDiagram
 | Qwen3-TTS | `qwen_tts` 0.1.1 (`generate_voice_clone`, `generate_custom_voice`, `generate_voice_design`) | speaker embedding ≤ 4e-7; коды референса совпадают на 100%; логиты talker / predictor ≤ 1e-6 / 1e-5, argmax 100%; аудио декодера ≤ 3e-4; на **настоящей 1.7B-Base**: логиты ≤ 2.6e-4, argmax 100% |
 | F5-TTS | `f5_tts` + `vocos` | токенизатор, мел, текстовый энкодер, DiT (обе ветки CFG), Vocos, цикл CFM ~1e-6; сквозное аудио 3e-9; GPU-граф на lavapipe 4e-9; **настоящий** `hotstone228/F5-TTS-Russian`: мел ~5e-6 (f32), ошибка одна и та же на CPU, RTX 3050 и RTX 5050 |
 | CosyVoice2 | репозиторий CosyVoice (`CosyVoice2Model`, `CosyVoiceFrontEnd`), onnxruntime, s3tokenizer | mel 24 кГц 2e-6, fbank 3e-5, x-vector CAM++ 2.5e-7, mel Whisper 2e-5, речевые токены 100%, лог-вероятности LLM 2e-7 при совпадении argmax 100%, mel flow 3e-7, звук HiFT 1.4e-4 (отн.); целые фразы через движок (голос из WAV, официальные токены и шум) — max \|Δ\| 7e-6–1.4e-5 во всех трёх режимах; куски текста совпадают с `text_normalize` на 8 текстах. **Настоящие веса пока не проверены** |
+| Chatterbox | `chatterbox-tts` 0.1.7 (`ChatterboxTTS.generate`, `prepare_conditionals`) | токены текста 100% на 8 текстах; VoiceEncoder 7e-7, условие T3 3e-7, логиты T3 с CFG 1e-6 на каждом шаге, mel flow 4e-7, F0 HiFT 5e-7, звук 6e-5 (отн.); целые фразы через движок (встроенный голос, официальные токены и шум, четыре набора опций) — max \|Δ\| 4e-6–1.3e-5; клонированный голос: подсказка S3Gen та же, косинус VoiceEncoder 0.999997. **Настоящие веса пока не проверены** |
 | Kokoro-82M | `kokoro` 0.7.16 + `misaki` 0.7.4 (`KModel`, `KPipeline`) | каждая стадия (PL-BERT, энкодер длительностей, длительности, F0/N, текстовый энкодер, выравнивание, источник NSF, STFT, генератор) до ~1e-6; во всех сквозных сценариях та же длина, log-mel 0.16–0.71 дБ (2.64 дБ при другом шуме); G2P — 92.1% слов против misaki; **настоящая Kokoro-82M**: длина как у официальной (8,000 с), средний \|Δ log-mel\| 0,125, whisper слышит те же слова |
 | vox.js | ядро и официальные дампы | аудио F5 3.7e-9; конвертация Qwen3 байт в байт, аудио = `vox say --seed`; CPU-путь < 1e-4 |
 | Привязки | `vox say --seed 42` | C, C++, Rust, Go, Node.js, Python ctypes — бит в бит |
@@ -649,13 +702,14 @@ Python ctypes. `tests/test_examples.py` собирает каждую и тре�
 | `src/kokoro.cpp`, `src/backend_kokoro.cpp` | Kokoro-82M: PL-BERT, предиктор просодии, текстовый энкодер, декодер, генератор iSTFTNet |
 | `src/kokoro_g2p.cpp`, `src/kokoro_g2p_en.cpp` | английский G2P (порт misaki.en) и нарезка на куски как в KPipeline |
 | `src/cosyvoice.cpp`, `src/cosyvoice_front.cpp`, `src/backend_cosyvoice.cpp` | CosyVoice2: Qwen2 LM, flow (Conformer + CFM), HiFT; mel / fbank / CAM++ / токенизатор S3; текстовый фронтенд |
+| `src/chatterbox.cpp`, `src/backend_chatterbox.cpp`, `src/hf_tokenizer.cpp` | Chatterbox: T3, VoiceEncoder, нарезка на куски; чтение `tokenizer.json` (BPE) |
 | `src/nn.cpp` | общие слои свёрточных моделей (свёртки, источник NSF, STFT / iSTFT, внимание, ресэмплер torchaudio) |
 | `src/profile.cpp`, `src/markup.cpp` | профили голосов (формат, правка, сборка под разные модели) и разметка текста |
 | `src/resources.cpp`, `src/family.cpp` | планировщик ресурсов и бюджет сессий; реестр семейств моделей (C++ и Python) |
 | `src/kernels.cpp` | пулы потоков, matmul (f32/f16/bf16, q8 и q4 int8-dot AVX2), трансформер (включая гибрид GPU/CPU) |
 | `src/gpu_vulkan.cpp`, `src/gpu_codec.cpp`, `src/shaders/*.comp` | Vulkan: matmul, трансформер, декодер кодека, профайлер; шейдеры GLSL (SPIR-V в `src/vk_shaders.inc`) |
 | `webgpu/wgsl/`, `webgpu/web/src/` | WGSL-шейдеры и исходники `vox.js` (`tools/build_web.py`) |
-| `python/vox` | Python API, конвертеры `vox.build` / `vox.build_f5` / `vox.build_kokoro` / `vox.build_cosyvoice`, сервер `vox.serve`, фронтенд misaki |
+| `python/vox` | Python API, конвертеры `vox.build` / `vox.build_f5` / `vox.build_kokoro` / `vox.build_cosyvoice` / `vox.build_chatterbox`, сервер `vox.serve`, фронтенд misaki |
 | `site/`, `docs/` | страница проекта и её сборка для GitHub Pages; в `docs/img/` графики |
 | `tools/` | эталоны, полный прогон, крошечные модели (`make_tiny_*.py`), графики |
 | `tests/`, `examples/` | модульные и эталонные тесты; клиенты на шести языках |
@@ -667,6 +721,7 @@ Python ctypes. `tests/test_examples.py` собирает каждую и тре�
     VOX_QWEN2_GGUF=qwen2.gguf VOX_TEST_DEVICES="cpu;vulkan:0" python tests/test_official.py build/vox
     python tests/test_kokoro_tiny.py build/vox
     VOX_COSYVOICE_SRC=CosyVoice VOX_QWEN2_GGUF=qwen2.gguf python tests/test_cosyvoice_tiny.py build/vox   # клон FunAudioLLM/CosyVoice
+    python tests/test_chatterbox_tiny.py build/vox                                                        # pip install chatterbox-tts
 
 Словарь для тестов: `curl -L -o qwen2.gguf https://raw.githubusercontent.com/ggml-org/llama.cpp/master/models/ggml-vocab-qwen2.gguf`.
 CI (`.github/workflows/ci.yml`) гоняет всё это на CPU и на lavapipe.
@@ -679,7 +734,10 @@ CI (`.github/workflows/ci.yml`) гоняет всё это на CPU и на lava
 - F5-TTS при 32 шагах на GPU всё ещё медленнее реального времени (RTF 5 на RTX 5050); графу нужен `dim_head ≤ 64` (так у всех официальных чекпойнтов).
 - **CosyVoice2**: только CPU. В текстовом фронтенде нет ttsfrd / wetext (в китайском тексте числа остаются цифрами — как в официальном коде без них). Звук выходит
   группами предложений, а не по токенам (официальный двусторонний стриминг не реализован). С официальным кодом сверено только на крошечной модели.
-- Основной путь рассчитан на авторегрессионные кодековые модели; не-AR подключаются через режим «direct» `Backend` (так сделаны F5, Kokoro и CosyVoice2). XTTS и Chatterbox пока не подключены.
+- **Chatterbox**: только CPU и только английская модель (не Multilingual и не Turbo). Звук выходит группами предложений. Для подсказки T3 клонированный голос
+  переводится в 16 кГц алгоритмом torchaudio, а официальный код — soxr: подсказка S3Gen и эмбеддинг диктора совпадают, часть из 150 токенов подсказки T3
+  может отличаться. С официальным кодом сверено только на крошечной модели.
+- Основной путь рассчитан на авторегрессионные кодековые модели; не-AR подключаются через режим «direct» `Backend` (так сделаны F5, Kokoro, CosyVoice2 и Chatterbox). XTTS пока не подключён.
 - Официальный `non_streaming_mode=True` (весь текст в prefill) не реализован. Python-бэкенд считает на CPU в интерпретаторе — для прототипов.
 - Сэмплинг на GPU считает в float, на CPU — в double. Тот же seed на том же устройстве даёт то же аудио.
 - Ресемплинг входа для голоса — sinc/Kaiser; бит в бит с `qwen_tts` (soxr) только для WAV 24 кГц.

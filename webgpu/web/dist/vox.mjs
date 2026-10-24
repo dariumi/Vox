@@ -1,4 +1,4 @@
-/*! vox.js 0.16.0 — универсальный TTS-движок vox в браузере (WebGPU). Лицензия — как у проекта: https://github.com/dariumi/Vox */
+/*! vox.js 0.17.0 — универсальный TTS-движок vox в браузере (WebGPU). Лицензия — как у проекта: https://github.com/dariumi/Vox */
 "use strict";
 // Сгенерировано tools/gen_wgsl.py из webgpu/wgsl/*.wgsl — не править вручную.
 const KERNELS = {
@@ -744,7 +744,7 @@ fn main(@builtin(global_invocation_id) g: vec3<u32>) {
 // Эта часть: утилиты, формат .tmod, форматы весов, Philox-шум, расписание шагов.
 // ============================================================================
 
-const VOX_VERSION = "0.16.0";
+const VOX_VERSION = "0.17.0";
 // Папка, откуда загружен vox.js: рядом лежат pinyin.json и прочие ресурсы. Меняется через Vox.config({ baseUrl }).
 let VOX_BASE_URL = "";
 try { if (typeof document !== "undefined" && document.currentScript && document.currentScript.src) VOX_BASE_URL = document.currentScript.src.replace(/[^/]*$/, ""); } catch (e) { /* ок */ }

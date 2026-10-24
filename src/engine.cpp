@@ -20,7 +20,7 @@
 using namespace vox;
 
 #ifndef VOX_VERSION_STRING
-#define VOX_VERSION_STRING "0.16.0"
+#define VOX_VERSION_STRING "0.17.0"
 #endif
 
 extern std::string vox_internal_last_error();
@@ -48,6 +48,7 @@ struct SegSpec {
     std::string voice, style;   // "" = the profile's default voice / the voice's default style
     double speed = 1.0;         // [speed x]
     std::string extra_instruct; // set when an emotion has no style in the profile and the model takes instructions
+    std::string extra_opts;     // JSON object of generation options standing in for an emotion (manifest "emotion_options")
 };
 struct QueuedSeg {
     SegSpec spec;
@@ -326,6 +327,13 @@ std::string emotion_instruct_for(const vox_engine *e, const std::string &emo) {
     }
     return emotion_instruct(emo);
 }
+// generation options the model's manifest gives for an emotion ("emotion_options": {"excited": {"exaggeration": 0.8}}), as JSON; "" if none
+std::string emotion_options_for(const vox_engine *e, const std::string &emo) {
+    const json &m = e->tmod->manifest();
+    if (m.contains("emotion_options") && m["emotion_options"].is_object() && m["emotion_options"].contains(emo) && m["emotion_options"][emo].is_object())
+        return m["emotion_options"][emo].dump();
+    return "";
+}
 // speaking-rate factor standing in for an emotion on models that only have a speed (F5, Kokoro)
 double emotion_speed(const std::string &e) {
     static const std::map<std::string, double> m = {{"happy", 1.05}, {"excited", 1.12}, {"angry", 1.08}, {"shout", 1.08}, {"fear", 1.06},
@@ -422,6 +430,10 @@ void begin_segment(vox_session *s, const SegSpec &spec) {
     for (auto it = vs.begin(); it != vs.end(); ++it) so.options[it.key()] = it.value();
     for (auto it = s->session_extra.begin(); it != s->session_extra.end(); ++it) so.options[it.key()] = it.value();
     if (spec.speed != 1.0 && c.speed) so.options["speed"] = so.options.value("speed", 1.0) * spec.speed;
+    if (!spec.extra_opts.empty()) {
+        const json eo = json::parse(spec.extra_opts);
+        for (auto it = eo.begin(); it != eo.end(); ++it) so.options[it.key()] = it.value();
+    }
     const std::string lang = !s->language.empty() ? s->language : v->language;
     s->st = e->backend->begin(*v, lang);
     e->backend->configure(*s->st, so);
@@ -509,7 +521,7 @@ void apply_ops(vox_session *s, const std::vector<MarkupOp> &ops, bool tag_next) 
                 std::lock_guard<std::mutex> lk(s->prof->mu);
                 const std::string vk = find_key(s->prof->p.voices, op.s);
                 if (vk.empty()) { s->notes.push_back("[voice:" + op.s + "]: the profile has no such voice, ignored"); continue; }
-                spec.voice = vk; spec.style.clear(); spec.extra_instruct.clear(); spec.speed = 1.0;
+                spec.voice = vk; spec.style.clear(); spec.extra_instruct.clear(); spec.extra_opts.clear(); spec.speed = 1.0;
                 break;
             }
             case MarkupOp::Style: {
@@ -519,17 +531,19 @@ void apply_ops(vox_session *s, const std::vector<MarkupOp> &ops, bool tag_next) 
                     has = profile_has_style(s->prof->p, spec.voice, op.s);
                 }
                 spec.extra_instruct.clear();
+                spec.extra_opts.clear();
                 if (has) { spec.style = op.s; ++s->hints_applied; break; }
                 const std::string emo = markup_emotion(op.s);
                 spec.style.clear();
                 if (emo.empty()) { s->notes.push_back("[" + op.s + "]: no such style in the voice, ignored"); continue; }
-                if (c.instruct) { spec.extra_instruct = emotion_instruct_for(s->e, emo); ++s->hints_applied; }
+                if (!emotion_options_for(s->e, emo).empty()) { spec.extra_opts = emotion_options_for(s->e, emo); ++s->hints_applied; }
+                else if (c.instruct) { spec.extra_instruct = emotion_instruct_for(s->e, emo); ++s->hints_applied; }
                 else if (c.speed) { spec.speed = emotion_speed(emo); ++s->hints_applied; s->notes.push_back("[" + op.s + "]: no style in the profile; mapped to speed " + std::to_string(spec.speed).substr(0, 4)); }
                 else { s->notes.push_back("[" + op.s + "]: the voice has no such style and this model cannot express it (add a style with its own recording)"); continue; }
                 break;
             }
             case MarkupOp::Reset:
-                spec.style.clear(); spec.extra_instruct.clear(); spec.speed = 1.0;
+                spec.style.clear(); spec.extra_instruct.clear(); spec.extra_opts.clear(); spec.speed = 1.0;
                 break;
             case MarkupOp::Speed:
                 if (!c.speed) { s->notes.push_back("[speed]: this model has no speaking-rate control, ignored"); continue; }
@@ -551,7 +565,7 @@ void apply_ops(vox_session *s, const std::vector<MarkupOp> &ops, bool tag_next) 
             default: continue;
         }
         const SegSpec &cur = input_spec(s);
-        if (cur.voice == spec.voice && cur.style == spec.style && cur.speed == spec.speed && cur.extra_instruct == spec.extra_instruct) continue;
+        if (cur.voice == spec.voice && cur.style == spec.style && cur.speed == spec.speed && cur.extra_instruct == spec.extra_instruct && cur.extra_opts == spec.extra_opts) continue;
         if (!input_has_text(s)) { input_spec(s) = spec; s->after_tag = true; if (s->queue.empty()) switch_segment(s, spec, 0); continue; }
         switch_segment(s, spec, 0);
     }
@@ -1215,7 +1229,8 @@ VOX_API vox_status vox_session_create(vox_engine *e, const vox_voice *v, const v
                     fail(VOX_ERR_ARG, "the voice has no style '" + spec.style + "'; it has: " + all);
                 }
                 spec.style.clear();   // an emotion without a style of its own: mapped like the [emotion] tag
-                if (e->caps.instruct) spec.extra_instruct = emotion_instruct_for(e, emo);
+                if (!emotion_options_for(e, emo).empty()) spec.extra_opts = emotion_options_for(e, emo);
+                else if (e->caps.instruct) spec.extra_instruct = emotion_instruct_for(e, emo);
                 else if (e->caps.speed) spec.speed = emotion_speed(emo);
             }
             std::vector<std::string> names;
@@ -1351,6 +1366,7 @@ VOX_API vox_status vox_session_pull(vox_session *s, float *out, size_t cap, size
                 if (done) s->finished = s->flushed = true;
                 if (s->pcm.size() > before) continue;
                 if (done) { if (next_segment(s)) continue; result = VOX_DONE; return; }
+                if (inner_ended(s)) continue;   // текст весь: кусок без звука, модель идёт дальше сама
                 result = VOX_AGAIN;  // ждёт текст
                 return;
             }

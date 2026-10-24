@@ -41,7 +41,8 @@ for (;;) {
   const st = vox_session_pull(sess[0], buf, buf.length, written);
   if (st !== 0) { check(st, "pull"); break; }
   const n = Number(written[0]);
-  process.stdout.write(Buffer.from(buf.buffer, 0, n * 4));
+  // a copy: writes to a pipe are asynchronous, and buf is refilled by the next pull
+  process.stdout.write(Buffer.from(buf.slice(0, n).buffer));
   total += n;
 }
 console.error(`${total} samples @ ${vox_engine_sample_rate(engine)} Hz`);

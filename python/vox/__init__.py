@@ -29,7 +29,7 @@ except ImportError as _e:  # нативный модуль не собран: vo
     _vox = None
     _import_error = _e
 
-__version__ = _vox.VERSION if _vox else "0.16.0"
+__version__ = _vox.VERSION if _vox else "0.17.0"
 __all__ = ["Engine", "Voice", "Profile", "Session", "Duplex", "Resources", "VoxError", "OutOfMemory", "DeviceError", "devices", "inspect", "plan",
            "make_test_model", "register_family", "Family", "Backend", "Tmod", "load_wav", "save_wav", "__version__"]
 

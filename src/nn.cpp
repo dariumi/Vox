@@ -335,6 +335,40 @@ void nsf_source(const float *F0, int Tg, int up_total, double SR, int H, const f
     });
 }
 
+void nsf_source_v1(const float *F0, int Tg, int up, double SR, int H, const float *rand_ini, const float *noise, const float *wrow, float lb,
+                   std::vector<float> &out) {
+    const size_t L = size_t(Tg) * size_t(up), HH = size_t(H);
+    std::vector<float> theta(L * HH);   // [H][L]
+    parallel_for(H, 1, [&](int64_t a, int64_t e) {
+        for (int64_t h = a; h < e; ++h) {
+            double cs = 0.0;   // torch.cumsum on the CPU: double accumulator, float result
+            for (size_t j = 0; j < L; ++j) {
+                const float fm = (F0[j / size_t(up)] * float(h + 1)) / float(SR);
+                cs += double(fm);
+                float c = float(cs);
+                c = c - std::floor(c);   // % 1
+                theta[size_t(h) * L + j] = float(2.0 * kPi) * c;
+            }
+        }
+    });
+    std::vector<float> ph(HH, 0.f);
+    for (int h = 1; h < H; ++h) ph[size_t(h)] = float(-kPi) + rand_ini[h] * float(2.0 * kPi);   // Uniform(-π, π)
+    out.resize(L);
+    parallel_for(int64_t(L), 4096, [&](int64_t a, int64_t e) {
+        for (int64_t j = a; j < e; ++j) {
+            const float f0 = F0[size_t(j) / size_t(up)];
+            const float uv = f0 > 10.0f ? 1.0f : 0.0f;
+            const float namp = uv * 0.003f + (1.0f - uv) * (0.1f / 3.0f);
+            float acc = 0.f;
+            for (int h = 0; h < H; ++h) {
+                const float sw = 0.1f * std::sin(theta[size_t(h) * L + size_t(j)] + ph[size_t(h)]);
+                acc += (sw * uv + namp * noise[size_t(h) * L + size_t(j)]) * wrow[h];
+            }
+            out[size_t(j)] = std::tanh(acc + lb);
+        }
+    });
+}
+
 void stft_center(const std::vector<float> &x, int NF, int HOP, bool polar, std::vector<float> &har) {
     const int NB = NF / 2 + 1;
     const int64_t Ln = int64_t(x.size());

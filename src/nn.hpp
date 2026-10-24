@@ -81,6 +81,10 @@ std::vector<double> hann(int n);
 // Mirrors PyTorch's CPU arithmetic (linear interpolations, cumsum in double) → bit-exact on x86.
 void nsf_source(const float *f0, int Tg, int up, double sr, int H, const float *rand_ini, const float *noise, const float *w, float b,
                 std::vector<float> &out);
+// The older SineGen (CosyVoice 1 / Chatterbox's HiFT): harmonics integrated at the sample rate, theta = 2π·(cumsum(f/sr) mod 1),
+// random phases −π + 2π·rand_ini (fundamental 0), noise [H][L] (channel-major, as randn_like draws it).
+void nsf_source_v1(const float *f0, int Tg, int up, double sr, int H, const float *rand_ini, const float *noise, const float *w, float b,
+                   std::vector<float> &out);
 // torch.stft(center=True, reflect, periodic Hann, win = n_fft): x → [frames = L/hop + 1][2·(n_fft/2+1)],
 // either |X| then angle(X) (polar) or Re then Im
 void stft_center(const std::vector<float> &x, int n_fft, int hop, bool polar, std::vector<float> &out);

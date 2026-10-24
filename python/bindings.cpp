@@ -32,22 +32,26 @@ static void check(vox_status st) {
     if (st < 0) raise(st);
 }
 
-static std::string json_free(vox_status (*fn)(char *, size_t, size_t *)) {
+// Size query, then the call; the text can grow between the two (free memory in devices_json, timings in session info),
+// so a result that did not fit is fetched again with room to spare rather than truncated.
+template <class F> static std::string fetch_json(F &&fn) {
     size_t n = 0;
-    check(fn(nullptr, 0, &n));
-    std::string s(n + 1, '\0');
-    check(fn(s.data(), s.size(), &n));
-    s.resize(n);
-    return s;
+    check(fn(nullptr, size_t(0), &n));
+    for (int attempt = 0;; ++attempt) {
+        std::string s(n + 256, '\0');
+        size_t m = 0;
+        check(fn(s.data(), s.size(), &m));
+        if (m < s.size() || attempt >= 4) { s.resize(std::min(m, s.size() - 1)); return s; }
+        n = m;
+    }
+}
+
+static std::string json_free(vox_status (*fn)(char *, size_t, size_t *)) {
+    return fetch_json([&](char *b, size_t c, size_t *l) { return fn(b, c, l); });
 }
 
 static std::string json_of(vox_status (*fn)(const void *, char *, size_t, size_t *), const void *obj) {
-    size_t n = 0;
-    check(fn(obj, nullptr, 0, &n));
-    std::string s(n + 1, '\0');
-    check(fn(obj, s.data(), s.size(), &n));
-    s.resize(n);
-    return s;
+    return fetch_json([&](char *b, size_t c, size_t *l) { return fn(obj, b, c, l); });
 }
 
 struct Engine {
@@ -136,12 +140,7 @@ struct Session {
     void flush() { check(vox_session_flush(h)); }
     void set_pending(const std::string &t) { check(vox_session_set_pending(h, t.c_str())); }
     std::string info() {
-        size_t n = 0;
-        check(vox_session_info(h, nullptr, 0, &n));
-        std::string s(n + 1, '\0');
-        check(vox_session_info(h, s.data(), s.size(), &n));
-        s.resize(n);
-        return s;
+        return fetch_json([&](char *b, size_t c, size_t *l) { return vox_session_info(h, b, c, l); });
     }
     void cancel() { vox_session_cancel(h); }
     // Возвращает (status, chunk). chunk — numpy float32 без лишних копий.
@@ -201,20 +200,10 @@ NB_MODULE(_vox, m) {
     m.def("devices_json", [] { return json_free(vox_devices_json); });
     m.def("write_test_model", [](const std::string &path) { check(vox_write_test_model(path.c_str())); });
     m.def("inspect_json", [](const std::string &path) {
-        size_t n = 0;
-        check(vox_model_inspect(path.c_str(), nullptr, 0, &n));
-        std::string s(n + 1, '\0');
-        check(vox_model_inspect(path.c_str(), s.data(), s.size(), &n));
-        s.resize(n);
-        return s;
+        return fetch_json([&](char *b, size_t c, size_t *l) { return vox_model_inspect(path.c_str(), b, c, l); });
     }, "path"_a);
     m.def("plan_json", [](const std::string &path, const std::string &config_json) {
-        size_t n = 0;
-        check(vox_plan_json(path.c_str(), config_json.empty() ? nullptr : config_json.c_str(), nullptr, 0, &n));
-        std::string s(n + 1, '\0');
-        check(vox_plan_json(path.c_str(), config_json.empty() ? nullptr : config_json.c_str(), s.data(), s.size(), &n));
-        s.resize(n);
-        return s;
+        return fetch_json([&](char *b, size_t c, size_t *l) { return vox_plan_json(path.c_str(), config_json.empty() ? nullptr : config_json.c_str(), b, c, l); });
     }, "path"_a, "config_json"_a = "");
 
     nb::class_<vox_py::TmodView>(m, "TmodView")

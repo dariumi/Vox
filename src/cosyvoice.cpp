@@ -349,6 +349,8 @@ void load_cfg(const json &c, CosyCfg &g) {
         g.s3_layers = s.value("n_audio_layer", g.s3_layers); g.s3_mels = s.value("n_mels", g.s3_mels);
     }
     g.has_campplus = c.value("campplus", false);
+    if (c.contains("flow")) g.dt_diff = c.at("flow").value("dt", std::string("accumulate")) == "diff";
+    if (c.contains("hift")) g.sinegen = c.at("hift").value("sinegen", 2);
     (void)gf;
 }
 }  // namespace
@@ -358,12 +360,14 @@ CosyVoiceModel::CosyVoiceModel(std::shared_ptr<TmodFile> f) : p_(new Impl), file
     const json &m = F.manifest();
     if (!m.contains("cosyvoice")) fail(VOX_ERR_FORMAT, "not a CosyVoice .tmod (no \"cosyvoice\" section)");
     load_cfg(m.at("cosyvoice"), cfg_);
+    cfg_.has_llm = F.has("llm.embed_tokens.weight");
+    cfg_.fixed_noise = F.has("flow.rand_noise");
     Impl &P = *p_;
     const CosyCfg &c = cfg_;
     for (const auto &kv : F.blobs()) weight_bytes_ += kv.second.nbytes;
 
     // ---- LLM (Qwen2: q/k/v biases, no q/k norms) ----
-    {
+    if (c.has_llm) {
         TransformerW &w = P.lm;
         w.hidden = c.llm_hidden; w.heads = c.llm_heads; w.kv_heads = c.llm_kv_heads; w.head_dim = c.llm_head_dim;
         w.inter = c.llm_inter; w.eps = c.llm_eps; w.theta = c.llm_theta;
@@ -412,10 +416,12 @@ CosyVoiceModel::CosyVoiceModel(std::shared_ptr<TmodFile> f) : p_(new Impl), file
         for (int i = 0; i < c.enc_blocks; ++i) { RelLayer L; L.load(F, e + "encoders." + std::to_string(i) + "."); P.enc.push_back(std::move(L)); }
         for (int i = 0; i < c.enc_up_blocks; ++i) { RelLayer L; L.load(F, e + "up_encoders." + std::to_string(i) + "."); P.up_enc.push_back(std::move(L)); }
         P.after_w = vecf(F, e + "after_norm.weight"); P.after_b = vecf(F, e + "after_norm.bias");
-        const TensorView &rn = F.get("flow.rand_noise");
-        if (rn.shape.size() != 2 || rn.shape[0] != c.mel_dim) fail(VOX_ERR_FORMAT, "CosyVoice: flow.rand_noise must be [80][N]");
-        P.rand_noise = to_float(rn);
-        P.noise_len = int(rn.shape[1]);
+        if (c.fixed_noise) {
+            const TensorView &rn = F.get("flow.rand_noise");
+            if (rn.shape.size() != 2 || rn.shape[0] != c.mel_dim) fail(VOX_ERR_FORMAT, "CosyVoice: flow.rand_noise must be [80][N]");
+            P.rand_noise = to_float(rn);
+            P.noise_len = int(rn.shape[1]);
+        }
         const std::string d = "flow.decoder.estimator.";
         P.t1.load(F, d + "time_mlp.linear_1"); P.t2.load(F, d + "time_mlp.linear_2");
         P.down_res.load(F, d + "down_blocks.0.0.");
@@ -478,6 +484,7 @@ int CosyVoiceModel::text_vocab() const { return int(p_->embed.rows); }
 // ---------------------------------------------------------------- LLM
 std::unique_ptr<CosyVoiceModel::LmState> CosyVoiceModel::lm_begin(const std::vector<int32_t> &prompt_text, const std::vector<int32_t> &text,
                                                                   const std::vector<int32_t> &prompt_tokens) const {
+    if (!cfg_.has_llm) fail(VOX_ERR_UNSUPPORTED, "this .tmod has no CosyVoice LLM");
     const Impl &P = *p_;
     const int H = cfg_.llm_hidden;
     auto st = std::make_unique<LmState>();
@@ -601,7 +608,8 @@ std::vector<int32_t> CosyVoiceModel::lm_generate(const std::vector<int32_t> &pro
 
 // ---------------------------------------------------------------- flow
 void CosyVoiceModel::flow(const std::vector<int32_t> &prompt_tokens, const std::vector<int32_t> &tokens, const std::vector<float> &prompt_feat,
-                          const std::vector<float> &xvec, std::vector<float> &mel, FlowTrace *tr) const {
+                          const std::vector<float> &xvec, std::vector<float> &mel, FlowTrace *tr, uint64_t seed, uint32_t piece,
+                          const std::vector<float> *z0) const {
     const auto t0 = Clock::now();
     const Impl &P = *p_;
     const CosyCfg &c = cfg_;
@@ -656,16 +664,40 @@ void CosyVoiceModel::flow(const std::vector<int32_t> &prompt_tokens, const std::
     }
     std::vector<float> mu(size_t(T2) * M);
     P.enc_proj.forward(h.data(), T2, mu.data());
-    if (mel1 > T2) fail(VOX_ERR_ARG, "CosyVoice: the prompt mel is longer than its tokens");
+    if (mel1 >= T2) {   // no frames left after the prompt (a piece without speech tokens): nothing to say
+        mel.clear();
+        if (tr) { tr->mu.clear(); tr->mel.clear(); }
+        return;
+    }
     std::vector<float> cond(size_t(T2) * M, 0.f);
     std::memcpy(cond.data(), prompt_feat.data(), prompt_feat.size() * 4);
-    if (T2 > P.noise_len) fail(VOX_ERR_ARG, "CosyVoice: utterance too long for the flow noise (" + std::to_string(T2) + " > " + std::to_string(P.noise_len) + " frames)");
+    if (!z0 && c.fixed_noise && T2 > P.noise_len)
+        fail(VOX_ERR_ARG, "CosyVoice: utterance too long for the flow noise (" + std::to_string(T2) + " > " + std::to_string(P.noise_len) + " frames)");
     if (tr) { tr->spk = spk; tr->mu = mu; }
 
     // ---- CFM: Euler over a cosine schedule, conditional and unconditional estimator passes ----
     std::vector<float> z(size_t(T2) * M);
-    for (int t = 0; t < T2; ++t)
-        for (int m = 0; m < M; ++m) z[size_t(t) * M + m] = P.rand_noise[size_t(m) * size_t(P.noise_len) + size_t(t)];
+    if (z0) {
+        if (z0->size() != z.size()) fail(VOX_ERR_ARG, "CosyVoice: injected flow noise has a wrong size");
+        for (int t = 0; t < T2; ++t)
+            for (int m = 0; m < M; ++m) z[size_t(t) * M + m] = (*z0)[size_t(m) * size_t(T2) + size_t(t)];
+    } else if (c.fixed_noise) {
+        for (int t = 0; t < T2; ++t)
+            for (int m = 0; m < M; ++m) z[size_t(t) * M + m] = P.rand_noise[size_t(m) * size_t(P.noise_len) + size_t(t)];
+    } else {   // torch.randn_like(mu) [1][80][T]: Philox Gaussians in that order
+        const DetRng rng(seed);
+        const uint32_t st = 0x464C0000u + piece;   // "FL"
+        const size_t n = z.size(), pairs = (n + 1) / 2;
+        std::vector<float> g(n);
+        for (size_t p = 0; p < pairs; ++p) {
+            const double u1 = double(rng.uniform(uint64_t(p), st, 0)), u2 = double(rng.uniform(uint64_t(p), st, 1));
+            const double r = std::sqrt(-2.0 * std::log(1.0 - u1)), a = 2.0 * kPi * u2;
+            g[2 * p] = float(r * std::cos(a));
+            if (2 * p + 1 < n) g[2 * p + 1] = float(r * std::sin(a));
+        }
+        for (int t = 0; t < T2; ++t)
+            for (int m = 0; m < M; ++m) z[size_t(t) * M + m] = g[size_t(m) * size_t(T2) + size_t(t)];
+    }
     std::vector<float> ts = linspace01(c.n_timesteps + 1);
     if (c.cosine)
         for (auto &t : ts) t = 1.0f - std::cos((t * 0.5f) * float(kPi));
@@ -730,8 +762,13 @@ void CosyVoiceModel::flow(const std::vector<int32_t> &prompt_tokens, const std::
             const float d = (1.0f + c.cfg_rate) * d1[i] - c.cfg_rate * d2[i];
             z[i] = z[i] + dt * d;
         }
-        t = t + dt;
-        if (step < c.n_timesteps) dt = ts[size_t(step + 1)] - t;
+        if (c.dt_diff) {   // Chatterbox: for t, r in zip(t_span[:-1], t_span[1:]): dt = r - t
+            t = ts[size_t(step)];
+            if (step < c.n_timesteps) dt = ts[size_t(step + 1)] - t;
+        } else {
+            t = t + dt;
+            if (step < c.n_timesteps) dt = ts[size_t(step + 1)] - t;
+        }
     }
     mel.assign(z.begin() + long(size_t(mel1) * M), z.end());
     if (tr) tr->mel = mel;
@@ -788,8 +825,12 @@ void CosyVoiceModel::hift(const std::vector<float> &mel, int T, uint64_t seed, u
     {
         std::vector<float> tmpw(static_cast<size_t>(H));
         const float *wrow = mat_row(P.src_lin.w, 0, tmpw.data());
-        nsf_source(f0.data(), T, up, double(c.sample_rate), H, nz->rand_ini.data(), nz->sine_noise.data(), wrow,
-                   P.src_lin.b.empty() ? 0.f : P.src_lin.b[0], src);
+        if (c.sinegen == 1)
+            nsf_source_v1(f0.data(), T, up, double(c.sample_rate), H, nz->rand_ini.data(), nz->sine_noise.data(), wrow,
+                          P.src_lin.b.empty() ? 0.f : P.src_lin.b[0], src);
+        else
+            nsf_source(f0.data(), T, up, double(c.sample_rate), H, nz->rand_ini.data(), nz->sine_noise.data(), wrow,
+                       P.src_lin.b.empty() ? 0.f : P.src_lin.b[0], src);
     }
     if (tr) tr->source = src;
     std::vector<float> s_stft;

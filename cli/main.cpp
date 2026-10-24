@@ -153,23 +153,26 @@ vox_engine *open_engine(const Args &a) {
     return e;
 }
 
-std::string json_call(vox_status (*fn)(char *, size_t, size_t *)) {
+// Size query, then the call; the text can grow in between (free memory, timings), so a result that did not fit is
+// fetched again with room to spare instead of being cut.
+template <typename F>
+std::string fetch(F &&fn, const char *what) {
     size_t n = 0;
-    fn(nullptr, 0, &n);
-    std::string s(n + 1, '\0');
-    check(fn(s.data(), s.size(), &n), "query");
-    s.resize(n);
-    return s;
+    fn(nullptr, size_t(0), &n);
+    for (int attempt = 0;; ++attempt) {
+        std::string s(n + 256, '\0');
+        size_t m = 0;
+        check(fn(s.data(), s.size(), &m), what);
+        if (m < s.size() || attempt >= 4) { s.resize(std::min(m, s.size() - 1)); return s; }
+        n = m;
+    }
 }
+
+std::string json_call(vox_status (*fn)(char *, size_t, size_t *)) { return fetch(fn, "query"); }
 
 template <typename F>
 std::string json_of(F &&fn) {
-    size_t n = 0;
-    fn(nullptr, 0, &n);
-    std::string s(n + 1, '\0');
-    check(fn(s.data(), s.size(), &n), "query");
-    s.resize(n);
-    return s;
+    return fetch(fn, "query");
 }
 
 vox_gen_params gen_params(const Args &a, std::string &lang_store) {
@@ -218,12 +221,7 @@ vox_gen_params gen_params(const Args &a, std::string &lang_store) {
 }
 
 std::string engine_json(vox_engine *e) {
-    size_t n = 0;
-    vox_engine_info(e, nullptr, 0, &n);
-    std::string s(n + 1, '\0');
-    check(vox_engine_info(e, s.data(), s.size(), &n), "engine info");
-    s.resize(n);
-    return s;
+    return fetch([&](char *b, size_t c, size_t *l) { return vox_engine_info(e, b, c, l); }, "engine info");
 }
 
 int cmd_devices(const Args &a) {
@@ -252,11 +250,7 @@ int cmd_plan(const Args &a) {
     vox::json cfg = resource_json(a).empty() ? vox::json::object() : vox::json::parse(resource_json(a));
     if (a.has("--device")) cfg["device"] = a.get("--device");
     const std::string cfg_s = cfg.dump();
-    size_t n = 0;
-    vox_plan_json(a.get("--model").c_str(), cfg_s.c_str(), nullptr, 0, &n);
-    std::string s(n + 1, '\0');
-    check(vox_plan_json(a.get("--model").c_str(), cfg_s.c_str(), s.data(), s.size(), &n), "plan");
-    s.resize(n);
+    const std::string s = fetch([&](char *b, size_t c, size_t *l) { return vox_plan_json(a.get("--model").c_str(), cfg_s.c_str(), b, c, l); }, "plan");
     const vox::json j = vox::json::parse(s);
     if (a.has("--json")) std::puts(j.dump(2).c_str());
     else std::fputs(j["summary"].get<std::string>().c_str(), stdout);
@@ -628,11 +622,7 @@ int cmd_live(const Args &a) {
 finished:
     const uint32_t sr = vox_engine_sample_rate(e);
     if (!raw) vox::wav_write(a.get("-o"), all.data(), all.size(), sr, !a.has("--float"));
-    size_t n = 0;
-    vox_session_info(s, nullptr, 0, &n);
-    std::string info(n + 1, '\0');
-    vox_session_info(s, info.data(), info.size(), &n);
-    info.resize(n);
+    const std::string info = fetch([&](char *b, size_t c, size_t *l) { return vox_session_info(s, b, c, l); }, "session info");
     const vox::json ij = vox::json::parse(info);
     std::fprintf(stderr, "%.2f s audio; first text at %.0f ms, first audio at %.0f ms (+%.0f ms); %lld flushes (%lld by idle)\n",
                  double(samples) / sr, first_text_ms, first_audio_ms, first_audio_ms - first_text_ms, (long long)ij.value("flushes", uint64_t(0)),
@@ -692,10 +682,7 @@ int cmd_bench(const Args &a) {
                      {"peak_rss_mb", peak_rss_mb()}, {"threads", vox::json(a.get("--threads", "auto"))}};
     if (runs > 1) out["warm"] = summarize(1, size_t(runs));
     {
-        size_t n = 0;
-        vox_engine_stats(e, nullptr, 0, &n);
-        std::string st(n + 1, '\0');
-        if (vox_engine_stats(e, st.data(), st.size(), &n) == VOX_OK) { st.resize(n); out["stats"] = vox::json::parse(st); }
+        out["stats"] = vox::json::parse(fetch([&](char *b, size_t c, size_t *l) { return vox_engine_stats(e, b, c, l); }, "stats"));
     }
     std::cout << out.dump() << "\n";
     vox_voice_free(v);
@@ -709,12 +696,7 @@ int cmd_phonemize(const Args &a) {
     vox_engine *e = open_engine(a);
     const std::string lang = a.get("--lang", "");
     auto one = [&](const std::string &text) {
-        size_t n = 0;
-        check(vox_engine_phonemize(e, text.c_str(), lang.c_str(), nullptr, 0, &n), "phonemize");
-        std::string buf(n + 1, '\0');
-        check(vox_engine_phonemize(e, text.c_str(), lang.c_str(), buf.data(), buf.size(), &n), "phonemize");
-        buf.resize(n);
-        return buf;
+        return fetch([&](char *b, size_t c, size_t *l) { return vox_engine_phonemize(e, text.c_str(), lang.c_str(), b, c, l); }, "phonemize");
     };
     if (a.has("--json")) {
         std::string line;

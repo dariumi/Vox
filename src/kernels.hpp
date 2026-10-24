@@ -137,6 +137,10 @@ struct KVCache {
 // out_all[m][hidden] — нормированные векторы всех токенов (может быть nullptr).
 void transformer_forward(const TransformerW &w, KVCache &kv, const float *x, int64_t m, float *out_last,
                          float *out_all = nullptr);
+// One token for each of B independent sequences (their own KV caches, CPU only): the weight matrices are read once for all B
+// (classifier-free guidance runs its two passes this way). x[B][hidden] → out[B][hidden] (normed), as B calls of
+// transformer_forward with m = 1 would give.
+void transformer_forward_steps(const TransformerW &w, KVCache *const *kv, int64_t B, const float *x, float *out);
 // Один шаг «вход → [in_proj] → трансформер → норма последней строки → [head]» одной отправкой на GPU.
 // x: [m][in_proj ? in_proj->cols : hidden]. Возвращает false, если трансформер не на GPU (тогда считать по частям).
 bool transformer_step_fused(const TransformerW &w, KVCache &kv, const float *x, int64_t m, const Mat *in_proj, const Mat *head,

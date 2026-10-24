@@ -489,7 +489,10 @@ def build(model_dir: str, out: str, dtype: str = "bf16", flow_dtype: str = "f32"
     # ---- frontend ----
     blobs = dict(em.blobs)
     blobs.update(femit.blobs)
-    front = {"front.mel_basis": slaney_mel(24000, cv["mel_n_fft"], cv["flow"]["mel_dim"]),
+    # feat_extractor of cosyvoice2.yaml: fmax 8000 in the release (null would mean sr / 2)
+    fmax = fe.get("fmax", 8000) if isinstance(fe, dict) else 8000
+    cv["mel_fmax"] = float(fmax) if fmax is not None else 12000.0
+    front = {"front.mel_basis": slaney_mel(24000, cv["mel_n_fft"], cv["flow"]["mel_dim"], 0.0, fmax),
              "front.fbank_banks": kaldi_banks()}
     notes = []
     if clone:
