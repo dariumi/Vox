@@ -35,10 +35,12 @@ constexpr int64_t kMaxCtx = 3072;            // предел контекста 
 // 4 матмула (f32/f16/bf16/q8) + rmsnorm, qkrope, attention, silumul + декодер кодека: свёрточный GEMM (f32/f16/bf16),
 // snake, depthwise conv, layernorm, overlap-add, история, внимание со скользящим окном, запись в кольцо
 // + слитые QKV/SwiGLU, выборка эмбеддинга по индексу из буфера (f32/f16/bf16), сэмплинг на GPU
-constexpr int kNumPipes = 27;
+// + F5-TTS: flash-внимание, групповая свёртка, LayerNorm/AdaLN, поэлементные операции, RoPE
+constexpr int kNumPipes = 32;
 // P_MM и P_GEMM — по одному конвейеру на тип весов (f32, f16, bf16, q8, q4)
 enum Pipe { P_MM = 0, P_RMS = 5, P_ROPE = 6, P_ATTN = 7, P_SILU = 8, P_GEMM = 9, P_SNAKE = 14, P_DW = 15, P_LN = 16,
-            P_OLA = 17, P_HIST = 18, P_ATTNW = 19, P_RING = 20, P_QKV = 21, P_SWIGLU = 22, P_SAMPLE = 23, P_GATHER = 24 };
+            P_OLA = 17, P_HIST = 18, P_ATTNW = 19, P_RING = 20, P_QKV = 21, P_SWIGLU = 22, P_SAMPLE = 23, P_GATHER = 24,
+            P_F5ATTN = 27, P_F5CONV = 28, P_F5LN = 29, P_F5EW = 30, P_F5ROPE = 31 };
 
 struct GpuXfmr {
     std::string name;
@@ -70,7 +72,7 @@ struct Ctx {
     VkFence fence = VK_NULL_HANDLE;
     VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
     VkPipelineLayout pl = VK_NULL_HANDLE;
-    VkShaderModule sm = VK_NULL_HANDLE, extra_modules[16] = {};
+    VkShaderModule sm = VK_NULL_HANDLE, extra_modules[21] = {};
     VkPipeline pipe[kNumPipes] = {};
     VkDescriptorPool dyn = VK_NULL_HANDLE;
     VkBuffer csb = VK_NULL_HANDLE;
@@ -130,7 +132,11 @@ void upload_buffer(const void *data, VkDeviceSize bytes, VkBuffer &buf, VkDevice
 uint32_t vec_flag(const GpuMat &m);
 VkDescriptorSet dyn_set(const VkBuffer (&b)[6]);
 void barrier_cc();
+// y (+)= W x for m rows of the uploaded matrix mat (GEMV for m <= 8, tiled GEMM otherwise); see gpu_vulkan.cpp.
+void rec_mm(int mat, VkBuffer in, VkBuffer out, int64_t m, bool accum, int64_t y_off = 0);
+void host_barrier();
 void disp(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_words, uint32_t gx, uint32_t gy);
+void disp3(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_words, uint32_t gx, uint32_t gy, uint32_t gz);
 uint32_t fbits(float f);
 // Метка стадии для профайлера GPU (VOX_PROFILE=gpu); действует до следующего вызова.
 inline void prof_stage(const char *s) { if (g.prof) g.prof_stage = s; }

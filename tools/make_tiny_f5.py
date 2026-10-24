@@ -93,6 +93,9 @@ def main():
     ap.add_argument("--v0", action="store_true", help="config F5TTS_Base (v0): text_mask_padding=False, pe_attn_head=1 (default: v1 config)")
     ap.add_argument("--vocos-center", action="store_true",
                     help="ISTFT head with padding=center, as in the real charactr/vocos-mel-24khz (default: same)")
+    ap.add_argument("--vocos-dim", type=int, default=48)
+    ap.add_argument("--vocos-inter", type=int, default=96)
+    ap.add_argument("--vocos-layers", type=int, default=2)
     ap.add_argument("--crlf-vocab", action="store_true", help="write vocab.txt with CRLF line endings (as some fine-tunes do)")
     a = ap.parse_args()
     os.makedirs(os.path.join(a.out, "ckpt"), exist_ok=True)
@@ -129,8 +132,8 @@ def main():
     from vocos import Vocos
     from vocos.feature_extractors import MelSpectrogramFeatures
     voc = Vocos(MelSpectrogramFeatures(sample_rate=24000, n_fft=1024, hop_length=256, n_mels=mel_dim, padding="center"),
-                VocosBackbone(input_channels=mel_dim, dim=48, intermediate_dim=96, num_layers=2),
-                ISTFTHead(dim=48, n_fft=1024, hop_length=256, padding="center" if a.vocos_center else "same"))
+                VocosBackbone(input_channels=mel_dim, dim=a.vocos_dim, intermediate_dim=a.vocos_inter, num_layers=a.vocos_layers),
+                ISTFTHead(dim=a.vocos_dim, n_fft=1024, hop_length=256, padding="center" if a.vocos_center else "same"))
     rand_init(voc, a.seed + 2, 0.8)
     with torch.no_grad():
         for blk in voc.backbone.convnext:
@@ -154,15 +157,15 @@ def main():
   init_args: {sample_rate: 24000, n_fft: 1024, hop_length: 256, n_mels: %d, padding: center}
 backbone:
   class_path: vocos.models.VocosBackbone
-  init_args: {input_channels: %d, dim: 48, intermediate_dim: 96, num_layers: 2}
+  init_args: {input_channels: %d, dim: %d, intermediate_dim: %d, num_layers: %d}
 head:
   class_path: vocos.heads.ISTFTHead
   init_args:
-    dim: 48
+    dim: %d
     n_fft: 1024
     hop_length: 256
     padding: %s
-""" % (mel_dim, mel_dim, "center" if a.vocos_center else "same"))
+""" % (mel_dim, mel_dim, a.vocos_dim, a.vocos_inter, a.vocos_layers, a.vocos_dim, "center" if a.vocos_center else "same"))
 
     # --- образец: тихая смесь синусоид, 24 кГц ---
     rng = np.random.default_rng(a.seed)

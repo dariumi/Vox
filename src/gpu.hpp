@@ -59,4 +59,33 @@ void gpu_codec_state_free(int state);
 // z: [F][codebook_dim] выход квантизатора (считается на CPU); добавляет F * samples_per_frame отсчётов в pcm.
 bool gpu_codec_forward(int codec, int state, const float *z, int F, std::vector<float> &pcm);
 constexpr int kGpuCodecMaxFrames = 16;
+
+// F5-TTS целиком на GPU: шаг DiT (вход → свёрточное позиционное кодирование → блоки с AdaLN, flash-вниманием, FF → выход)
+// одной отправкой и вокодер Vocos (без iSTFT). Все линейные слои уже загружены (Mat::gpu >= 0); свёртки — f32 в раскладке
+// [cout][K * cin/groups] (K-мажорно внутри группы, как Conv1d::w).
+struct GpuF5Conv { const float *w = nullptr, *b = nullptr; int cin = 0, cout = 0, K = 1, groups = 1; };
+struct GpuF5Desc {
+    int dim = 0, depth = 0, heads = 0, dim_head = 0, ff_mult = 2, mel_dim = 100, text_dim = 0, pe_attn_head = 0;
+    int in_proj = -1, norm_out = -1, proj_out = -1;
+    struct Block { int ada = -1, q = -1, k = -1, v = -1, o = -1, ff1 = -1, ff2 = -1; };
+    std::vector<Block> blocks;
+    GpuF5Conv pos1, pos2;
+    // Vocos (vocos_dim == 0 — вокодер на CPU)
+    int vocos_dim = 0, vocos_inter = 0, vocos_out = 0;
+    GpuF5Conv v_embed;
+    const float *v_ln_w = nullptr, *v_ln_b = nullptr, *v_fln_w = nullptr, *v_fln_b = nullptr;
+    struct VBlock { GpuF5Conv dw; const float *ln_w = nullptr, *ln_b = nullptr, *gamma = nullptr; int pw1 = -1, pw2 = -1; };
+    std::vector<VBlock> v_blocks;
+    int v_head = -1;
+};
+// -1 → не поддерживается (причина в gpu_stats().last_error), считать на CPU.
+int gpu_f5_create(const GpuF5Desc &d);
+// Начало сэмплирования: B последовательностей длины N; cat0 — [B][N][2*mel + text] вход DiT с нулями на месте x
+// (условие и текст не меняются между шагами), rope — [N][dim_head/2][2] (cos, sin).
+bool gpu_f5_begin(int id, int B, int N, const float *cat0, const float *rope);
+// Шаг: x [N][mel] (одинаков для всех B), ts [dim] — SiLU(эмбеддинг времени). out: [B][N][mel].
+bool gpu_f5_step(int id, const float *x, const float *ts, float *out);
+// Vocos: mel [T][mel] → выход головы [T][vocos_out] (лог-модуль и фаза; iSTFT считает CPU).
+bool gpu_f5_vocos(int id, const float *mel, int T, std::vector<float> &head);
+void gpu_f5_end(int id);   // освободить буферы шага (веса остаются)
 }  // namespace vox

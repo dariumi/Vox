@@ -93,10 +93,10 @@ def main(cli):
             if rc != 0:
                 print(out)
     # 3. квантованные модели — допуск квантования
-    for name in ("bf16", "q8"):
-        for dump in ("dump.safetensors", "dump_long.safetensors"):
-            rc, out = run([cli, "verify", "--model", tm[name], "--dump", os.path.join(work, dump), "--device", "cpu", "--tol", "1e-2"])
-            check(rc == 0 and "PASS" in out, f"verify {name} {dump} (tol 1e-2)")
+    for name, dump, dev in [(n, d, v) for n in ("bf16", "q8") for d in ("dump.safetensors", "dump_long.safetensors") for v in devices]:
+        if True:
+            rc, out = run([cli, "verify", "--model", tm[name], "--dump", os.path.join(work, dump), "--device", dev, "--tol", "1e-2"])
+            check(rc == 0 and "PASS" in out, f"verify {name} {dump} [{dev}] (tol 1e-2)")
             if rc != 0:
                 print(out)
 
@@ -111,7 +111,8 @@ def main(cli):
             extra["max_chars"] = p["max_chars"]
         if p["cross_fade"] != 0.15:
             extra["cross_fade_duration"] = p["cross_fade"]
-        for dev in devices[:1]:
+        for dev in devices:
+            gpu = not dev.startswith("cpu")
             outp = os.path.join(work, f"out_{sc}.wav")
             rc, so = run([cli, "say", p["gen_text"], "--model", tm["f32"], "--voice", voice, "-o", outp, "--float", "--device", dev,
                           "--nfe", str(p["nfe"]), "--speed", str(p["speed"]), "--extra", json.dumps(extra)])
@@ -119,7 +120,19 @@ def main(cli):
             got = read_wav_f32(outp)
             same_len = len(got) == len(exp)
             d = float(np.abs(got[:min(len(got), len(exp))] - exp[:min(len(got), len(exp))]).max()) if len(got) and len(exp) else 1.0
-            check(same_len and d < 1e-6, f"end-to-end {sc}: {p['chunks']} chunk(s), {len(exp)} samples, max|diff| {d:.2e} (ref max {np.abs(exp).max():.2e})")
+            lim = 2e-5 if gpu else 1e-6   # GPU: другой порядок суммирования (flash-внимание, плиточный GEMM)
+            check(same_len and d < lim, f"end-to-end {sc} [{dev}]: {p['chunks']} chunk(s), {len(exp)} samples, max|diff| {d:.2e} "
+                                        f"(ref max {np.abs(exp).max():.2e})")
+    # GPU: шаг DiT и Vocos целиком на видеокарте (один командный буфер на шаг), а не только линейные слои
+    for dev in devices:
+        if dev.startswith("cpu"):
+            continue
+        rc, out = run([cli, "bench", "--model", tm["f32"], "--voice", voice, "--text", "Short one.", "--runs", "1", "--device", dev])
+        try:
+            st = json.loads(next(l for l in out.splitlines() if l.startswith("{")))["stats"]["backend"]
+        except Exception:  # noqa: BLE001
+            st = {}
+        check(rc == 0 and st.get("gpu_graph") is True, f"[{dev}] F5 graph on the GPU (gpu_graph={st.get('gpu_graph')})")
     # квантованные: коррелируют с эталоном
     sc = "chunks"
     p = e2e["scenarios"][sc]
@@ -156,19 +169,20 @@ def main(cli):
     e0 = json.load(open(os.path.join(v0w, "e2e.json")))
     v0voice = os.path.join(work, "v0.tvoice")
     assert run([cli, "voice", "create", os.path.join(v0w, "ref.wav"), "--model", t0, "--text", e0["ref_text"], "-o", v0voice, "--device", "cpu"])[0] == 0
-    for sc in ("single", "chunks"):
+    for sc, dev in [(sc, dev) for sc in ("single", "chunks") for dev in devices]:
         p = e0["scenarios"][sc]
         exp = load_st(os.path.join(v0w, f"expected_{sc}.safetensors"))["wave"]
         extra = {"noise_file": os.path.join(v0w, f"noise_{sc}.safetensors")}
         if p["max_chars"]:
             extra["max_chars"] = p["max_chars"]
         outp = os.path.join(work, f"out_v0_{sc}.wav")
-        rc, so = run([cli, "say", p["gen_text"], "--model", t0, "--voice", v0voice, "-o", outp, "--float", "--device", "cpu",
+        rc, so = run([cli, "say", p["gen_text"], "--model", t0, "--voice", v0voice, "-o", outp, "--float", "--device", dev,
                       "--nfe", str(p["nfe"]), "--speed", str(p["speed"]), "--extra", json.dumps(extra)])
         assert rc == 0, so
         got = read_wav_f32(outp)
         d = float(np.abs(got[:min(len(got), len(exp))] - exp[:min(len(got), len(exp))]).max()) if len(got) and len(exp) else 1.0
-        check(len(got) == len(exp) and d < 1e-6, f"v0: end-to-end {sc}: {len(exp)} samples, max|diff| {d:.2e} против официального f5_tts")
+        check(len(got) == len(exp) and d < (1e-6 if dev.startswith("cpu") else 2e-5),
+              f"v0: end-to-end {sc} [{dev}]: {len(exp)} samples, max|diff| {d:.2e} против официального f5_tts")
 
     # 4. детерминизм, подача текста частями, голос, ошибки
     text = "Seed test. Another sentence, with commas; and more!"

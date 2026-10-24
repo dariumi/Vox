@@ -138,7 +138,7 @@ public:
         return c;
     }
     json stats() const override {
-        return {{"dit_ms", model_.ms_dit()}, {"vocos_ms", model_.ms_vocos()}, {"weights_bytes", model_.weight_bytes()}, {"device", gpu_ ? "vulkan" : "cpu"}, {"gpu_matrices", model_.gpu_mats()}, {"matrices", model_.linear_mats()}};
+        return {{"dit_ms", model_.ms_dit()}, {"vocos_ms", model_.ms_vocos()}, {"weights_bytes", model_.weight_bytes()}, {"device", gpu_ ? "vulkan" : "cpu"}, {"gpu_graph", model_.gpu_graph()}, {"gpu_matrices", model_.gpu_mats()}, {"matrices", model_.linear_mats()}};
     }
 
     // --- интерфейс, не используемый моделью без кодов ---
@@ -481,13 +481,20 @@ public:
         dit.prefixes = {"dit."};
         dit.bytes_per_frame = double(blob_bytes(f, {"dit."})) * 64.0 / N;       // 2 ветки CFG × 32 шага читают веса целиком
         dit.flops_per_frame = 2.0 * params * 2.0 * 32.0;
-        dit.session_vram_bytes = 64u << 20;
+        // активации шага DiT на GPU (gpu_f5.cpp) для двух веток CFG по N кадров: h, nrm, o, q, k, v, at, ff (ff_mult*D), вход
+        const double heads_dim = double(c.at("heads").get<int>()) * double(c.value("dim_head", 64));
+        const double rowf = 3 * D + 4 * heads_dim + mult * D + 2 * double(c.value("mel_dim", 100)) * 2 + double(c.at("text_dim").get<int>());
+        dit.session_vram_bytes = uint64_t(rowf * 2.0 * N * 4.0) + (16u << 20);
         dit.session_ram_bytes = 192u << 20;
         fp.stages.push_back(dit);
         StageDesc voc;
         voc.name = "vocos";
         voc.prefixes = {"vocos."};
-        voc.gpu_capable = false;  // ConvNeXt + iSTFT пока считаются на CPU
+        voc.gpu_capable = true;   // ConvNeXt и голова — на GPU (gpu_f5.cpp), iSTFT — на CPU
+        {
+            const double vd = c.at("vocos").value("dim", 512), vi = c.at("vocos").value("intermediate", 1536);
+            voc.session_vram_bytes = uint64_t((3 * vd + vi + 1026 + 100) * N * 4.0);
+        }
         voc.bytes_per_frame = double(blob_bytes(f, {"vocos."})) / 50.0;
         voc.flops_per_frame = 2.0 * 8.0 * 3.0 * 512.0 * 1536.0;
         fp.stages.push_back(voc);

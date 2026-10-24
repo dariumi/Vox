@@ -75,6 +75,9 @@ public:
     // x, cond: [B][N][mel_dim], temb: [B][N][text_dim], t — момент времени. out: [B][N][mel_dim].
     void dit_forward(int B, int N, const float *x, const float *cond, const float *temb, float t, float *out) const;
 
+    // SiLU(эмбеддинг времени t) — вход всех AdaLN: [dim].
+    void time_embed(float t, std::vector<float> &ts) const;
+
     // Полный цикл CFM: cond_mel [cond_frames][mel_dim], text-токены, длительность в кадрах, шум [duration][mel_dim].
     // out: [duration][mel_dim]; первые cond_frames кадров заменяются на cond_mel, как в F5.
     // progress(step, nfe) вызывается после каждого шага.
@@ -91,7 +94,10 @@ public:
     double ms_dit() const { return ms_dit_; }
     double ms_vocos() const { return ms_vocos_; }
 
+    bool gpu_graph() const;   // шаг DiT и Vocos целиком на GPU
+
 private:
+    bool gpu_begin(int B, int N, const float *x, const float *cond, const float *temb) const;
     struct Impl;
     std::unique_ptr<Impl> p_;
     std::shared_ptr<TmodFile> file_;

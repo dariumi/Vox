@@ -1,0 +1,28 @@
+#version 450
+// Row LayerNorm for F5-TTS / Vocos; one workgroup per row, may run in place (X == Y).
+//   mode 0 (affine):   y = (x - mean) / sqrt(var + eps) * p[off_w + i] + p[off_b + i]
+//   mode 1 (AdaLN):    y = (x - mean) / sqrt(var + eps) * (1 + p[off_w + i]) + p[off_b + i]   (p = adaLN projection)
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 0) readonly buffer PB { float p[]; };
+layout(std430, set = 0, binding = 3) readonly buffer XB { float x[]; };
+layout(std430, set = 0, binding = 4) writeonly buffer YB { float y[]; };
+layout(push_constant) uniform PC { uint n; uint rows; uint eps_bits; uint off_w; uint off_b; uint mode; } pc;
+shared float red[256];
+void main() {
+    const uint row = gl_WorkGroupID.x, t = gl_LocalInvocationID.x, base = row * pc.n;
+    float s = 0.0;
+    for (uint k = t; k < pc.n; k += 256u) s += x[base + k];
+    red[t] = s;
+    barrier();
+    for (uint st = 128u; st > 0u; st >>= 1u) { if (t < st) red[t] += red[t + st]; barrier(); }
+    const float mean = red[0] / float(pc.n);
+    barrier();
+    float v = 0.0;
+    for (uint k = t; k < pc.n; k += 256u) { const float d = x[base + k] - mean; v += d * d; }
+    red[t] = v;
+    barrier();
+    for (uint st = 128u; st > 0u; st >>= 1u) { if (t < st) red[t] += red[t + st]; barrier(); }
+    const float inv = 1.0 / sqrt(red[0] / float(pc.n) + uintBitsToFloat(pc.eps_bits));
+    const float one = pc.mode == 1u ? 1.0 : 0.0;
+    for (uint k = t; k < pc.n; k += 256u) y[base + k] = (x[base + k] - mean) * inv * (one + p[pc.off_w + k]) + p[pc.off_b + k];
+}

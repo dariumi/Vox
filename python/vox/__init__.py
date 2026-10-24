@@ -29,7 +29,7 @@ except ImportError as _e:  # нативный модуль не собран: vo
     _vox = None
     _import_error = _e
 
-__version__ = _vox.VERSION if _vox else "0.12.2"
+__version__ = _vox.VERSION if _vox else "0.14.0"
 __all__ = ["Engine", "Voice", "Session", "Duplex", "Resources", "VoxError", "OutOfMemory", "DeviceError", "devices", "inspect", "plan",
            "make_test_model", "register_family", "Family", "Backend", "Tmod", "load_wav", "save_wav", "__version__"]
 
@@ -65,7 +65,8 @@ _PARAM_NAMES = ("temperature", "top_k", "top_p", "repetition_penalty", "sub_temp
 
 
 # параметры моделей без покадровых кодов (F5-TTS и др.): уходят в extra_json; можно и целиком словарём extra={...}
-_EXTRA_NAMES = ("nfe_step", "cfg_strength", "sway_sampling_coef", "speed", "target_rms", "cross_fade_duration", "fix_duration")
+_EXTRA_NAMES = ("nfe_step", "cfg_strength", "sway_sampling_coef", "speed", "target_rms", "cross_fade_duration", "fix_duration",
+                "phonemes", "lang")
 # двусторонний стриминг: commit = "auto" | "sentence" | "manual", idle_ms — автокоммит после простоя (см. vox.h, ABI 0.4)
 _STREAM_NAMES = ("commit", "idle_ms")
 
@@ -345,6 +346,39 @@ class Session:
             self.cancel()
 
 
+class _KokoroSession(Session):
+    """Session whose text goes through misaki: complete lines become phoneme pieces (one per line for the engine)."""
+
+    def __init__(self, handle, chunk_samples: int, frontend):
+        super().__init__(handle, chunk_samples)
+        self._fe = frontend
+        self._buf = ""
+
+    def _push(self, text: str) -> None:
+        pieces = self._fe.chunks(text)
+        if pieces:
+            self._h.feed("\n".join(pieces) + "\n")
+
+    def feed(self, text: str) -> "Session":
+        self._buf += unicodedata.normalize("NFC", text)
+        if "\n" in self._buf:
+            done, self._buf = self._buf.rsplit("\n", 1)
+            self._push(done)
+        return self
+
+    def end(self) -> "Session":
+        if not self._ended and self._buf.strip():
+            self._push(self._buf)
+        self._buf = ""
+        return super().end()
+
+    def flush(self) -> "Session":
+        if self._buf.strip():
+            self._push(self._buf)
+        self._buf = ""
+        return super().flush()
+
+
 class Engine:
     """Загруженная модель (.tmod)."""
 
@@ -436,9 +470,34 @@ class Engine:
         return voice if isinstance(voice, Voice) else self.load_voice(voice)
 
     # ---- синтез ----
-    def session(self, voice: Union[Voice, str, os.PathLike], *, chunk_samples: int = 8192, **params) -> Session:
+    def session(self, voice: Union[Voice, str, os.PathLike], *, chunk_samples: int = 8192, g2p: Optional[str] = None,
+                **params) -> Session:
+        """g2p (Kokoro): "misaki" — text → phonemes with misaki (+ espeak-ng), exactly like kokoro.KPipeline; "builtin" — the
+        engine's own G2P; None — misaki when it is installed. phonemes=True: the text already is phonemes."""
         v = self._voice(voice)
+        if self.info.get("family") == "kokoro" and not params.get("phonemes"):
+            from . import kokoro_frontend as kf
+            if g2p == "misaki" or (g2p is None and kf.available()):
+                spk = v.info.get("speaker") or v.name
+                fe = kf.frontend(kf.is_british(spk, params.get("lang")))
+                params = dict(params, phonemes=True)
+                return _KokoroSession(_vox.session_create(self._h, v._h, _params(params)), chunk_samples, fe)
+            if g2p not in (None, "builtin"):
+                raise ValueError('g2p must be "misaki", "builtin" or None')
         return Session(_vox.session_create(self._h, v._h, _params(params)), chunk_samples)
+
+    def phonemize(self, text: str, lang: Optional[str] = None, *, g2p: Optional[str] = None) -> dict:
+        """Kokoro: text → phonemes, {"phonemes": str, "chunks": [str, ...]} (chunks are what gets synthesized).
+        g2p as in session(): misaki when installed, else the built-in G2P."""
+        if self.info.get("family") == "kokoro" and g2p != "builtin":
+            from . import kokoro_frontend as kf
+            if g2p == "misaki" or kf.available():
+                fe = kf.frontend(kf.is_british(None, lang))
+                chunks = fe.chunks(text)
+                return {"phonemes": "\n".join(chunks), "chunks": chunks, "g2p": "misaki"}
+        r = json.loads(self._h.phonemize(text, lang or ""))
+        r["g2p"] = "builtin"
+        return r
 
     def duplex(self, voice: Union[Voice, str, os.PathLike], **kw) -> "Duplex":
         """Двусторонний стрим: пишете текст в любой момент, звук приходит по мере готовности. См. vox.Duplex."""

@@ -34,7 +34,11 @@ vox say "Hello! This is a check." --model model.tmod --voice me.tvoice -o out.wa
 vox say --stdin --stream --model model.tmod --voice me.tvoice | ffplay -f f32le -ar 24000 -i -
 
 # F5-TTS: the parameters are named as in the official code
-vox say "Hello!" --model f5.tmod --voice me.tvoice --nfe 16 --cfg 2 --sway -1 --speed 1 -o out.wav""", """# голос из записи (лучше WAV 24 кГц, 5–15 секунд чистой речи)
+vox say "Hello!" --model f5.tmod --voice me.tvoice --nfe 16 --cfg 2 --sway -1 --speed 1 -o out.wav
+
+# Kokoro-82M: a named voice or a blend, no recording needed
+vox say "Hello!" --model kokoro.tmod --speaker af_heart,bf_emma -o out.wav
+vox phonemize --model kokoro.tmod "It's 10 o'clock.\"""", """# голос из записи (лучше WAV 24 кГц, 5–15 секунд чистой речи)
 vox voice create ref.wav --model model.tmod --text "Текст, который сказан в записи" -o me.tvoice
 
 # синтез в файл
@@ -44,7 +48,11 @@ vox say "Привет! Это проверка." --model model.tmod --voice me.t
 vox say --stdin --stream --model model.tmod --voice me.tvoice | ffplay -f f32le -ar 24000 -i -
 
 # F5-TTS: параметры называются как в официальном коде
-vox say "Привет!" --model f5.tmod --voice me.tvoice --nfe 16 --cfg 2 --sway -1 --speed 1 -o out.wav"""),
+vox say "Привет!" --model f5.tmod --voice me.tvoice --nfe 16 --cfg 2 --sway -1 --speed 1 -o out.wav
+
+# Kokoro-82M (английский): именной голос или смесь, без записи
+vox say "Hello!" --model kokoro.tmod --speaker af_heart,bf_emma -o out.wav
+vox phonemize --model kokoro.tmod "It's 10 o'clock.\""""),
      t("Device list and the placement plan without loading weights: <code>vox devices</code>, <code>vox plan --model model.tmod</code>.", "Список устройств и план без загрузки весов: <code>vox devices</code>, <code>vox plan --model model.tmod</code>.")),
     ("py", "Python", "", "import vox", t("""import vox
 

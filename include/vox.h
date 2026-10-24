@@ -130,6 +130,9 @@ VOX_API vox_status vox_engine_info(const vox_engine *e, char *json_buf, size_t c
 /* JSON с планом ресурсов (куда что размещено и почему), памятью (RSS, бюджет, VRAM), статистикой стадий и пропускной
    способностью. Можно вызывать в любой момент из любого потока. */
 VOX_API vox_status vox_engine_stats(const vox_engine *e, char *json_buf, size_t cap, size_t *len);
+/* Текст → фонемы для моделей с фонемным входом (Kokoro): {"phonemes": "...", "chunks": ["...", ...]} — то, что модель
+   озвучит (куски не длиннее 510 фонем). lang: NULL / "" — по умолчанию модели, "en-us", "en-gb". Иначе VOX_ERR_UNSUPPORTED. */
+VOX_API vox_status vox_engine_phonemize(vox_engine *e, const char *utf8, const char *lang, char *json_buf, size_t cap, size_t *len);
 
 /* ---- без загрузки весов ---- */
 /* Устройства и система: {"cpu":{…ядра, RAM, лимит контейнера…},"gpus":[{index,name,type,vram_total,vram_free,…}],"families":[…]} */

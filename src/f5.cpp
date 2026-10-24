@@ -3,7 +3,10 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <map>
 
 #include "gpu.hpp"
 #include "kernels.hpp"
@@ -13,6 +16,38 @@ namespace vox {
 namespace {
 
 constexpr double kPi = 3.14159265358979323846;
+
+// VOX_PROFILE=f5: время по стадиям DiT/Vocos (печатается при уничтожении модели)
+struct F5Prof {
+    bool on = false;
+    std::map<std::string, std::pair<double, uint64_t>> acc;
+    F5Prof() { const char *e = std::getenv("VOX_PROFILE"); on = e && std::strstr(e, "f5"); }
+    ~F5Prof() {
+        if (!on || acc.empty()) return;
+        double tot = 0;
+        for (auto &kv : acc) tot += kv.second.first;
+        std::vector<std::pair<std::string, std::pair<double, uint64_t>>> v(acc.begin(), acc.end());
+        std::sort(v.begin(), v.end(), [](auto &a, auto &b) { return a.second.first > b.second.first; });
+        std::fprintf(stderr, "vox F5 profile (%.0f ms):\n", tot);
+        for (auto &kv : v) std::fprintf(stderr, "  %-14s %9.1f ms %5.1f%%  x%llu\n", kv.first.c_str(), kv.second.first, 100.0 * kv.second.first / tot,
+                                        (unsigned long long)kv.second.second);
+    }
+};
+F5Prof g_prof;
+struct ProfScope {
+    const char *name;
+    std::chrono::steady_clock::time_point t0;
+    explicit ProfScope(const char *n) : name(n) { if (g_prof.on) t0 = std::chrono::steady_clock::now(); }
+    ~ProfScope() {
+        if (!g_prof.on) return;
+        auto &a = g_prof.acc[name];
+        a.first += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        a.second++;
+    }
+};
+#define F5P_CAT2(a, b) a##b
+#define F5P_CAT(a, b) F5P_CAT2(a, b)
+#define F5P(n) ProfScope F5P_CAT(prof_scope_, __LINE__)(n)
 
 // ---------- загрузка тензоров ----------
 const float *vec_f32(const TmodFile &f, const std::string &name) {
@@ -216,6 +251,8 @@ struct F5Model::Impl {
     std::vector<VocosBlock> v_blocks;
     Mat v_head;
     std::vector<Mat *> linears;  // все линейные слои — для подъёма на GPU
+    int gpu_f5 = -1;             // граф DiT/Vocos целиком на GPU (gpu_f5.cpp), -1 — только линейные слои
+    bool gpu_vocos = false;
 };
 
 F5Model::F5Model(std::shared_ptr<TmodFile> f, bool gpu) : p_(new Impl), file_(f) {
@@ -324,9 +361,39 @@ F5Model::F5Model(std::shared_ptr<TmodFile> f, bool gpu) : p_(new Impl), file_(f)
                 x->gpu = gpu_upload(*x);
                 if (x->gpu >= 0) ++gpu_mats_;
             }
+    // весь шаг DiT и Vocos — одной отправкой (VOX_F5_GPU=0 — по-старому: на GPU только линейные слои)
+    const char *fg = std::getenv("VOX_F5_GPU");
+    if (gpu && gpu_active() && !(fg && std::strcmp(fg, "0") == 0)) {
+        GpuF5Desc d;
+        d.dim = cfg_.dim; d.depth = cfg_.depth; d.heads = cfg_.heads; d.dim_head = cfg_.dim_head; d.ff_mult = cfg_.ff_mult;
+        d.mel_dim = cfg_.mel_dim; d.text_dim = cfg_.text_dim; d.pe_attn_head = cfg_.pe_attn_head;
+        d.in_proj = P.in_proj.gpu; d.norm_out = P.norm_out.gpu; d.proj_out = P.proj_out.gpu;
+        for (const DitBlock &b : P.blocks) d.blocks.push_back({b.ada.gpu, b.q.gpu, b.k.gpu, b.v.gpu, b.o.gpu, b.ff1.gpu, b.ff2.gpu});
+        auto cv = [](const Conv1d &c) {
+            GpuF5Conv g;
+            g.w = c.w.data(); g.b = c.b.empty() ? nullptr : c.b.data(); g.cin = c.cin; g.cout = c.cout; g.K = c.K; g.groups = c.groups;
+            return g;
+        };
+        d.pos1 = cv(P.pos1); d.pos2 = cv(P.pos2);
+        bool vgpu = P.v_head.gpu >= 0;
+        for (const VocosBlock &b : P.v_blocks) vgpu = vgpu && b.pw1.gpu >= 0 && b.pw2.gpu >= 0;
+        if (vgpu) {
+            d.vocos_dim = cfg_.vocos_dim; d.vocos_inter = cfg_.vocos_inter; d.vocos_out = int(P.v_head.rows); d.v_head = P.v_head.gpu;
+            d.v_embed = cv(P.v_embed);
+            d.v_ln_w = P.v_ln_w; d.v_ln_b = P.v_ln_b; d.v_fln_w = P.v_fln_w; d.v_fln_b = P.v_fln_b;
+            for (const VocosBlock &b : P.v_blocks) {
+                GpuF5Desc::VBlock vb;
+                vb.dw = cv(b.dw); vb.ln_w = b.ln_w; vb.ln_b = b.ln_b; vb.gamma = b.gamma; vb.pw1 = b.pw1.gpu; vb.pw2 = b.pw2.gpu;
+                d.v_blocks.push_back(vb);
+            }
+        }
+        P.gpu_f5 = gpu_f5_create(d);
+        P.gpu_vocos = P.gpu_f5 >= 0 && vgpu;
+    }
 }
 
 F5Model::~F5Model() = default;
+bool F5Model::gpu_graph() const { return p_->gpu_f5 >= 0; }
 
 void F5Model::ref_mel(const float *pcm, size_t n, std::vector<float> &mel, int &frames) const {
     mel_log_spectrogram(cfg_.mel, mel_fb_.data(), pcm, n, mel, frames);
@@ -439,28 +506,81 @@ void F5Model::text_embed(const std::vector<int32_t> &ids, int N, bool drop, std:
 // ---------------------------------------------------------------------------
 // DiT
 // ---------------------------------------------------------------------------
+// SiLU(эмбеддинг времени): синус (256) → Linear → SiLU → Linear → SiLU (общий вход всех AdaLN)
+void F5Model::time_embed(float t, std::vector<float> &ts) const {
+    const Impl &P = *p_;
+    const int D = cfg_.dim;
+    std::vector<float> te(256), tm((size_t)D), th((size_t)D);
+    const int half = 128;
+    const double e = std::log(10000.0) / double(half - 1);
+    for (int i = 0; i < half; ++i) {
+        const float a = float(1000.0 * double(t) * std::exp(double(i) * -e));
+        te[size_t(i)] = std::sin(a);
+        te[size_t(half + i)] = std::cos(a);
+    }
+    matmul(P.time1, te.data(), 1, th.data());
+    for (auto &v : th) v = silu_f(v);
+    matmul(P.time2, th.data(), 1, tm.data());
+    ts.resize((size_t)D);
+    for (int i = 0; i < D; ++i) ts[size_t(i)] = silu_f(tm[size_t(i)]);
+}
+
+// RoPE: пары (2i, 2i+1), угол = позиция * theta^(-2i/HD); таблица [N][HD/2] (cos и sin)
+static void rope_table(int N, int HD, std::vector<float> &rcos, std::vector<float> &rsin) {
+    const int HH = HD / 2;
+    rcos.resize(size_t(N) * size_t(HH));
+    rsin.resize(rcos.size());
+    for (int j = 0; j < HH; ++j) {
+        const float inv = float(1.0 / std::pow(10000.0, double(2 * j) / double(HD)));
+        for (int i = 0; i < N; ++i) {
+            const float a = float(i) * inv;
+            rcos[size_t(i) * size_t(HH) + size_t(j)] = std::cos(a);
+            rsin[size_t(i) * size_t(HH) + size_t(j)] = std::sin(a);
+        }
+    }
+}
+
+bool F5Model::gpu_begin(int B, int N, const float *x, const float *cond, const float *temb) const {
+    const Impl &P = *p_;
+    if (P.gpu_f5 < 0) return false;
+    const int M = cfg_.mel_dim, TD = cfg_.text_dim, W = 2 * M + TD;
+    std::vector<float> cat(size_t(B) * size_t(N) * size_t(W));
+    parallel_for(int64_t(B) * N, 64, [&](int64_t r0, int64_t r1) {
+        for (int64_t r = r0; r < r1; ++r) {
+            float *d = &cat[size_t(r) * size_t(W)];
+            if (x) std::memcpy(d, x + size_t(r) * size_t(M), size_t(M) * 4);
+            else std::fill_n(d, M, 0.f);
+            std::memcpy(d + M, cond + size_t(r) * size_t(M), size_t(M) * 4);
+            std::memcpy(d + 2 * M, temb + size_t(r) * size_t(TD), size_t(TD) * 4);
+        }
+    });
+    std::vector<float> rc, rs, cs(size_t(N) * size_t(cfg_.dim_head));
+    rope_table(N, cfg_.dim_head, rc, rs);
+    for (size_t i = 0; i < rc.size(); ++i) { cs[2 * i] = rc[i]; cs[2 * i + 1] = rs[i]; }
+    return gpu_f5_begin(P.gpu_f5, B, N, cat.data(), cs.data());
+}
+
 void F5Model::dit_forward(int B, int N, const float *x, const float *cond, const float *temb, float t, float *out) const {
     const Impl &P = *p_;
     const int D = cfg_.dim, M = cfg_.mel_dim, TD = cfg_.text_dim, H = cfg_.heads, HD = cfg_.dim_head, INNER = H * HD;
     const int64_t R = int64_t(B) * N;
     const auto t0 = std::chrono::steady_clock::now();
-
-    // время: синус (256) → Linear → SiLU → Linear
-    std::vector<float> te(256), tm((size_t)D), th((size_t)D);
-    {
-        const int half = 128;
-        const double e = std::log(10000.0) / double(half - 1);
-        for (int i = 0; i < half; ++i) {
-            const float a = float(1000.0 * double(t) * std::exp(double(i) * -e));
-            te[size_t(i)] = std::sin(a);
-            te[size_t(half + i)] = std::cos(a);
+    std::vector<float> ts;
+    time_embed(t, ts);
+    // GPU: весь проход одной отправкой (x одинаков во всех ветках — так всегда в CFG)
+    if (P.gpu_f5 >= 0) {
+        bool same = true;
+        for (int b = 1; b < B && same; ++b) same = std::memcmp(x, x + size_t(b) * size_t(N) * size_t(M), size_t(N) * size_t(M) * 4) == 0;
+        if (same && gpu_begin(B, N, x, cond, temb)) {
+            F5P("dit_gpu");
+            const bool ok = gpu_f5_step(P.gpu_f5, x, ts.data(), out);
+            gpu_f5_end(P.gpu_f5);
+            if (ok) {
+                ms_dit_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+                return;
+            }
         }
-        matmul(P.time1, te.data(), 1, th.data());
-        for (auto &v : th) v = silu_f(v);
-        matmul(P.time2, th.data(), 1, tm.data());
     }
-    std::vector<float> ts((size_t)D);
-    for (int i = 0; i < D; ++i) ts[size_t(i)] = silu_f(tm[size_t(i)]);
 
     // вход: Linear(cat(x, cond, text)) + свёрточное позиционное кодирование
     std::vector<float> h(size_t(R) * size_t(D)), cat(size_t(R) * size_t(2 * M + TD));
@@ -472,8 +592,9 @@ void F5Model::dit_forward(int B, int N, const float *x, const float *cond, const
             std::memcpy(d + 2 * M, temb + size_t(r) * size_t(TD), size_t(TD) * 4);
         }
     });
-    matmul(P.in_proj, cat.data(), R, h.data());
+    { F5P("in_proj"); matmul(P.in_proj, cat.data(), R, h.data()); }
     {
+        F5P("pos_conv");
         std::vector<float> a(size_t(N) * size_t(D)), b(size_t(N) * size_t(D));
         for (int s = 0; s < B; ++s) {
             float *hs = &h[size_t(s) * size_t(N) * size_t(D)];
@@ -484,17 +605,9 @@ void F5Model::dit_forward(int B, int N, const float *x, const float *cond, const
         }
     }
 
-    // RoPE: пары (2i, 2i+1), угол = позиция * theta^(-2i/HD)
     const int HH = HD / 2;
-    std::vector<float> rcos(size_t(N) * size_t(HH)), rsin(size_t(N) * size_t(HH));
-    for (int j = 0; j < HH; ++j) {
-        const float inv = float(1.0 / std::pow(10000.0, double(2 * j) / double(HD)));
-        for (int i = 0; i < N; ++i) {
-            const float a = float(i) * inv;
-            rcos[size_t(i) * size_t(HH) + size_t(j)] = std::cos(a);
-            rsin[size_t(i) * size_t(HH) + size_t(j)] = std::sin(a);
-        }
-    }
+    std::vector<float> rcos, rsin;
+    rope_table(N, HD, rcos, rsin);
 
     std::vector<float> ada(size_t(6 * D)), nrm(size_t(R) * size_t(D)), q(size_t(R) * size_t(INNER)), k(q.size()), v(q.size()), at(q.size()),
         o(size_t(R) * size_t(D)), ff(size_t(R) * size_t(D) * size_t(cfg_.ff_mult)), ff2(size_t(R) * size_t(D));
@@ -502,6 +615,7 @@ void F5Model::dit_forward(int B, int N, const float *x, const float *cond, const
 
     // LN без параметров + модуляция
     auto modulate = [&](const float *src, const float *sc, const float *sh, float *dst) {
+        F5P("adaln");
         parallel_for(R, 16, [&](int64_t r0, int64_t r1) {
             for (int64_t r = r0; r < r1; ++r) {
                 const float *xr = src + size_t(r) * size_t(D);
@@ -517,75 +631,96 @@ void F5Model::dit_forward(int B, int N, const float *x, const float *cond, const
             }
         });
     };
+    // внимание без маски и без причинности, по одной голове: S = Q·Kᵀ (плиточный matmul), softmax по строкам, O = P·V
+    std::vector<float> qh(size_t(N) * size_t(HD)), kh(qh.size()), vt(qh.size()), oh(qh.size()), sc(size_t(N) * size_t(N));
+    auto attention = [&]() {
+        F5P("attention");
+        for (int s = 0; s < B; ++s)
+            for (int hh = 0; hh < H; ++hh) {
+                const size_t base = size_t(s) * size_t(N) * size_t(INNER) + size_t(hh) * size_t(HD);
+                parallel_for(N, 64, [&](int64_t i0, int64_t i1) {
+                    for (int64_t i = i0; i < i1; ++i) {
+                        std::memcpy(&qh[size_t(i) * size_t(HD)], &q[base + size_t(i) * size_t(INNER)], size_t(HD) * 4);
+                        std::memcpy(&kh[size_t(i) * size_t(HD)], &k[base + size_t(i) * size_t(INNER)], size_t(HD) * 4);
+                        for (int d = 0; d < HD; ++d) vt[size_t(d) * size_t(N) + size_t(i)] = v[base + size_t(i) * size_t(INNER) + size_t(d)];
+                    }
+                });
+                Mat km;
+                km.type = WType::F32; km.data = reinterpret_cast<const uint8_t *>(kh.data()); km.rows = N; km.cols = HD;
+                matmul(km, qh.data(), N, sc.data());   // sc[i][j] = q_i · k_j
+                parallel_for(N, 8, [&](int64_t i0, int64_t i1) {
+                    for (int64_t i = i0; i < i1; ++i) {
+                        float *row = &sc[size_t(i) * size_t(N)];
+                        float mx = -INFINITY;
+                        for (int j = 0; j < N; ++j) { row[j] *= scale; mx = std::max(mx, row[j]); }
+                        float sum = 0;
+                        for (int j = 0; j < N; ++j) { row[j] = std::exp(row[j] - mx); sum += row[j]; }
+                        const float inv = 1.0f / sum;
+                        for (int j = 0; j < N; ++j) row[j] *= inv;
+                    }
+                });
+                Mat vm;
+                vm.type = WType::F32; vm.data = reinterpret_cast<const uint8_t *>(vt.data()); vm.rows = HD; vm.cols = N;
+                matmul(vm, sc.data(), N, oh.data());   // oh[i][d] = sum_j p_ij v_j[d]
+                parallel_for(N, 64, [&](int64_t i0, int64_t i1) {
+                    for (int64_t i = i0; i < i1; ++i) std::memcpy(&at[base + size_t(i) * size_t(INNER)], &oh[size_t(i) * size_t(HD)], size_t(HD) * 4);
+                });
+            }
+    };
+    auto gated_add = [&](const float *gate, const float *src) {
+        F5P("residual");
+        parallel_for(R, 32, [&](int64_t r0, int64_t r1) {
+            for (int64_t r = r0; r < r1; ++r)
+                for (int i = 0; i < D; ++i) h[size_t(r) * size_t(D) + size_t(i)] += gate[i] * src[size_t(r) * size_t(D) + size_t(i)];
+        });
+    };
 
     for (const DitBlock &L : P.blocks) {
-        matmul(L.ada, ts.data(), 1, ada.data());
+        { F5P("ada"); matmul(L.ada, ts.data(), 1, ada.data()); }
         const float *shift_msa = &ada[0], *scale_msa = &ada[size_t(D)], *gate_msa = &ada[size_t(2 * D)];
         const float *shift_mlp = &ada[size_t(3 * D)], *scale_mlp = &ada[size_t(4 * D)], *gate_mlp = &ada[size_t(5 * D)];
         modulate(h.data(), scale_msa, shift_msa, nrm.data());
-        matmul(L.q, nrm.data(), R, q.data());
-        matmul(L.k, nrm.data(), R, k.data());
-        matmul(L.v, nrm.data(), R, v.data());
-        parallel_for(R * H, 16, [&](int64_t a0, int64_t a1) {
-            for (int64_t a = a0; a < a1; ++a) {
-                const int64_t r = a / H, hh = a % H;
-                if (cfg_.pe_attn_head > 0 && hh >= cfg_.pe_attn_head) continue;   // v0: RoPE only on the first pe_attn_head heads
-                const int pos = int(r % N);
-                for (float *base : {&q[size_t(r) * size_t(INNER) + size_t(hh) * size_t(HD)], &k[size_t(r) * size_t(INNER) + size_t(hh) * size_t(HD)]})
-                    for (int j = 0; j < HH; ++j) {
-                        const float c = rcos[size_t(pos) * size_t(HH) + size_t(j)], s = rsin[size_t(pos) * size_t(HH) + size_t(j)];
-                        const float x0 = base[2 * j], x1 = base[2 * j + 1];
-                        base[2 * j] = x0 * c - x1 * s;
-                        base[2 * j + 1] = x1 * c + x0 * s;
-                    }
-            }
-        });
-        // внимание без маски, без причинности
-        parallel_for(R * H, 4, [&](int64_t a0, int64_t a1) {
-            std::vector<float> sc((size_t)N);
-            for (int64_t a = a0; a < a1; ++a) {
-                const int64_t r = a / H, hh = a % H, seq = r / N;
-                const float *qi = &q[size_t(r) * size_t(INNER) + size_t(hh) * size_t(HD)];
-                float mx = -INFINITY;
-                for (int j = 0; j < N; ++j) {
-                    const float *kj = &k[size_t(seq * N + j) * size_t(INNER) + size_t(hh) * size_t(HD)];
-                    float acc = 0;
-                    for (int d = 0; d < HD; ++d) acc += qi[d] * kj[d];
-                    sc[size_t(j)] = acc * scale;
-                    mx = std::max(mx, sc[size_t(j)]);
+        {
+            F5P("qkv");
+            matmul(L.q, nrm.data(), R, q.data());
+            matmul(L.k, nrm.data(), R, k.data());
+            matmul(L.v, nrm.data(), R, v.data());
+        }
+        {
+            F5P("rope");
+            parallel_for(R * H, 16, [&](int64_t a0, int64_t a1) {
+                for (int64_t a = a0; a < a1; ++a) {
+                    const int64_t r = a / H, hh = a % H;
+                    if (cfg_.pe_attn_head > 0 && hh >= cfg_.pe_attn_head) continue;   // v0: RoPE only on the first pe_attn_head heads
+                    const int pos = int(r % N);
+                    for (float *bp : {&q[size_t(r) * size_t(INNER) + size_t(hh) * size_t(HD)], &k[size_t(r) * size_t(INNER) + size_t(hh) * size_t(HD)]})
+                        for (int j = 0; j < HH; ++j) {
+                            const float c = rcos[size_t(pos) * size_t(HH) + size_t(j)], sn = rsin[size_t(pos) * size_t(HH) + size_t(j)];
+                            const float x0 = bp[2 * j], x1 = bp[2 * j + 1];
+                            bp[2 * j] = x0 * c - x1 * sn;
+                            bp[2 * j + 1] = x1 * c + x0 * sn;
+                        }
                 }
-                float sum = 0;
-                for (int j = 0; j < N; ++j) { sc[size_t(j)] = std::exp(sc[size_t(j)] - mx); sum += sc[size_t(j)]; }
-                const float inv = 1.0f / sum;
-                float *oi = &at[size_t(r) * size_t(INNER) + size_t(hh) * size_t(HD)];
-                std::fill_n(oi, HD, 0.f);
-                for (int j = 0; j < N; ++j) {
-                    const float w = sc[size_t(j)] * inv;
-                    const float *vj = &v[size_t(seq * N + j) * size_t(INNER) + size_t(hh) * size_t(HD)];
-                    for (int d = 0; d < HD; ++d) oi[d] += w * vj[d];
-                }
-            }
-        });
-        matmul(L.o, at.data(), R, o.data());
-        parallel_for(R, 32, [&](int64_t r0, int64_t r1) {
-            for (int64_t r = r0; r < r1; ++r)
-                for (int i = 0; i < D; ++i) h[size_t(r) * size_t(D) + size_t(i)] += gate_msa[i] * o[size_t(r) * size_t(D) + size_t(i)];
-        });
+            });
+        }
+        attention();
+        { F5P("attn_out"); matmul(L.o, at.data(), R, o.data()); }
+        gated_add(gate_msa, o.data());
         modulate(h.data(), scale_mlp, shift_mlp, nrm.data());
-        matmul(L.ff1, nrm.data(), R, ff.data());
-        parallel_for(int64_t(ff.size()), 8192, [&](int64_t a, int64_t e) { for (int64_t i = a; i < e; ++i) ff[size_t(i)] = gelu_tanh(ff[size_t(i)]); });
-        matmul(L.ff2, ff.data(), R, ff2.data());
-        parallel_for(R, 32, [&](int64_t r0, int64_t r1) {
-            for (int64_t r = r0; r < r1; ++r)
-                for (int i = 0; i < D; ++i) h[size_t(r) * size_t(D) + size_t(i)] += gate_mlp[i] * ff2[size_t(r) * size_t(D) + size_t(i)];
-        });
+        { F5P("ff1"); matmul(L.ff1, nrm.data(), R, ff.data()); }
+        {
+            F5P("gelu");
+            parallel_for(int64_t(ff.size()), 8192, [&](int64_t a, int64_t e) { for (int64_t i = a; i < e; ++i) ff[size_t(i)] = gelu_tanh(ff[size_t(i)]); });
+        }
+        { F5P("ff2"); matmul(L.ff2, ff.data(), R, ff2.data()); }
+        gated_add(gate_mlp, ff2.data());
     }
 
     // финальная модуляция: порядок (scale, shift)
     std::vector<float> fin(size_t(2 * D));
     matmul(P.norm_out, ts.data(), 1, fin.data());
     modulate(h.data(), &fin[0], &fin[size_t(D)], nrm.data());
-    matmul(P.proj_out, nrm.data(), R, out);
+    { F5P("proj_out"); matmul(P.proj_out, nrm.data(), R, out); }
     ms_dit_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }
 
@@ -607,10 +742,22 @@ void F5Model::sample(const std::vector<float> &cond_mel, int cond_frames, const 
     std::vector<float> y(noise_in, noise_in + size_t(N) * size_t(M)), x2, pred(size_t(use_cfg ? 2 : 1) * size_t(N) * size_t(M));
     const int B = use_cfg ? 2 : 1;
     const size_t per = size_t(N) * size_t(M);
+    // GPU: условие и текст загружаются один раз, на шаг — только x и эмбеддинг времени
+    bool on_gpu = gpu_begin(B, N, nullptr, cond.data(), temb.data());
+    std::vector<float> tsv;
     for (size_t i = 0; i + 1 < ts.size(); ++i) {
-        x2.resize(per * size_t(B));
-        for (int b = 0; b < B; ++b) std::memcpy(&x2[per * size_t(b)], y.data(), per * 4);
-        dit_forward(B, N, x2.data(), cond.data(), temb.data(), ts[i], pred.data());
+        if (on_gpu) {
+            const auto t0 = std::chrono::steady_clock::now();
+            time_embed(ts[i], tsv);
+            F5P("dit_gpu");
+            on_gpu = gpu_f5_step(p_->gpu_f5, y.data(), tsv.data(), pred.data());
+            ms_dit_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        }
+        if (!on_gpu) {
+            x2.resize(per * size_t(B));
+            for (int b = 0; b < B; ++b) std::memcpy(&x2[per * size_t(b)], y.data(), per * 4);
+            dit_forward(B, N, x2.data(), cond.data(), temb.data(), ts[i], pred.data());
+        }
         const float dt = ts[i + 1] - ts[i];
         if (use_cfg) {
             for (size_t j = 0; j < per; ++j) {
@@ -622,6 +769,7 @@ void F5Model::sample(const std::vector<float> &cond_mel, int cond_frames, const 
         }
         if (progress) progress(int(i) + 1, int(ts.size()) - 1);
     }
+    if (p_->gpu_f5 >= 0) gpu_f5_end(p_->gpu_f5);
     out = std::move(y);
     std::memcpy(out.data(), cond_mel.data(), size_t(cond_frames) * size_t(M) * 4);
 }
@@ -633,6 +781,15 @@ void F5Model::vocode(const float *mel, int T, std::vector<float> &pcm) const {
     const Impl &P = *p_;
     const int D = cfg_.vocos_dim, I = cfg_.vocos_inter;
     const auto t0 = std::chrono::steady_clock::now();
+    const int nb = cfg_.vocos_n_fft / 2 + 1;
+    std::vector<float> head;
+    bool gpu_done = false;
+    if (P.gpu_vocos) {
+        F5P("vocos_gpu");
+        gpu_done = gpu_f5_vocos(P.gpu_f5, mel, T, head);
+    }
+    if (!gpu_done) {
+    F5P("vocos");
     std::vector<float> x(size_t(T) * size_t(D)), y(x.size()), h(size_t(T) * size_t(I)), z(x.size());
     P.v_embed.forward(mel, T, x.data());
     ln_rows(x.data(), T, D, P.v_ln_w, P.v_ln_b, 1e-6f, x.data());
@@ -648,13 +805,15 @@ void F5Model::vocode(const float *mel, int T, std::vector<float> &pcm) const {
         });
     }
     ln_rows(x.data(), T, D, P.v_fln_w, P.v_fln_b, 1e-6f, x.data());
-    const int nb = cfg_.vocos_n_fft / 2 + 1;
-    std::vector<float> head(size_t(T) * size_t(2 * nb)), mag(size_t(T) * size_t(nb)), ph(mag.size());
+    head.resize(size_t(T) * size_t(2 * nb));
     matmul(P.v_head, x.data(), T, head.data());
+    }
+    std::vector<float> mag(size_t(T) * size_t(nb)), ph(mag.size());
     for (int t = 0; t < T; ++t) {
         std::memcpy(&mag[size_t(t) * size_t(nb)], &head[size_t(t) * size_t(2 * nb)], size_t(nb) * 4);
         std::memcpy(&ph[size_t(t) * size_t(nb)], &head[size_t(t) * size_t(2 * nb) + size_t(nb)], size_t(nb) * 4);
     }
+    F5P("istft");
     istft_same(mag.data(), ph.data(), T, cfg_.vocos_n_fft, cfg_.vocos_hop, pcm, cfg_.vocos_center);
     ms_vocos_ += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
 }

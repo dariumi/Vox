@@ -75,6 +75,12 @@ struct Engine {
         return json_of([](const void *p, char *b, size_t c, size_t *l) {
             return vox_engine_stats(static_cast<const vox_engine *>(p), b, c, l); }, h);
     }
+    std::string phonemize(const std::string &text, const std::string &lang) const {
+        struct Arg { vox_engine *e; const std::string *t, *l; } arg{h, &text, &lang};
+        return json_of([](const void *p, char *b, size_t c, size_t *l) {
+            const Arg *x = static_cast<const Arg *>(p);
+            return vox_engine_phonemize(x->e, x->t->c_str(), x->l->c_str(), b, c, l); }, &arg);
+    }
 };
 
 struct Voice {
@@ -165,7 +171,8 @@ NB_MODULE(_vox, m) {
              "threads"_a = 0, "config_json"_a = "")
         .def_prop_ro("sample_rate", &Engine::sample_rate)
         .def("info", &Engine::info)
-        .def("stats", &Engine::stats);
+        .def("stats", &Engine::stats)
+        .def("phonemize", &Engine::phonemize);
 
     nb::class_<Voice>(m, "Voice")
         .def("save", &Voice::save)

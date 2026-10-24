@@ -1,0 +1,40 @@
+Hello world! This is a tiny test.
+It costs $3.50, or 42 dollars on May 5th, 1999.
+The quick brown fox jumps over the lazy dog.
+I can't believe it's already 10:30; we're late!
+Dr. Smith's cats were running, jumped, and played.
+She read the book that he reads every day.
+Kokoro is an open-weight text-to-speech model with 82 million parameters.
+We'll meet at 7 p.m. in New York City, near the Empire State Building.
+The U.S. economy grew by 2.5 percent in the third quarter of 2023.
+Please record the meeting, then present your report to the board.
+Wait... what did you just say?
+"Are you sure?" she asked, looking at the old map.
+They've been working on state-of-the-art models since 2019.
+My phone number is 555-1234, call me after 6.
+He paid £20 for the tickets and €15 for dinner.
+The temperature dropped to -5 degrees overnight.
+It's a well-known fact that cats love boxes.
+Our team won 3 out of 4 games this season.
+The 21st century began on January 1st, 2001.
+Can you read this sentence aloud, please?
+I don't know where they're going, but we'll follow them.
+The project's budget is 1,250,000 dollars.
+Do you live near the river, or live in the city center?
+The wind was strong, so we had to wind the rope tightly.
+He'll close the door; it's too close to the street.
+Our lead singer replaced the lead pipes yesterday.
+The students object to the object on the table.
+In 1984, George Orwell's novel was widely discussed.
+Approximately 3.14159 is the value of pi.
+The meeting starts at 9am and ends at 5pm.
+She has a PhD in computer science from MIT.
+Use the API to send a JSON request to the server.
+The quarterly report showed a 12% increase in revenue.
+We walked along the beach, collecting shells and stones.
+Isn't it wonderful how quickly children learn languages?
+The CEO announced a new strategy for 2025 and beyond.
+He bought 2 apples, 3 bananas, and a dozen eggs.
+The museum opens at 10 o'clock on weekdays.
+I'd like a cup of coffee with milk, no sugar.
+They moved to London in the summer of 2010.

@@ -15,7 +15,7 @@
 using namespace vox;
 
 #ifndef VOX_VERSION_STRING
-#define VOX_VERSION_STRING "0.12.2"
+#define VOX_VERSION_STRING "0.14.0"
 #endif
 
 extern std::string vox_internal_last_error();
@@ -422,6 +422,14 @@ VOX_API vox_status vox_engine_stats(const vox_engine *e, char *buf, size_t cap, 
     });
 }
 
+VOX_API vox_status vox_engine_phonemize(vox_engine *e, const char *utf8, const char *lang, char *buf, size_t cap, size_t *len) {
+    return guard([&] {
+        if (!e || !utf8) fail(VOX_ERR_ARG, "engine and text are required");
+        PoolScope scope(e->pool.get());
+        write_json(e->backend->phonemize(utf8, lang ? lang : ""), buf, cap, len);
+    });
+}
+
 VOX_API vox_status vox_devices_json(char *buf, size_t cap, size_t *len) {
     return guard([&] {
         json gpus = json::array();
@@ -494,10 +502,18 @@ VOX_API vox_status vox_voice_from_speaker(vox_engine *e, const char *speaker, co
         for (auto &ch : spk_l) ch = char(std::tolower(static_cast<unsigned char>(ch)));
         if (!spk.empty()) {
             if (!c.named_speakers) fail(VOX_ERR_ARG, "this model has no built-in speakers (model type: use a CustomVoice model, or clone a voice from a recording)");
-            if (std::find(c.speakers.begin(), c.speakers.end(), spk_l) == c.speakers.end()) {
-                std::string all;
-                for (const auto &s : c.speakers) all += (all.empty() ? "" : ", ") + s;
-                fail(VOX_ERR_ARG, "unknown speaker '" + spk + "'; this model has: " + all);
+            // "a,b,c" mixes speakers (Kokoro averages the voice packs): every name must exist
+            size_t a0 = 0;
+            while (a0 <= spk_l.size()) {
+                size_t b0 = spk_l.find(',', a0);
+                if (b0 == std::string::npos) b0 = spk_l.size();
+                const std::string one = spk_l.substr(a0, b0 - a0);
+                if (std::find(c.speakers.begin(), c.speakers.end(), one) == c.speakers.end()) {
+                    std::string all;
+                    for (const auto &s : c.speakers) all += (all.empty() ? "" : ", ") + s;
+                    fail(VOX_ERR_ARG, "unknown speaker '" + one + "'; this model has: " + all);
+                }
+                a0 = b0 + 1;
             }
             spk = spk_l;
         }

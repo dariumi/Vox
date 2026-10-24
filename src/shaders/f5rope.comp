@@ -1,0 +1,24 @@
+#version 450
+// F5-TTS rotary embedding on q and k (in place): interleaved pairs (2j, 2j+1), angle table cs[pos][j] = (cos, sin)
+// computed on the CPU; pos = row % N. hlim > 0: only the first hlim heads are rotated (F5TTS_Base / v0: pe_attn_head = 1).
+layout(local_size_x = 256) in;
+layout(std430, set = 0, binding = 0) readonly buffer CB { float cs[]; };
+layout(std430, set = 0, binding = 3) buffer QB { float q[]; };
+layout(std430, set = 0, binding = 4) buffer KB { float k[]; };
+layout(push_constant) uniform PC { uint R; uint N; uint H; uint HD; uint INNER; uint hlim; } pc;
+void main() {
+    const uint HH = pc.HD / 2u;
+    const uint i = gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * 65535u * 256u;
+    if (i >= pc.R * pc.H * HH) return;
+    const uint j = i % HH, rh = i / HH, h = rh % pc.H, r = rh / pc.H;
+    if (pc.hlim > 0u && h >= pc.hlim) return;
+    const uint pos = r % pc.N;
+    const float c = cs[(pos * HH + j) * 2u], s = cs[(pos * HH + j) * 2u + 1u];
+    const uint at = r * pc.INNER + h * pc.HD + 2u * j;
+    float x0 = q[at], x1 = q[at + 1u];
+    q[at] = x0 * c - x1 * s;
+    q[at + 1u] = x1 * c + x0 * s;
+    x0 = k[at]; x1 = k[at + 1u];
+    k[at] = x0 * c - x1 * s;
+    k[at + 1u] = x1 * c + x0 * s;
+}

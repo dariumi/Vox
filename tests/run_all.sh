@@ -20,6 +20,7 @@ python3 tests/test_python.py
 F5_DEVICES="cpu"
 if ./build/vox devices 2>/dev/null | grep -q '^vulkan:0'; then F5_DEVICES="cpu;vulkan:0,strict"; fi
 VOX_TEST_DEVICES="$F5_DEVICES" python3 tests/test_f5_tiny.py build/vox   # F5-TTS против f5_tts (нужны torch, f5-tts, vocos; иначе SKIP)
+python3 tests/test_kokoro_tiny.py build/vox   # Kokoro против официального kokoro + misaki (нужны torch, kokoro, misaki; иначе SKIP)
 python3 tests/test_library.py
 python3 tests/test_examples.py build/vox   # примеры на C, C++, Rust, Go, Node.js, Python ctypes: звук = звуку CLI до бита (нет инструментов — SKIP)
 VOX_WEB_FULL="${VOX_WEB_FULL:-}" python3 tests/test_web.py build/vox   # vox.js в Chromium (WebGPU) против эталона f5_tts (нужны playwright + chromium, torch, f5-tts; иначе SKIP)

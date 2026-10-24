@@ -107,6 +107,11 @@ public:
         return 0;
     }
 
+    // Текст → фонемы (модели с фонемным входом, например Kokoro): JSON {"phonemes": "...", "chunks": [...]}.
+    virtual std::string phonemize(const std::string &, const std::string & /*lang*/) {
+        fail(VOX_ERR_UNSUPPORTED, "this model does not use phonemes");
+    }
+
     // --- клонирование голоса ---
     virtual std::vector<float> speaker_embedding(const float *pcm, size_t n, uint32_t sr) = 0;
     // Возвращает коды [frames * num_codebooks] и число кадров.
@@ -166,6 +171,7 @@ class Family;
 std::shared_ptr<Family> make_qwen3_family();
 std::shared_ptr<Family> make_test_family();
 std::shared_ptr<Family> make_f5_family();
+std::shared_ptr<Family> make_kokoro_family();
 
 void write_test_model(const std::string &path);
 // Короткий путь: строка устройства → план → бэкенд (CLI verify, тесты). Движок использует plan_for_model + create_backend.

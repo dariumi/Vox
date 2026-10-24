@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.18)
-project(vox VERSION 0.12.2 LANGUAGES CXX)
+project(vox VERSION 0.14.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,15 +34,15 @@ add_library(vox_core STATIC
   src/kernels.cpp src/resources.cpp src/family.cpp src/f5_ops.cpp src/f5.cpp
   src/qwen3.cpp src/qwen3_voice.cpp
   src/backend_qwen3.cpp
-  src/backend_f5.cpp
+  src/backend_f5.cpp src/backend_kokoro.cpp src/kokoro.cpp src/kokoro_g2p.cpp src/kokoro_g2p_en.cpp
   src/backend_null.cpp
   src/engine.cpp)
 if(VOX_VULKAN)
   find_package(Vulkan)
 endif()
 if(VOX_VULKAN AND Vulkan_FOUND)
-  target_sources(vox_core PRIVATE src/gpu_vulkan.cpp src/gpu_codec.cpp)
-  set_source_files_properties(src/gpu_vulkan.cpp src/gpu_codec.cpp PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
+  target_sources(vox_core PRIVATE src/gpu_vulkan.cpp src/gpu_codec.cpp src/gpu_f5.cpp)
+  set_source_files_properties(src/gpu_vulkan.cpp src/gpu_codec.cpp src/gpu_f5.cpp PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
   target_link_libraries(vox_core PUBLIC Vulkan::Vulkan)
   message(STATUS "vox: Vulkan backend enabled")
 else()

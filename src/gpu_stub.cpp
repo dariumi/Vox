@@ -23,4 +23,9 @@ void gpu_codec_state_free(int) {}
 bool gpu_codec_forward(int, int, const float *, int, std::vector<float> &) { return false; }
 bool gpu_xfmr_forward(const TransformerW &, int, int64_t, const float *, int64_t, float *, const Mat *, const Mat *, float *) { return false; }
 bool gpu_xfmr_forward_hidden(const TransformerW &, int, int64_t, const float *, int64_t, float *) { return false; }
+int gpu_f5_create(const GpuF5Desc &) { return -1; }
+bool gpu_f5_begin(int, int, int, const float *, const float *) { return false; }
+bool gpu_f5_step(int, const float *, const float *, float *) { return false; }
+bool gpu_f5_vocos(int, const float *, int, std::vector<float> &) { return false; }
+void gpu_f5_end(int) {}
 }  // namespace vox

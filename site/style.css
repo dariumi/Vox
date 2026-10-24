@@ -99,6 +99,24 @@ td small { display: block; color: var(--muted); font-size: 13.5px; margin-top: 3
 @media (max-width: 900px) { .flow { grid-template-columns: 1fr 1fr; } .flow > div { border-bottom: 1px solid var(--line); } .flow > div:nth-child(2n) { border-right: 0; } .flow > div:nth-last-child(-n+2) { border-bottom: 0; } }
 @media (max-width: 520px) { .flow { grid-template-columns: 1fr; } .flow > div { border-right: 0; } .flow > div:nth-last-child(2) { border-bottom: 1px solid var(--line); } }
 
+/* конвейеры моделей */
+.pipes { display: grid; gap: 14px; }
+.pipe { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 18px; align-items: center; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px 20px; }
+.pipe .who b { display: block; font: 600 17px var(--display); letter-spacing: -.01em; }
+.pipe .who small { color: var(--muted); font-size: 13.5px; }
+.steps-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.steps-row .st { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 12px; font-size: 14px; line-height: 1.3; }
+.steps-row .st b { font-weight: 600; display: block; }
+.steps-row .st small { color: var(--muted); font-size: 12.5px; }
+.steps-row .arr { color: var(--accent); font-weight: 600; }
+@media (max-width: 760px) { .pipe { grid-template-columns: 1fr; gap: 12px; } }
+
+/* графики */
+.charts { display: grid; gap: 18px; }
+.charts figure { margin: 0; }
+.charts img { display: block; width: 100%; max-width: 760px; height: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+#perf p.note { color: var(--muted); font-size: 15px; max-width: 46em; margin: 24px 0 0; }
+
 /* вкладки и код */
 .tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: -1px; position: relative; z-index: 1; }
 .tabs button { font: 500 14px var(--body); background: transparent; color: var(--muted); border: 1px solid transparent; border-bottom: 0; padding: 9px 16px; border-radius: 8px 8px 0 0; cursor: pointer; }

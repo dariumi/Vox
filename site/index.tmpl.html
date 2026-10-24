@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>vox — a speech synthesis engine for any model</title>
-<meta name="description" content="vox runs Qwen3-TTS and F5-TTS from a single .tmod file: on the CPU, through Vulkan and in the browser through WebGPU. C ABI library, CLI, Python and vox.js.">
+<meta name="description" content="vox runs Qwen3-TTS, F5-TTS and Kokoro-82M from a single .tmod file: on the CPU, through Vulkan and in the browser through WebGPU. C ABI library, CLI, Python and vox.js.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23170f2b'/%3E%3Cpath d='M5 16h3l2-7 4 14 4-18 3 11h6' fill='none' stroke='%23ff6b8f' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=JetBrains+Mono:wght@400;500&family=Unbounded:wght@600;700&display=swap" rel="stylesheet">
@@ -15,7 +15,7 @@
   <div class="wrap">
     <a class="logo" href="#top" aria-label="vox"><svg viewBox="0 0 28 20" aria-hidden="true"><path d="M1 10h3l2-6 3.5 12L13 1l3.4 15L19 7l2 3h6" fill="none" stroke="var(--accent)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>vox</a>
     <nav aria-label="Sections">
-      <a href="#models">Models</a><a href="#download">Download</a><a href="#languages">Languages</a><a href="#demo">Demo</a>
+      <a href="#models">Models</a><a href="#perf">Performance</a><a href="#download">Download</a><a href="#languages">Languages</a><a href="#demo">Demo</a>
       <a class="lang" href="index.ru.html" hreflang="ru" lang="ru">Русский</a><a class="gh" href="https://github.com/dariumi/Vox">GitHub</a>
     </nav>
   </div>
@@ -26,7 +26,7 @@
   <div class="wrap">
     <div>
       <h1>A speech engine that is not tied to one model</h1>
-      <p class="lead">vox runs Qwen3-TTS and F5-TTS from a single <code>.tmod</code> file: on the CPU, on a GPU through Vulkan and right in the browser through WebGPU. One <code>seed</code>, one sound.</p>
+      <p class="lead">vox runs Qwen3-TTS, F5-TTS and Kokoro-82M from a single <code>.tmod</code> file: on the CPU, on a GPU through Vulkan and right in the browser through WebGPU. One <code>seed</code>, one sound.</p>
       <div class="actions">
         <a class="btn primary" href="#demo">Try it in the browser</a>
         <a class="btn" href="#download">Download</a>
@@ -76,7 +76,8 @@
         <thead><tr><th>Model</th><th>CPU</th><th>Vulkan</th><th>Browser (WebGPU)</th><th>What is verified</th></tr></thead>
         <tbody>
           <tr><td><b>Qwen3-TTS 12Hz</b><small>Base, CustomVoice, VoiceDesign; 0.6B and 1.7B</small></td><td class="y">yes</td><td class="y">yes</td><td class="y">yes</td><td>The core is compared with the official <code>qwen_tts</code>, including on a real 1.7B Base; RTX 3050 timings are in the README. In the browser: loading from an HF link and synthesis are compared with the core on a tiny model; real weights and a real GPU have not been measured. Base voice cloning from a recording runs in the browser (compared with the core on a tiny model)</td></tr>
-          <tr><td><b>F5-TTS</b><small>DiT + flow matching + Vocos, cloning from a sample</small></td><td class="y">yes</td><td class="p">linear layers</td><td class="y">yes</td><td>Compared with <code>f5_tts</code> and <code>vocos</code> on a test model, in the browser too. Speed on real weights and a real GPU has not been measured</td></tr>
+          <tr><td><b>F5-TTS</b><small>DiT + flow matching + Vocos, cloning from a sample</small></td><td class="y">yes</td><td class="y">yes, whole graph</td><td class="y">yes</td><td>Compared with <code>f5_tts</code> and <code>vocos</code> on a test model, in the browser too; the Vulkan graph (DiT and Vocos) too, to 4e-9 on lavapipe. Speed on a real GPU has not been measured</td></tr>
+          <tr><td><b>Kokoro-82M</b><small>StyleTTS2 + iSTFTNet; named voices and blends; English G2P built in</small></td><td class="y">yes</td><td class="n">not yet</td><td class="n">not yet</td><td>Every stage is compared with the official <code>kokoro</code> to ~1e-6; end-to-end audio has the same length and a log-mel difference of 0.16–0.71 dB. The built-in G2P matches <code>misaki</code> on 92% of words; with the Python <code>misaki</code> the pieces are exactly those of <code>KPipeline</code>. Real weights have not been checked</td></tr>
           <tr><td><b>XTTS, CosyVoice, Chatterbox</b></td><td class="n" colspan="3">queued</td><td>To be added one model per iteration</td></tr>
         </tbody>
       </table>
@@ -89,11 +90,36 @@
     <h2>From text to sound</h2>
     <p class="sub">All clients go through the same contract. Only the place where the model runs differs.</p>
     <div class="flow">
-      <div><h3>Converter</h3><p>Hugging Face weights become a <code>.tmod</code>: f32, f16, bf16, q8 or q4.</p><ul><li><code>python -m vox build</code></li><li><code>python -m vox.build_f5</code></li></ul></div>
+      <div><h3>Converter</h3><p>Hugging Face weights become a <code>.tmod</code>: f32, f16, bf16, q8 or q4.</p><ul><li><code>python -m vox build</code></li><li><code>python -m vox.build_f5</code></li><li><code>python -m vox.build_kokoro</code></li></ul></div>
       <div><h3>Family</h3><p>Describes the model stages and knows how to clone a voice. Autoregressive models go through codecs, the rest through the “direct” mode.</p></div>
       <div><h3>Device</h3><p>The planner places the stages on the hardware.</p><ul><li>CPU: AVX2, aarch64</li><li>Vulkan: NVIDIA, AMD, Intel</li><li>WebGPU: browser (<code>vox.js</code>)</li></ul></div>
       <div><h3>Client</h3><p>Audio is float32, mono. Take it in one piece or as a stream.</p><ul><li>C ABI, C++, Rust, Go</li><li>Python, Node.js</li><li>HTTP server, browser</li></ul></div>
     </div>
+  </div>
+</section>
+
+<section class="block" id="pipelines">
+  <div class="wrap">
+    <h2>How each model runs</h2>
+    <p class="sub">Each family is a chain of native stages. Every stage is compared with the official PyTorch code on a tiny model built from the official classes.</p>
+    <div class="pipes">
+      <div class="pipe"><div class="who"><b>Qwen3-TTS</b><small>autoregressive, word-by-word input</small></div><div class="steps-row"><span class="st"><b>text</b><small>BPE Qwen2</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>prefill</b><small>voice · speaker · instruction</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>talker</b><small>1 token / frame</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>code predictor</b><small>15 passes, 1 dispatch</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>codec decoder</b><small>streaming, 320 ms chunks</small></span></div></div>
+      <div class="pipe"><div class="who"><b>F5-TTS</b><small>flow matching, whole sentences</small></div><div class="steps-row"><span class="st"><b>text</b><small>split like infer_process</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>DiT × NFE</b><small>2 CFG branches, one GPU command buffer per step</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>Vocos</b><small>on the GPU</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>iSTFT</b></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>crossfade</b><small>0.15 s</small></span></div></div>
+      <div class="pipe"><div class="who"><b>Kokoro-82M</b><small>new in 0.14 · named voices</small></div><div class="steps-row"><span class="st"><b>G2P</b><small>built-in misaki port</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>PL-BERT</b><small>ALBERT</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>prosody</b><small>durations · F0 · energy</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>decoder</b><small>AdaIN</small></span><span class="arr" aria-hidden="true">→</span><span class="st"><b>iSTFTNet</b><small>NSF source, Snake</small></span></div></div>
+    </div>
+  </div>
+</section>
+
+<section class="block" id="perf">
+  <div class="wrap">
+    <h2>Performance</h2>
+    <p class="sub">Measured by a user on vox 0.12.2 with <code>tools/run_full_check.py</code>: Ryzen 7 5700X + RTX 3050 6 GB, Qwen3-TTS 1.7B-Base, about 13 s of speech. qwentts.cpp ran on the same machine with the same text.</p>
+    <div class="charts">
+      <figure><img src="img/qwen-rtf-site.en.svg" alt="Qwen3-TTS 1.7B RTF: vox Vulkan q4 0.41, q8 0.44, bf16 0.59, qwentts.cpp CUDA 0.43; CPU: vox q4 1.64, q8 1.96, bf16 2.98, qwentts.cpp 2.16" width="760" loading="lazy"></figure>
+      <figure><img src="img/qwen-memory-site.en.svg" alt="Peak RSS: vox q8 Vulkan 0.47 GB vs qwentts.cpp CUDA 2.97 GB; CPU: vox q8 2.4 GB vs qwentts.cpp 7.1 GB" width="760" loading="lazy"></figure>
+      <figure><img src="img/f5-cpu-site.en.svg" alt="F5-TTS CPU seconds: f32 16.6 → 7.7, bf16 17.4 → 8.0, q8 17.1 → 7.2" width="760" loading="lazy"></figure>
+    </div>
+    <p class="note">Not measured on hardware yet: F5-TTS on a real video card (the whole-graph GPU path of 0.13) and Kokoro on real weights. Run <code>tools/run_full_check.py</code> on your machine to get your numbers.</p>
   </div>
 </section>
 

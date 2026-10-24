@@ -71,6 +71,7 @@ void usage() {
     std::printf("vox %s — движок синтеза речи\n\n", vox_version());
     std::puts(
         "  vox info <файл.tmod|файл.tvoice>\n"
+        "  vox phonemize --model kokoro.tmod [--lang en-gb] \"текст\"   (фонемы, которые озвучит модель с фонемным входом)\n"
         "  vox devices [--json]   (процессор, память, GPU с индексами и свободной видеопамятью)\n"
         "  vox voice speaker --model M.tmod [--speaker NAME] [--instruct ТЕКСТ] -o v.tvoice   (диктор CustomVoice / описание голоса VoiceDesign)\n"
         "  vox say \"текст\" --model M.tmod --speaker NAME [--instruct ТЕКСТ] -o out.wav        (без файла голоса)\n"
@@ -530,6 +531,30 @@ int cmd_bench(const Args &a) {
 }
 
 // Читает JSON-строки из stdin, печатает JSON-массивы id (для проверки токенизатора).
+// vox phonemize --model kokoro.tmod [--lang en-gb] "text"   (or lines of JSON strings on stdin with --json)
+int cmd_phonemize(const Args &a) {
+    vox_engine *e = open_engine(a);
+    const std::string lang = a.get("--lang", "");
+    auto one = [&](const std::string &text) {
+        size_t n = 0;
+        check(vox_engine_phonemize(e, text.c_str(), lang.c_str(), nullptr, 0, &n), "phonemize");
+        std::string buf(n + 1, '\0');
+        check(vox_engine_phonemize(e, text.c_str(), lang.c_str(), buf.data(), buf.size(), &n), "phonemize");
+        buf.resize(n);
+        return buf;
+    };
+    if (a.has("--json")) {
+        std::string line;
+        while (std::getline(std::cin, line)) std::cout << one(vox::json::parse(line).get<std::string>()) << "\n" << std::flush;
+    } else {
+        std::string text;
+        for (const auto &p : a.pos) text += (text.empty() ? "" : " ") + p;
+        std::cout << vox::json::parse(one(text))["phonemes"].get<std::string>() << "\n";
+    }
+    vox_engine_close(e);
+    return 0;
+}
+
 int cmd_tokenize(const Args &a) {
     if (!a.has("--model")) die("--model is required");
     vox::TmodFile f(a.get("--model"));
@@ -763,6 +788,7 @@ int main(int argc, char **argv) {
         if (cmd == "live") return cmd_live(a);
         if (cmd == "bench") return cmd_bench(a);
         if (cmd == "tokenize") return cmd_tokenize(a);
+        if (cmd == "phonemize") return cmd_phonemize(a);
         if (cmd == "verify") return cmd_verify(a);
         if (cmd == "make-test-model") return cmd_make_test_model(a);
         if (cmd == "build" || cmd == "serve") {

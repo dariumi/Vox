@@ -1,0 +1,71 @@
+#version 450
+// Grouped 1D convolution with "same" zero padding (pad = K/2) over time-major activations, per sequence:
+//   Y[s][t][o] (op)= epi( bias[o] + sum_{k<K, c<cig} W[o][k*cig + c] * X[s][t + k - pad][g*cig + c] ),  g = o / cog
+// F5-TTS ConvPositionEmbedding (K=31, groups=16), Vocos embed (K=7, groups=1) and Vocos depthwise conv (K=7, groups=C).
+// Tile 64 (time) x 64 (output channels of one group), 4x4 outputs per thread. W is f32, K-major inside a group.
+// flags: 1 = + bias; 2 = Mish; 4 = Y += v (else Y = v).
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(std430, set = 0, binding = 0) readonly buffer WB { float w[]; };
+layout(std430, set = 0, binding = 2) readonly buffer BB { float bias[]; };
+layout(std430, set = 0, binding = 3) readonly buffer XB { float x[]; };
+layout(std430, set = 0, binding = 4) buffer YB { float y[]; };
+layout(push_constant) uniform PC { uint N; uint CIN; uint COUT; uint K; uint G; uint flags; } pc;
+
+shared float Ws[16][65];
+shared float Xs[16][65];
+
+float mish(float v) {
+    const float sp = v > 20.0 ? v : log(1.0 + exp(v));
+    return v * tanh(sp);
+}
+
+void main() {
+    const uint tx = gl_LocalInvocationID.x, ty = gl_LocalInvocationID.y, lid = ty * 16u + tx;
+    const uint cig = pc.CIN / pc.G, cog = pc.COUT / pc.G, otiles = (cog + 63u) / 64u;
+    const uint g = gl_WorkGroupID.y / otiles, ot = gl_WorkGroupID.y - g * otiles;
+    const uint t0 = gl_WorkGroupID.x * 64u, ol0 = ot * 64u, s = gl_WorkGroupID.z;
+    const uint KC = pc.K * cig, pad = pc.K / 2u;
+    float acc[4][4];
+    for (uint i = 0u; i < 4u; ++i) for (uint j = 0u; j < 4u; ++j) acc[i][j] = 0.0;
+
+    for (uint k0 = 0u; k0 < KC; k0 += 16u) {
+        for (uint e = 0u; e < 4u; ++e) {
+            const uint idx = lid + e * 256u;
+            const uint kl = idx & 15u, rl = idx >> 4u;
+            const uint kk = k0 + kl;
+            const uint ol = ol0 + rl;
+            Ws[kl][rl] = (ol < cog && kk < KC) ? w[(g * cog + ol) * KC + kk] : 0.0;
+            float xv = 0.0;
+            const uint t = t0 + rl;
+            if (t < pc.N && kk < KC) {
+                const uint kq = kk / cig, c = kk - kq * cig;
+                const int tt = int(t + kq) - int(pad);
+                if (tt >= 0 && tt < int(pc.N)) xv = x[(s * pc.N + uint(tt)) * pc.CIN + g * cig + c];
+            }
+            Xs[kl][rl] = xv;
+        }
+        barrier();
+        for (uint kl = 0u; kl < 16u; ++kl) {
+            float a[4], b[4];
+            for (uint i = 0u; i < 4u; ++i) a[i] = Ws[kl][ty * 4u + i];
+            for (uint j = 0u; j < 4u; ++j) b[j] = Xs[kl][tx * 4u + j];
+            for (uint i = 0u; i < 4u; ++i) for (uint j = 0u; j < 4u; ++j) acc[i][j] += a[i] * b[j];
+        }
+        barrier();
+    }
+    for (uint i = 0u; i < 4u; ++i) {
+        const uint ol = ol0 + ty * 4u + i;
+        if (ol >= cog) continue;
+        const uint o = g * cog + ol;
+        for (uint j = 0u; j < 4u; ++j) {
+            const uint t = t0 + tx * 4u + j;
+            if (t >= pc.N) continue;
+            float v = acc[i][j];
+            if ((pc.flags & 1u) != 0u) v += bias[o];
+            if ((pc.flags & 2u) != 0u) v = mish(v);
+            const uint yi = (s * pc.N + t) * pc.COUT + o;
+            if ((pc.flags & 4u) != 0u) v += y[yi];
+            y[yi] = v;
+        }
+    }
+}

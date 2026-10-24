@@ -552,11 +552,35 @@ void quantize_q4(const float *w, int64_t rows, int64_t cols, std::vector<uint8_t
         }
 }
 
+constexpr int64_t kQ8IntMaxRows = 8;
+
 void matmul(const Mat &W, const float *x, int64_t m, float *y) {
     const int64_t rows = W.rows, cols = W.cols;
     if ((W.type == WType::Q8 || W.type == WType::Q4) && (cols % 32)) fail(VOX_ERR_FORMAT, "Q8/Q4 matrix needs cols % 32 == 0");
     if (W.gpu >= 0 && gpu_matmul(W, x, m, y)) return;
-    if (W.type == WType::Q8) { matmul_q8(W, x, m, y); return; }
+    // Q8: при малом m (декодирование) — целочисленные скалярные произведения со входом, квантованным в int8;
+    // при большом m (префилл, DiT, вокодер) — плиточный путь с деквантованием весов и входом float: он быстрее (блок x держится
+    // в кэше) и точнее (квантуются только веса, как в шейдере GPU).
+    if (W.type == WType::Q8 && m <= kQ8IntMaxRows) { matmul_q8(W, x, m, y); return; }
+    if (W.type == WType::Q8) {   // развернуть веса во float один раз (это ~1/m от работы самого умножения) и считать как f32
+        thread_local std::vector<float> wf_buf;
+        wf_buf.resize(size_t(rows) * size_t(cols));
+        float *wf = wf_buf.data();   // в лямбде нельзя трогать thread_local: она выполняется в потоках пула
+        parallel_for(rows, 16, [&](int64_t r0, int64_t r1) {
+            const int8_t *q = reinterpret_cast<const int8_t *>(W.data);
+            for (int64_t r = r0; r < r1; ++r)
+                for (int64_t b = 0; b < cols / 32; ++b) {
+                    const float sc = W.scale[r * (cols / 32) + b];
+                    const int8_t *src = q + r * cols + b * 32;
+                    float *dst = &wf[size_t(r * cols + b * 32)];
+                    for (int j = 0; j < 32; ++j) dst[j] = float(src[j]) * sc;
+                }
+        });
+        Mat F = W;
+        F.type = WType::F32; F.data = reinterpret_cast<const uint8_t *>(wf); F.scale = nullptr; F.gpu = -1;
+        matmul(F, x, m, y);
+        return;
+    }
     if (W.type == WType::Q4) { matmul_q4(W, x, m, y); return; }
     // зерно параллелизма: диапазон строк кратен 4, чтобы плитки не рвались между потоками
     const int64_t work_per_row = std::max<int64_t>(1, cols * m);

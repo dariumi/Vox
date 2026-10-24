@@ -276,6 +276,12 @@ void init_impl(const std::string &spec) {
         }
         g.extra_modules[15] = make_module(k_gather_spv, sizeof(k_gather_spv));
         for (uint32_t t = 0; t < 3; ++t) { uint32_t wtype = t; g.pipe[P_GATHER + int(t)] = make_pipe(g.extra_modules[15], &wtype); }
+        const uint32_t *f5c[5] = {k_f5attn_spv, k_f5conv_spv, k_f5ln_spv, k_f5ew_spv, k_f5rope_spv};
+        const size_t f5s[5] = {sizeof(k_f5attn_spv), sizeof(k_f5conv_spv), sizeof(k_f5ln_spv), sizeof(k_f5ew_spv), sizeof(k_f5rope_spv)};
+        for (int i = 0; i < 5; ++i) {
+            g.extra_modules[16 + i] = make_module(f5c[i], f5s[i]);
+            g.pipe[P_F5ATTN + i] = make_pipe(g.extra_modules[16 + i], nullptr);
+        }
     }
     VkDescriptorPoolSize dps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * 4096};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -587,14 +593,18 @@ void barrier_cc() {
 const char *kPipeNames[] = {"matmul.f32", "matmul.f16", "matmul.bf16", "matmul.q8", "matmul.q4", "rmsnorm", "qkrope", "attention",
                             "silumul", "gemm.f32", "gemm.f16", "gemm.bf16", "gemm.q8", "gemm.q4", "snake", "dwconv", "layernorm",
                             "overlap_add", "history", "attn_window", "ring_put", "qkv_split", "swiglu", "sample",
-                            "gather.f32", "gather.f16", "gather.bf16"};
+                            "gather.f32", "gather.f16", "gather.bf16", "f5.attention", "f5.conv", "f5.layernorm", "f5.elementwise",
+                            "f5.rope"};
 static_assert(sizeof(kPipeNames) / sizeof(kPipeNames[0]) == kNumPipes, "kPipeNames must list every pipeline in enum Pipe order");
 void disp(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_words, uint32_t gx, uint32_t gy) {
+    disp3(pipe, b, pc, pc_words, gx, gy, 1);
+}
+void disp3(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_words, uint32_t gx, uint32_t gy, uint32_t gz) {
     VkDescriptorSet ds = dyn_set(b);
     vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe[pipe]);
     vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pl, 0, 1, &ds, 0, nullptr);
     vkCmdPushConstants(g.cmd, g.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, pc_words * 4, pc);
-    vkCmdDispatch(g.cmd, gx, gy, 1);
+    vkCmdDispatch(g.cmd, gx, gy, gz);
     barrier_cc();
     if (g.prof && g.qn < g.qcap) {
         vkCmdWriteTimestamp(g.cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, g.qpool, g.qn++);
@@ -625,7 +635,7 @@ const VkBuffer kNoBuf = VK_NULL_HANDLE;
 
 // y (+)= W x for m rows. m <= 8: GEMV (weights streamed once per 4 rows, best for decoding);
 // m > 8: tiled GEMM (weights read once per 64 rows) — the prefill path.
-void rec_mm(int mat, VkBuffer in, VkBuffer out, int64_t m, bool accum, int64_t y_off = 0) {
+void rec_mm(int mat, VkBuffer in, VkBuffer out, int64_t m, bool accum, int64_t y_off) {
     const GpuMat &gm = g.mats[size_t(mat)];
     if (m > 8 && y_off == 0) {
         const VkBuffer b[6] = {gm.w, gm.s ? gm.s : kNoBuf, gm.b ? gm.b : kNoBuf, in, out, kNoBuf};

@@ -81,6 +81,11 @@ jobs:
           pip install transformers==4.57.3 accelerate==1.12.0
       - name: F5-TTS vs official f5_tts / vocos (tiny random model; CPU and Vulkan)
         run: VOX_TEST_DEVICES="cpu;vulkan:0,strict" python tests/test_f5_tiny.py build/vox
+      - name: Kokoro vs official kokoro / misaki (tiny random model; stages, KPipeline pieces, built-in G2P)
+        run: |
+          pip install --no-deps kokoro misaki
+          pip install loguru num2words spacy phonemizer-fork espeakng-loader
+          python tests/test_kokoro_tiny.py build/vox
       - name: vox.js in Chromium (WebGPU via SwiftShader) vs official f5_tts / vocos
         run: |
           pip install playwright

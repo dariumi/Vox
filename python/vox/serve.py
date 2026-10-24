@@ -61,15 +61,21 @@ class Server:
         self._lock = threading.Lock()
 
     def list_voices(self):
-        if not self.voices_dir or not self.voices_dir.is_dir():
-            return []
-        return sorted(p.stem for p in self.voices_dir.glob("*.tvoice"))
+        files = sorted(p.stem for p in self.voices_dir.glob("*.tvoice")) if self.voices_dir and self.voices_dir.is_dir() else []
+        # built-in speakers of the model (Kokoro voices, Qwen3 CustomVoice speakers) are voices too
+        return files + [s for s in self.engine.speakers if s not in files]
 
     def voice(self, name):
-        if not self.voices_dir or not name or os.sep in name or name.startswith("."):
+        if not name or os.sep in name or name.startswith("."):
             raise KeyError(name)
-        path = self.voices_dir / f"{name}.tvoice"
-        if not path.is_file():
+        path = self.voices_dir / f"{name}.tvoice" if self.voices_dir else None
+        if path is None or not path.is_file():
+            parts = [p.strip().lower() for p in name.split(",")]
+            if self.engine.speakers and all(p in self.engine.speakers for p in parts):   # "af_heart" or a mix "af_heart,am_adam"
+                with self._lock:
+                    if name not in self._voices:
+                        self._voices[name] = (0, self.engine.speaker_voice(",".join(parts)))
+                    return self._voices[name][1]
             raise KeyError(name)
         with self._lock:
             mtime = path.stat().st_mtime
