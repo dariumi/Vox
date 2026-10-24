@@ -134,7 +134,8 @@ void Ctx::shutdown() {
         for (VkDeviceMemory m : sq_.vm) if (m) vkFreeMemory(dev, m, nullptr);
     }
     if (dyn) vkDestroyDescriptorPool(dev, dyn, nullptr);
-    for (auto p : pipe) if (p) vkDestroyPipeline(dev, p, nullptr);
+    for (auto &p : pipe) { if (p) vkDestroyPipeline(dev, p, nullptr); p = VK_NULL_HANDLE; }
+    for (auto &m : pipe_mod) m = VK_NULL_HANDLE;
     if (sm) vkDestroyShaderModule(dev, sm, nullptr);
     for (auto m : extra_modules) if (m) vkDestroyShaderModule(dev, m, nullptr);
     if (pl) vkDestroyPipelineLayout(dev, pl, nullptr);
@@ -246,24 +247,17 @@ void init_impl(const std::string &spec) {
         VKC(vkCreateShaderModule(g.dev, &mi, nullptr, &m));
         return m;
     };
-    auto make_pipe = [&](VkShaderModule m, const uint32_t *spec) {
-        VkSpecializationMapEntry me{0, 0, 4};
-        VkSpecializationInfo si{1, &me, 4, spec};
-        VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, m, "main", spec ? &si : nullptr};
-        cpi.layout = g.pl;
-        VkPipeline p;
-        VKC(vkCreateComputePipelines(g.dev, VK_NULL_HANDLE, 1, &cpi, nullptr, &p));
-        return p;
-    };
-    for (uint32_t t = 0; t < 5; ++t) { uint32_t wtype = t; g.pipe[t] = make_pipe(g.sm, &wtype); }
+    // Pipelines are compiled on first use (pipe_get): a driver keeps every compiled pipeline in host memory, and a Qwen3 model
+    // never needs the F5 / flow ones (0.14.1–0.17.1 compiled all 36 at start: +12–25 MB of RSS on the GPU path).
+    auto lazy = [&](int i, VkShaderModule m, int spec) { g.pipe_mod[i] = m; g.pipe_spec[i] = spec; };
+    for (int t = 0; t < 5; ++t) lazy(t, g.sm, t);
     g.extra_modules[0] = make_module(k_rmsnorm_spv, sizeof(k_rmsnorm_spv));
     g.extra_modules[1] = make_module(k_qkrope_spv, sizeof(k_qkrope_spv));
     g.extra_modules[2] = make_module(k_attention_spv, sizeof(k_attention_spv));
     g.extra_modules[3] = make_module(k_silumul_spv, sizeof(k_silumul_spv));
-    for (int i = 0; i < 4; ++i) g.pipe[P_RMS + i] = make_pipe(g.extra_modules[i], nullptr);
+    for (int i = 0; i < 4; ++i) lazy(P_RMS + i, g.extra_modules[i], -1);
     g.extra_modules[4] = make_module(k_convgemm_spv, sizeof(k_convgemm_spv));
-    for (uint32_t t = 0; t < 5; ++t) { uint32_t wtype = t; g.pipe[P_GEMM + int(t)] = make_pipe(g.extra_modules[4], &wtype); }
+    for (int t = 0; t < 5; ++t) lazy(P_GEMM + t, g.extra_modules[4], t);
     {
         const uint32_t *codes[10] = {k_snake_spv, k_dwconv_spv, k_layernorm_spv, k_ola_spv, k_hist_spv, k_attnw_spv, k_ringput_spv,
                                      k_qkvsplit_spv, k_swiglu_spv, k_sample_spv};
@@ -272,18 +266,18 @@ void init_impl(const std::string &spec) {
                                   sizeof(k_swiglu_spv), sizeof(k_sample_spv)};
         for (int i = 0; i < 10; ++i) {
             g.extra_modules[5 + i] = make_module(codes[i], sizes[i]);
-            g.pipe[P_SNAKE + i] = make_pipe(g.extra_modules[5 + i], nullptr);
+            lazy(P_SNAKE + i, g.extra_modules[5 + i], -1);
         }
         g.extra_modules[15] = make_module(k_gather_spv, sizeof(k_gather_spv));
-        for (uint32_t t = 0; t < 3; ++t) { uint32_t wtype = t; g.pipe[P_GATHER + int(t)] = make_pipe(g.extra_modules[15], &wtype); }
+        for (int t = 0; t < 3; ++t) lazy(P_GATHER + t, g.extra_modules[15], t);
         const uint32_t *f5c[5] = {k_f5attn_spv, k_f5conv_spv, k_f5ln_spv, k_f5ew_spv, k_f5rope_spv};
         const size_t f5s[5] = {sizeof(k_f5attn_spv), sizeof(k_f5conv_spv), sizeof(k_f5ln_spv), sizeof(k_f5ew_spv), sizeof(k_f5rope_spv)};
         for (int i = 0; i < 5; ++i) {
             g.extra_modules[16 + i] = make_module(f5c[i], f5s[i]);
-            g.pipe[P_F5ATTN + i] = make_pipe(g.extra_modules[16 + i], nullptr);
+            lazy(P_F5ATTN + i, g.extra_modules[16 + i], -1);
         }
         g.extra_modules[21] = make_module(k_gemmb_spv, sizeof(k_gemmb_spv));
-        for (uint32_t t = 0; t < 4; ++t) { uint32_t wtype = t; g.pipe[P_GEMMB + int(t)] = make_pipe(g.extra_modules[21], &wtype); }
+        for (int t = 0; t < 4; ++t) lazy(P_GEMMB + t, g.extra_modules[21], t);
     }
     VkDescriptorPoolSize dps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 6 * 4096};
     VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -549,7 +543,7 @@ bool gpu_matmul(const Mat &W, const float *x, int64_t m, float *y) {
             const int64_t mc = std::min(chunk, m - i0);
             std::memcpy(g.xp, x + i0 * cols, size_t(mc * cols) * sizeof(float));
             begin_cmd();
-            vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe[int(gm.type)]);
+            vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_get(int(gm.type)));
             vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pl, 0, 1, &gm.ds, 0, nullptr);
             const uint32_t pc[6] = {uint32_t(rows), uint32_t(cols), uint32_t(mc), (gm.bias ? 1u : 0u) | vec_flag(gm), 0u, 0u};
             vkCmdPushConstants(g.cmd, g.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, 24, pc);
@@ -603,7 +597,7 @@ void disp(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_word
 }
 void disp3(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_words, uint32_t gx, uint32_t gy, uint32_t gz) {
     VkDescriptorSet ds = dyn_set(b);
-    vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pipe[pipe]);
+    vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipe_get(pipe));
     vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_COMPUTE, g.pl, 0, 1, &ds, 0, nullptr);
     vkCmdPushConstants(g.cmd, g.pl, VK_SHADER_STAGE_COMPUTE_BIT, 0, pc_words * 4, pc);
     vkCmdDispatch(g.cmd, gx, gy, gz);
@@ -614,6 +608,19 @@ void disp3(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_wor
     }
 }
 uint32_t fbits(float f) { uint32_t u; std::memcpy(&u, &f, 4); return u; }
+VkPipeline pipe_get(int i) {
+    if (g.pipe[i]) return g.pipe[i];
+    if (!g.pipe_mod[i]) throw std::runtime_error(std::string("GPU pipeline ") + kPipeNames[i] + " is not available");
+    const uint32_t spec = uint32_t(g.pipe_spec[i]);
+    VkSpecializationMapEntry me{0, 0, 4};
+    VkSpecializationInfo si{1, &me, 4, &spec};
+    VkComputePipelineCreateInfo cpi{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+    cpi.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0, VK_SHADER_STAGE_COMPUTE_BIT, g.pipe_mod[i], "main",
+                 g.pipe_spec[i] >= 0 ? &si : nullptr};
+    cpi.layout = g.pl;
+    VKC(vkCreateComputePipelines(g.dev, VK_NULL_HANDLE, 1, &cpi, nullptr, &g.pipe[i]));
+    return g.pipe[i];
+}
 void ensure_scratch(const GpuXfmr &X) {
     const size_t qd = size_t(X.heads) * size_t(X.hd), kd = size_t(X.kv) * size_t(X.hd);
     const size_t H = size_t(kMaxM) * size_t(X.H) * 4, Q = size_t(kMaxM) * qd * 4,

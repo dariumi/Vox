@@ -139,7 +139,8 @@ public:
         return c;
     }
     json stats() const override {
-        return {{"dit_ms", model_.ms_dit()}, {"vocos_ms", model_.ms_vocos()}, {"weights_bytes", model_.weight_bytes()}, {"device", gpu_ ? "vulkan" : "cpu"}, {"gpu_graph", model_.gpu_graph()}, {"gpu_matrices", model_.gpu_mats()}, {"matrices", model_.linear_mats()}};
+        return {{"dit_ms", model_.ms_dit()}, {"vocos_ms", model_.ms_vocos()}, {"weights_bytes", model_.weight_bytes()}, {"device", gpu_ ? "vulkan" : "cpu"}, {"gpu_graph", model_.gpu_graph()}, {"gpu_matrices", model_.gpu_mats()}, {"matrices", model_.linear_mats()},
+                {"gemm", gpu_ ? gpu_gemm_choice() : ""}};
     }
 
     // --- интерфейс, не используемый моделью без кодов ---

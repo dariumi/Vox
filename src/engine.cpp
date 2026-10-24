@@ -20,7 +20,7 @@
 using namespace vox;
 
 #ifndef VOX_VERSION_STRING
-#define VOX_VERSION_STRING "0.17.1"
+#define VOX_VERSION_STRING "0.18.0"
 #endif
 
 extern std::string vox_internal_last_error();

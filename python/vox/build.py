@@ -172,11 +172,18 @@ class Emitter:
         if dtype == "F32":
             self.blobs[name] = LazyBlob("F32", shape, lambda: np.asarray(producer(), dtype=np.float32))
         elif dtype == "F16":
-            self.blobs[name] = LazyBlob("F16", shape, lambda: np.asarray(producer(), dtype=np.float32).astype("<f2"))
+            self.blobs[name] = LazyBlob("F16", shape, lambda: to_f16_checked(name, producer()))
         elif dtype == "BF16":
             self.blobs[name] = LazyBlob("BF16", shape, lambda: f32_to_bf16_bytes(producer()))
         else:
             raise ValueError(dtype)
+
+
+def to_f16_checked(name: str, w) -> np.ndarray:
+    a = np.asarray(w, dtype=np.float32)
+    if a.size and float(np.max(np.abs(a))) > 65504.0:
+        raise SystemExit(f"{name}: values beyond the f16 range (max |w| {float(np.max(np.abs(a))):.3g}); convert with --dtype bf16")
+    return a.astype("<f2")
 
 
 def weights_sha256(model_dir: str) -> str:

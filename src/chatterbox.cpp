@@ -9,6 +9,7 @@
 #include <numeric>
 #include <set>
 
+#include "gpu.hpp"
 #include "nn.hpp"
 #include "sampling.hpp"
 
@@ -175,6 +176,16 @@ ChatterboxT3::ChatterboxT3(std::shared_ptr<TmodFile> f) : p_(new Impl), file_(st
 ChatterboxT3::~ChatterboxT3() = default;
 
 bool ChatterboxT3::has_voice_encoder() const { return p_->ve; }
+bool ChatterboxT3::gpu() const { return p_->tf.gpu_id >= 0; }
+bool ChatterboxT3::enable_gpu() {
+    Impl &P = *p_;
+    if (P.tf.gpu_id >= 0) return true;
+    if (!gpu_active()) return false;
+    P.tf.gpu_id = gpu_xfmr_create(P.tf, "t3");
+    if (P.tf.gpu_id < 0) return false;
+    P.speech_head.gpu = gpu_upload(P.speech_head);
+    return true;
+}
 
 std::string ChatterboxT3::punc_norm(const std::string &in) {
     if (in.empty()) return "You need to add some text for me to talk.";
@@ -281,6 +292,19 @@ std::vector<int32_t> ChatterboxT3::generate(const std::vector<float> &cond, cons
     KVCache kc, ku;
     kc.init(cfg_.layers);
     ku.init(cfg_.layers);
+    const int maxn = forced ? int(forced->size()) + 1 : std::max(1, sp.max_new_tokens);
+    struct SeqGuard {   // GPU KV caches of this piece (both passes or neither)
+        KVCache &a, &b;
+        ~SeqGuard() { for (KVCache *k : {&a, &b}) if (k->gpu_seq >= 0) gpu_seq_free(k->gpu_seq); }
+    } guard{kc, ku};
+    if (P.tf.gpu_id >= 0 && int64_t(n) + maxn + 1 <= 3072) {
+        kc.gpu_seq = gpu_seq_create(P.tf.gpu_id, int64_t(n) + maxn + 1);
+        if (use_cfg && kc.gpu_seq >= 0) {
+            ku.gpu_seq = gpu_seq_create(P.tf.gpu_id, int64_t(n) + maxn + 1);
+            if (ku.gpu_seq < 0) { gpu_seq_free(kc.gpu_seq); kc.gpu_seq = -1; }
+        }
+    }
+    const bool on_gpu = kc.gpu_seq >= 0;
     std::vector<float> hc(static_cast<size_t>(H)), hu(static_cast<size_t>(H)), lc(static_cast<size_t>(V)), lu(static_cast<size_t>(V));
     transformer_forward(P.tf, kc, x.data(), n, hc.data());
     if (use_cfg) transformer_forward(P.tf, ku, xu.data(), n, hu.data());
@@ -289,7 +313,6 @@ std::vector<int32_t> ChatterboxT3::generate(const std::vector<float> &cond, cons
     std::vector<int32_t> gen;                      // generated ids for the repetition penalty: [start, …]
     gen.push_back(cfg_.start_speech);
     std::vector<int32_t> out;
-    const int maxn = forced ? int(forced->size()) + 1 : std::max(1, sp.max_new_tokens);
     std::vector<float> logits(static_cast<size_t>(V));
     for (int i = 0; i < maxn; ++i) {
         if (use_cfg) {
@@ -366,7 +389,10 @@ std::vector<int32_t> ChatterboxT3::generate(const std::vector<float> &cond, cons
         mat_gather(P.speech_emb, next, x.data());
         mat_gather(P.speech_pos, i + 1, tmp.data());
         for (int d = 0; d < H; ++d) x[size_t(d)] += tmp[size_t(d)];
-        if (use_cfg) {   // both passes in one: the weights are read once
+        if (use_cfg && on_gpu) {
+            transformer_forward(P.tf, kc, x.data(), 1, hc.data());
+            transformer_forward(P.tf, ku, x.data(), 1, hu.data());
+        } else if (use_cfg) {   // both passes in one: the weights are read once
             std::vector<float> x2(size_t(2) * H), h2(size_t(2) * H);
             std::memcpy(x2.data(), x.data(), size_t(H) * 4);
             std::memcpy(x2.data() + H, x.data(), size_t(H) * 4);

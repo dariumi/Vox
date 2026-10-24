@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "backend.hpp"
+#include "gpu.hpp"
 #include "chatterbox.hpp"
 #include "cosyvoice.hpp"
 #include "family.hpp"
@@ -85,13 +86,21 @@ struct CbState : GenState {
 
 class CbBackend final : public Backend {
 public:
-    CbBackend(std::shared_ptr<TmodFile> f, const ResourcePlan &) : file_(f), s3gen_(f), t3_(f) {
+    CbBackend(std::shared_ptr<TmodFile> f, const ResourcePlan &plan) : file_(f), s3gen_(f), t3_(f) {
+        if (plan.uses_gpu() && plan.place_of("s3gen") == Place::Gpu) {
+            gpu_ = s3gen_.enable_gpu();
+            if (!gpu_ && plan.strict) fail(VOX_ERR_DEVICE, "GPU strict mode: the flow estimator did not go to the GPU (" + gpu_stats().last_error + ")");
+        }
+        if (plan.uses_gpu() && plan.place_of("t3") == Place::Gpu) {
+            gpu_t3_ = t3_.enable_gpu();
+            if (!gpu_t3_ && plan.strict) fail(VOX_ERR_DEVICE, "GPU strict mode: T3 did not go to the GPU (" + gpu_stats().last_error + ")");
+        }
         info_.sample_rate = s3gen_.cfg().sample_rate;
         info_.samples_per_frame = 480;
         info_.num_codebooks = 1;
         info_.codebook_size = 1;
     }
-    std::string name() const override { return "cpu-chatterbox"; }
+    std::string name() const override { return gpu_ || gpu_t3_ ? "vulkan-chatterbox (" + gpu_device_name() + ")" : "cpu-chatterbox"; }
     const ModelInfo &info() const override { return info_; }
     std::string fingerprint() const override {
         const json &m = file_->manifest();
@@ -113,7 +122,8 @@ public:
     Capabilities capabilities() const override { return caps(*file_); }
     SessionCost session_cost(const VoiceData &, const SessionOptions &) const override { return {512u << 20, 0}; }
     json stats() const override {
-        return {{"t3_ms", t3_.ms_gen}, {"flow_ms", s3gen_.ms_flow}, {"hift_ms", s3gen_.ms_hift}, {"weights_bytes", s3gen_.weight_bytes()}, {"device", "cpu"}};
+        return {{"t3_ms", t3_.ms_gen}, {"flow_ms", s3gen_.ms_flow}, {"hift_ms", s3gen_.ms_hift}, {"weights_bytes", s3gen_.weight_bytes()}, {"device", gpu_ || gpu_t3_ ? "vulkan" : "cpu"},
+                {"flow_device", gpu_ ? "vulkan" : "cpu"}, {"t3_device", gpu_t3_ ? "vulkan" : "cpu"}, {"gemm", gpu_ ? gpu_gemm_choice() : ""}};
     }
 
     std::vector<int32_t> tokenize(const std::string &utf8) override { return t3_.text_tokens(utf8); }
@@ -313,6 +323,8 @@ private:
     static double kPiD() { return 3.14159265358979323846; }
     [[noreturn]] void no_codes() const { fail(VOX_ERR_UNSUPPORTED, "Chatterbox does not use audio codes"); }
     std::shared_ptr<TmodFile> file_;
+    bool gpu_ = false;      // the flow estimator runs on the GPU
+    bool gpu_t3_ = false;   // T3 runs on the GPU
     CosyVoiceModel s3gen_;
     ChatterboxT3 t3_;
     ModelInfo info_;
@@ -423,17 +435,25 @@ public:
         StageDesc t3;
         t3.name = "t3";
         t3.prefixes = {"t3."};
-        t3.gpu_capable = false;
+        t3.gpu_capable = true;   // the GPU transformer (gpu_vulkan.cpp), both CFG passes' KV caches in video memory
+        t3.session_vram_bytes = 800u << 20;   // 2 × 30 layers × 1024 × (K + V) × f32 × ~1500 positions
         t3.bytes_per_frame = double(blob_bytes(f, t3.prefixes));
         t3.session_ram_bytes = 256u << 20;
         fp.stages.push_back(t3);
         StageDesc fl;
         fl.name = "s3gen";
-        fl.prefixes = {"flow.", "hift."};
-        fl.gpu_capable = false;
-        fl.bytes_per_frame = double(blob_bytes(f, fl.prefixes)) / 25.0;
+        fl.prefixes = {"flow."};
+        fl.gpu_capable = true;   // the flow estimator (gpu_f5.cpp: gpu_cosy_*); the encoder runs on the CPU
+        fl.bytes_per_frame = double(blob_bytes(f, fl.prefixes)) * 20.0 / 50.0;
         fl.session_ram_bytes = 384u << 20;
+        fl.session_vram_bytes = 96u << 20;
         fp.stages.push_back(fl);
+        StageDesc hf;
+        hf.name = "hift";
+        hf.prefixes = {"hift."};
+        hf.gpu_capable = false;
+        hf.bytes_per_frame = double(blob_bytes(f, hf.prefixes)) / 50.0;
+        fp.stages.push_back(hf);
         fp.always_ram_bytes = blob_bytes(f, {"camp.", "s3.", "front.", "ve.", "voice.", "tokenizer."}) + (32u << 20);
         return fp;
     }

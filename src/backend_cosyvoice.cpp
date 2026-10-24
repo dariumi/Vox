@@ -14,6 +14,7 @@
 #include <mutex>
 
 #include "backend.hpp"
+#include "gpu.hpp"
 #include "cosyvoice.hpp"
 #include "family.hpp"
 #include "nn.hpp"
@@ -228,14 +229,22 @@ struct CosyState : GenState {
 
 class CosyBackend final : public Backend {
 public:
-    CosyBackend(std::shared_ptr<TmodFile> f, const ResourcePlan &) : file_(f), model_(f), tok_(Tokenizer::from_tmod(*f)) {
+    CosyBackend(std::shared_ptr<TmodFile> f, const ResourcePlan &plan) : file_(f), model_(f), tok_(Tokenizer::from_tmod(*f)) {
+        if (plan.uses_gpu() && plan.place_of("flow") == Place::Gpu) {
+            gpu_ = model_.enable_gpu();
+            if (!gpu_ && plan.strict) fail(VOX_ERR_DEVICE, "GPU strict mode: the flow estimator did not go to the GPU (" + gpu_stats().last_error + ")");
+        }
+        if (plan.uses_gpu() && plan.place_of("llm") == Place::Gpu && model_.cfg().has_llm) {
+            gpu_llm_ = model_.enable_gpu_llm();
+            if (!gpu_llm_ && plan.strict) fail(VOX_ERR_DEVICE, "GPU strict mode: the LLM did not go to the GPU (" + gpu_stats().last_error + ")");
+        }
         info_.sample_rate = model_.cfg().sample_rate;
         info_.samples_per_frame = 480;
         info_.num_codebooks = 1;
         info_.codebook_size = 1;
     }
 
-    std::string name() const override { return "cpu-cosyvoice"; }
+    std::string name() const override { return gpu_ || gpu_llm_ ? "vulkan-cosyvoice (" + gpu_device_name() + ")" : "cpu-cosyvoice"; }
     const ModelInfo &info() const override { return info_; }
     std::string fingerprint() const override {
         const json &m = file_->manifest();
@@ -261,7 +270,8 @@ public:
     SessionCost session_cost(const VoiceData &, const SessionOptions &) const override { return {512u << 20, 0}; }
     json stats() const override {
         return {{"llm_ms", model_.ms_llm}, {"flow_ms", model_.ms_flow}, {"hift_ms", model_.ms_hift}, {"weights_bytes", model_.weight_bytes()},
-                {"device", "cpu"}};
+                {"device", gpu_ || gpu_llm_ ? "vulkan" : "cpu"}, {"flow_device", gpu_ ? "vulkan" : "cpu"},
+                {"llm_device", gpu_llm_ ? "vulkan" : "cpu"}, {"gemm", gpu_ ? gpu_gemm_choice() : ""}};
     }
 
     std::vector<int32_t> tokenize(const std::string &utf8) override { return tok_.encode(utf8); }
@@ -474,6 +484,8 @@ public:
 private:
     [[noreturn]] void no_codes() const { fail(VOX_ERR_UNSUPPORTED, "CosyVoice does not use audio codes"); }
     std::shared_ptr<TmodFile> file_;
+    bool gpu_ = false;       // the flow estimator runs on the GPU
+    bool gpu_llm_ = false;   // the LLM runs on the GPU
     CosyVoiceModel model_;
     Tokenizer tok_;
     ModelInfo info_;
@@ -622,17 +634,25 @@ public:
         StageDesc lm;
         lm.name = "llm";
         lm.prefixes = {"llm."};
-        lm.gpu_capable = false;
+        lm.gpu_capable = true;   // the GPU transformer (gpu_vulkan.cpp), KV cache in video memory
+        lm.session_vram_bytes = 64u << 20;
         lm.bytes_per_frame = double(blob_bytes(f, lm.prefixes));
         lm.session_ram_bytes = 128u << 20;
         fp.stages.push_back(lm);
         StageDesc fl;
         fl.name = "flow";
-        fl.prefixes = {"flow.", "hift."};
-        fl.gpu_capable = false;
-        fl.bytes_per_frame = double(blob_bytes(f, fl.prefixes)) / 25.0;
+        fl.prefixes = {"flow."};
+        fl.gpu_capable = true;   // the estimator (gpu_f5.cpp: gpu_cosy_*); the encoder runs on the CPU from the same weights
+        fl.bytes_per_frame = double(blob_bytes(f, fl.prefixes)) * 20.0 / 50.0;   // 10 steps × 2 passes read the estimator
         fl.session_ram_bytes = 384u << 20;
+        fl.session_vram_bytes = 96u << 20;   // activations of both passes for ~1500 frames
         fp.stages.push_back(fl);
+        StageDesc hf;
+        hf.name = "hift";
+        hf.prefixes = {"hift."};
+        hf.gpu_capable = false;
+        hf.bytes_per_frame = double(blob_bytes(f, hf.prefixes)) / 50.0;
+        fp.stages.push_back(hf);
         fp.always_ram_bytes = blob_bytes(f, {"camp.", "s3.", "front.", "tokenizer."}) + (32u << 20);
         return fp;
     }

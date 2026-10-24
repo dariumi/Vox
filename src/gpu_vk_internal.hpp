@@ -74,7 +74,9 @@ struct Ctx {
     VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
     VkPipelineLayout pl = VK_NULL_HANDLE;
     VkShaderModule sm = VK_NULL_HANDLE, extra_modules[22] = {};
-    VkPipeline pipe[kNumPipes] = {};
+    VkPipeline pipe[kNumPipes] = {};          // compiled on first use (pipe_get)
+    VkShaderModule pipe_mod[kNumPipes] = {};  // module and specialization constant (WTYPE; -1 = none) of each pipeline
+    int pipe_spec[kNumPipes] = {};
     VkDescriptorPool dyn = VK_NULL_HANDLE;
     VkBuffer csb = VK_NULL_HANDLE;
     VkDeviceMemory csm = VK_NULL_HANDLE;
@@ -139,6 +141,7 @@ void host_barrier();
 void disp(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_words, uint32_t gx, uint32_t gy);
 void disp3(int pipe, const VkBuffer (&b)[6], const uint32_t *pc, uint32_t pc_words, uint32_t gx, uint32_t gy, uint32_t gz);
 uint32_t fbits(float f);
+VkPipeline pipe_get(int i);   // the pipeline, compiled now if this is its first use (call with g.mu held)
 // Метка стадии для профайлера GPU (VOX_PROFILE=gpu); действует до следующего вызова.
 inline void prof_stage(const char *s) { if (g.prof) g.prof_stage = s; }
 

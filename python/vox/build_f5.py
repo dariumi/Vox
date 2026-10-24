@@ -176,6 +176,29 @@ def find_vocos_weights(path: str) -> str:
     raise SystemExit(f"{path}: no pytorch_model.bin / model.safetensors found")
 
 
+# --keep-f32: groups of DiT matrices kept in f32 (not --dtype, not --quant) whatever the rest is
+KEEP_F32 = {
+    # the AdaLN modulation (shift / scale / gate of every block and of the output norm) and the time MLP: they see one row per
+    # step, so their rounding error is not averaged over frames but shifts every frame the same way
+    "adaln": re.compile(r"^(transformer_blocks\.\d+\.attn_norm\.linear|norm_out\.linear|time_embed\..*)\.weight$"),
+    # the input projection (noisy mel + condition + text → dim) and the output projection (dim → mel)
+    "io": re.compile(r"^(input_embed\.proj|proj_out)\.weight$"),
+    # every linear layer of the first two and the last two blocks (see keep_f32_edges)
+    "edges": None,
+}
+
+
+def keep_f32_match(k: str, groups, depth: int) -> bool:
+    for g in groups:
+        if g == "edges":
+            m = re.match(r"^transformer_blocks\.(\d+)\.", k)
+            if m and (int(m.group(1)) < 2 or int(m.group(1)) >= depth - 2):
+                return True
+        elif KEEP_F32[g].match(k):
+            return True
+    return False
+
+
 BLOCK_LINEAR = re.compile(r"^transformer_blocks\.\d+\.(attn\.(to_q|to_k|to_v)\.weight|attn\.to_out\.0\.weight|attn_norm\.linear\.weight|ff\.ff\.0\.0\.weight|ff\.ff\.2\.weight)$")
 
 
@@ -194,7 +217,7 @@ def guess_model_cfg(*names) -> str:
 def build(ckpt: str, vocab: str, vocos: str, out: str, dtype: str = "bf16", quant: str = "", tokenizer: str = "pinyin",
           variant: str = "", dim_head: int = 64, mel: dict | None = None, pinyin: bool = True, sha: bool = True, defaults: dict | None = None,
           model_cfg: str | None = None, text_mask_padding: bool | None = None, pe_attn_head: int | None = None,
-          vocos_dtype: str = "f32"):
+          vocos_dtype: str = "f32", keep_f32: str = ""):
     """model_cfg: "v1" (F5TTS_v1_Base: text_mask_padding=True, RoPE on all heads) or "v0" (F5TTS_Base / F5TTS_Small and most
     fine-tunes of them: text_mask_padding=False, pe_attn_head=1, RoPE only on the first head). Neither is visible in the weights,
     so by default it is guessed from the checkpoint path (see guess_model_cfg); text_mask_padding / pe_attn_head override it."""
@@ -238,12 +261,19 @@ def build(ckpt: str, vocab: str, vocos: str, out: str, dtype: str = "bf16", quan
     vout = voc.shape["head.out.weight"][0]
     vocos_cfg = {"dim": vdim, "intermediate": vinter, "layers": vlayers, "n_fft": vout - 2, "hop": mel["hop"], "padding": vocos_padding(vocos)}
 
+    keep = [g for g in keep_f32.split(",") if g]
+    for g in keep:
+        if g not in KEEP_F32:
+            raise SystemExit(f"--keep-f32: unknown group {g!r} (choose from {', '.join(KEEP_F32)})")
     em = Emitter(dtype)
     for k in dit.get:
         name = "dit." + k
         shp = dit.shape[k]
         fn = dit.get[k]
         if k.endswith(".weight") and len(shp) == 2:
+            if keep and keep_f32_match(k, keep, depth):
+                em.mat(name, fn, shp, dtype="f32")
+                continue
             q8 = quant == "q8" and BLOCK_LINEAR.match(k) is not None
             em.mat(name, fn, shp, q8=q8)
         else:  # bias, свёртки, нормы, GRN — всегда F32
@@ -278,7 +308,7 @@ def build(ckpt: str, vocab: str, vocos: str, out: str, dtype: str = "bf16", quan
         "audio": {"sample_rate": mel["sample_rate"], "samples_per_frame": mel["hop"], "frame_rate": mel["sample_rate"] / mel["hop"],
                   "num_codebooks": 1, "codebook_size": 1},
         "stages": [{"name": "dit", "kind": "flow_matching"}, {"name": "vocos", "kind": "vocoder"}],
-        "precision": {"weights": dtype, "quant": quant or "none"},
+        "precision": {"weights": dtype, "quant": quant or "none", **({"keep_f32": keep} if keep else {})},
         "generation": gen,
         "f5": {"dim": dim, "depth": depth, "heads": heads, "dim_head": dim_head, "ff_mult": ff_mult, "text_dim": text_dim,
                "text_rows": text_rows, "mel_dim": mel_dim, "conv_layers": conv_layers, "conv_mult": conv_mult,
@@ -294,10 +324,14 @@ def main(argv=None):
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--vocab", required=True)
     ap.add_argument("--vocos", required=True)
-    ap.add_argument("--dtype", default="bf16", choices=["f32", "f16", "bf16"])
+    # f16 by default since 0.18: the same size as bf16, 3 more mantissa bits (8× less rounding of the DiT weights; the activations
+    # are f32 either way). bf16 was the default before and stays available.
+    ap.add_argument("--dtype", default="f16", choices=["f32", "f16", "bf16"])
     ap.add_argument("--quant", default="", choices=["", "q8"])
     ap.add_argument("--vocos-dtype", default="f32", choices=["f32", "f16", "bf16"],
                     help="precision of the Vocos vocoder matrices (default f32; --dtype/--quant apply to the DiT)")
+    ap.add_argument("--keep-f32", default="", help="DiT matrices kept in f32 whatever --dtype / --quant say, comma-separated groups: "
+                    "adaln (AdaLN modulation + time MLP), io (input / output projections), edges (first and last two blocks)")
     ap.add_argument("--tokenizer", default="pinyin", choices=["pinyin", "char"])
     ap.add_argument("--variant", default="")
     ap.add_argument("--dim-head", type=int, default=64)
@@ -310,7 +344,8 @@ def main(argv=None):
     ap.add_argument("-o", "--out", required=True)
     a = ap.parse_args(argv)
     build(a.ckpt, a.vocab, a.vocos, a.out, a.dtype, a.quant, a.tokenizer, a.variant, a.dim_head, pinyin=not a.no_pinyin_table, sha=not a.no_hash,
-          model_cfg=a.model_cfg or None, text_mask_padding=None if a.tmp is None else a.tmp == "true", pe_attn_head=a.pe_attn_head or None, vocos_dtype=a.vocos_dtype)
+          model_cfg=a.model_cfg or None, text_mask_padding=None if a.tmp is None else a.tmp == "true", pe_attn_head=a.pe_attn_head or None, vocos_dtype=a.vocos_dtype,
+          keep_f32=a.keep_f32)
 
 
 if __name__ == "__main__":

@@ -61,6 +61,7 @@ def main(cli):
     # конвертер всегда из репозитория (установленный пакет может быть старее), а Python API ниже — из установленного (с нативным модулем)
     sys.path.insert(0, os.path.join(ROOT, "python"))
     from vox.build_f5 import build
+    from vox.formats import read_tmod_manifest
     sys.path.remove(os.path.join(ROOT, "python"))
     for m in [m for m in sys.modules if m == "vox" or m.startswith("vox.")]:
         del sys.modules[m]
@@ -71,7 +72,8 @@ def main(cli):
     ck, vc = os.path.join(work, "ckpt", "model.safetensors"), os.path.join(work, "vocos")
     vocab = os.path.join(work, "ckpt", "vocab.txt")
     tm = {}
-    for name, kw in (("f32", dict(dtype="f32")), ("bf16", dict(dtype="bf16")), ("q8", dict(dtype="f32", quant="q8"))):
+    for name, kw in (("f32", dict(dtype="f32")), ("bf16", dict(dtype="bf16")), ("q8", dict(dtype="f32", quant="q8")),
+                     ("f16", dict(dtype="f16")), ("q8_adaln", dict(dtype="bf16", quant="q8", keep_f32="adaln,io"))):
         tm[name] = os.path.join(work, f"tiny_{name}.tmod")
         build(ck, vocab, vc, tm[name], dim_head=32, **kw)
     e2e = json.load(open(os.path.join(work, "e2e.json")))
@@ -95,7 +97,9 @@ def main(cli):
             if rc != 0:
                 print(out)
     # 3. квантованные модели — допуск квантования
-    for name, dump, dev in [(n, d, v) for n in ("bf16", "q8") for d in ("dump.safetensors", "dump_long.safetensors") for v in devices]:
+    man = read_tmod_manifest(tm["q8_adaln"])
+    check(man["precision"].get("keep_f32") == ["adaln", "io"], "converter: --keep-f32 adaln,io recorded in the manifest")
+    for name, dump, dev in [(n, d, v) for n in ("bf16", "q8", "f16", "q8_adaln") for d in ("dump.safetensors", "dump_long.safetensors") for v in devices]:
         if True:
             rc, out = run([cli, "verify", "--model", tm[name], "--dump", os.path.join(work, dump), "--device", dev, "--tol", "1e-2"])
             check(rc == 0 and "PASS" in out, f"verify {name} {dump} [{dev}] (tol 1e-2)")

@@ -28,4 +28,9 @@ bool gpu_f5_begin(int, int, int, const float *, const float *) { return false; }
 bool gpu_f5_step(int, const float *, const float *, float *) { return false; }
 bool gpu_f5_vocos(int, const float *, int, std::vector<float> &) { return false; }
 void gpu_f5_end(int) {}
+std::string gpu_gemm_choice() { return ""; }
+int gpu_cosy_create(const GpuCosyDesc &) { return -1; }
+bool gpu_cosy_begin(int, int, const float *) { return false; }
+bool gpu_cosy_step(int, const float *, const float *, float *) { return false; }
+void gpu_cosy_end(int) {}
 }  // namespace vox

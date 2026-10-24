@@ -88,4 +88,31 @@ bool gpu_f5_step(int id, const float *x, const float *ts, float *out);
 // Vocos: mel [T][mel] → выход головы [T][vocos_out] (лог-модуль и фаза; iSTFT считает CPU).
 bool gpu_f5_vocos(int id, const float *mel, int T, std::vector<float> &head);
 void gpu_f5_end(int id);   // освободить буферы шага (веса остаются)
+
+// Which GEMM the F5 / flow graphs use for many-row linear layers: the 64×64 convgemm tile or the register-blocked gemmb.
+// VOX_F5_GEMM=old / new forces one; otherwise both are timed on the model's own shapes the first time a graph is built on a
+// device (a software renderer keeps convgemm unless VOX_F5_GEMM=auto) and the faster is kept for the process.
+// Returns "convgemm" / "gemmb" (+ " (timed)"), "" before any graph was built.
+std::string gpu_gemm_choice();
+
+// The flow estimator of CosyVoice2 / Chatterbox (CausalConditionalDecoder) on the GPU: one Euler step — the conditional and
+// the unconditional pass (B = 2 sequences of T frames) — in ONE command buffer. Convolutions are f32 K-major [cout][K*cin]
+// (Conv::w), linear layers uploaded matrices (Mat::gpu with their biases). Mirrors cosyvoice.cpp's estimator.
+struct GpuCosyDesc {
+    int M = 80, C = 256, heads = 8, head_dim = 64;
+    struct Res { GpuF5Conv c1, c2, res; const float *n1w = nullptr, *n1b = nullptr, *n2w = nullptr, *n2b = nullptr; };
+    struct X { const float *n1w = nullptr, *n1b = nullptr, *n3w = nullptr, *n3b = nullptr; int q = -1, k = -1, v = -1, o = -1, ff1 = -1, ff2 = -1, ff_dim = 0; };
+    Res down_res, up_res;
+    std::vector<Res> mid_res;
+    std::vector<X> down_x, up_x;
+    std::vector<std::vector<X>> mid_x;
+    GpuF5Conv down_conv, up_out, final_conv, final_proj;
+    const float *fn_w = nullptr, *fn_b = nullptr;
+};
+int gpu_cosy_create(const GpuCosyDesc &d);   // -1 → not available (reason in gpu_stats().last_error)
+// in0 [2][T][4*M]: the estimator input [x | mu | spks | cond] of both passes with the x columns left zero
+bool gpu_cosy_begin(int id, int T, const float *in0);
+// x [T][M] (the same for both passes), tb [resnets][C] the time-embedding bias of every resnet (down, mid…, up) → out [2][T][M]
+bool gpu_cosy_step(int id, const float *x, const float *tb, float *out);
+void gpu_cosy_end(int id);
 }  // namespace vox

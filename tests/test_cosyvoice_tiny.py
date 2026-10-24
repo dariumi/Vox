@@ -98,12 +98,14 @@ def main(cli):
     noise = _t.randn([1, 80, 50 * 300])[0, :, :64].numpy()
     check(np.array_equal(noise, d0["flow_rand_noise_head"]), "flow noise: torch.manual_seed(0) + randn([1, 80, 15000]) is CausalConditionalCFM.rand_noise")
 
-    # 2. stages
-    for name in ("zero_shot", "cross_lingual", "instruct2"):
+    # 2. stages (VOX_TEST_DEVICES="cpu;vulkan:0,strict": the flow estimator on the GPU too)
+    devices = [d for d in os.environ.get("VOX_TEST_DEVICES", "cpu").split(";") if d]
+    for dev in devices:
+      for name in ("zero_shot", "cross_lingual", "instruct2"):
         for dt, tol in (("f32", "1e-4"), ("bf16", "3e-2")):
-            rc, out = run([cli, "verify", "--model", tm[dt], "--dump", os.path.join(work, f"dump_{name}.safetensors"), "--device", "cpu", "--tol", tol])
-            check(rc == 0 and "PASS" in out, f"verify {name} {dt} (tol {tol}): frontend, LLM, flow, HiFT")
-            if rc != 0 or (dt == "f32" and name == "zero_shot"):
+            rc, out = run([cli, "verify", "--model", tm[dt], "--dump", os.path.join(work, f"dump_{name}.safetensors"), "--device", dev, "--tol", tol])
+            check(rc == 0 and "PASS" in out, f"verify {name} {dt} (tol {tol}) [{dev}]: frontend, LLM, flow, HiFT")
+            if rc != 0 or (dt == "f32" and name == "zero_shot" and dev == devices[0]):
                 print("\n".join("      " + l for l in out.splitlines() if "max|diff|" in l or "equal" in l or "agree" in l))
 
     # CAM++ segment pooling: the other mode too (onnxruntime ≤ 1.25 divides the last, incomplete segment by 100, newer ones and
@@ -146,21 +148,28 @@ def main(cli):
     rc, out = run([cli, "profile", "set", prof, "--voice", "anna", "--style", "glad", "--instruct", "Speak happily"])
     check(rc == 0, "profile: style with an instruction")
 
-    def say(text, voice, extra, *more):
+    def say(text, voice, extra, *more, dev="cpu"):
         o = os.path.join(work, "o.wav")
-        rc, so = run([cli, "say", text, "--model", tm["f32"], "--voice", voice, "-o", o, "--float", "--device", "cpu",
+        rc, so = run([cli, "say", text, "--model", tm["f32"], "--voice", voice, "-o", o, "--float", "--device", dev,
                       "--extra", json.dumps(extra), *more])
         return rc, so, (read_wav_f32(o) if rc == 0 else None)
 
     texts_of = json.load(open(os.path.join(work, "cases.json")))["texts"]
-    for name, voice, more in (("zero_shot", v_zs, ()), ("cross_lingual", v_cl, ()), ("instruct2", prof, ("--style", "glad"))):
+    for dev in devices:
+      for name, voice, more in (("zero_shot", v_zs, ()), ("cross_lingual", v_cl, ()), ("instruct2", prof, ("--style", "glad"))):
         d, inj = cases[name]
-        rc, so, got = say(texts_of[name], voice, {"noise_file": inj}, *more)
+        rc, so, got = say(texts_of[name], voice, {"noise_file": inj}, *more, dev=dev)
         exp = d["audio"]
         ok = got is not None and len(got) == len(exp)
         err = float(np.abs(got - exp).max()) if ok else 9.9
-        check(ok and err < 1e-3, f"{name}: engine == CosyVoice2Model.token2wav on the same tokens ({len(exp)} samples, max |diff| {err:.1e})"
+        check(ok and err < 1e-3, f"{name} [{dev}]: engine == CosyVoice2Model.token2wav on the same tokens ({len(exp)} samples, max |diff| {err:.1e})"
               + ("" if rc == 0 else " — " + so[-300:]))
+      if dev != "cpu":
+        rc, so = run([cli, "bench", "--model", tm["f32"], "--voice", v_cl, "--text", "Short one.", "--runs", "1", "--device", dev])
+        st = next((json.loads(l) for l in so.splitlines() if l.startswith("{")), {}) if rc == 0 else {}
+        bk = st.get("stats", {}).get("backend", {})
+        check(bk.get("flow_device") == "vulkan" and bk.get("llm_device") == "vulkan",
+              f"[{dev}] the flow estimator and the LLM run on the GPU (stats: flow_device={bk.get('flow_device')}, llm_device={bk.get('llm_device')}, gemm={bk.get('gemm')})")
 
     # 4. text frontend vs text_normalize (no ttsfrd / wetext)
     import inflect

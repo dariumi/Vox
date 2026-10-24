@@ -4,6 +4,9 @@
 //   mode 1: y[i] = gelu_tanh(y[i])                       (DiT feed-forward)
 //   mode 2: scatter x [N][D] into every sequence of y [S][N][off] at columns 0..D-1 (noisy mel into the input concat);
 //           n = S*N*D
+//   mode 3: y[i] += g[off + i % D]                       (a row vector added to every row: the time embedding of a resnet)
+//   mode 4: y[i] = mish(y[i])
+//   mode 5: y[(i / D) * off + N + i % D] = x[i]          (rows of x [R][D] into columns N..N+D-1 of y [R][off]: concat)
 layout(local_size_x = 256) in;
 layout(std430, set = 0, binding = 0) readonly buffer GB { float g[]; };
 layout(std430, set = 0, binding = 3) readonly buffer XB { float x[]; };
@@ -17,6 +20,13 @@ void main() {
     } else if (pc.mode == 1u) {
         const float v = y[i];
         y[i] = 0.5 * v * (1.0 + tanh(0.7978845608028654 * (v + 0.044715 * v * v * v)));
+    } else if (pc.mode == 3u) {
+        y[i] += g[pc.off + i % pc.D];
+    } else if (pc.mode == 4u) {
+        const float v = y[i];
+        y[i] = v > 20.0 ? v : v * tanh(log(1.0 + exp(v)));
+    } else if (pc.mode == 5u) {
+        y[(i / pc.D) * pc.off + pc.N + i % pc.D] = x[i];
     } else {
         const uint per = pc.N * pc.D, rem = i % per, sq = i / per, r = rem / pc.D, c = rem - r * pc.D;
         y[(sq * pc.N + r) * pc.off + c] = x[rem];

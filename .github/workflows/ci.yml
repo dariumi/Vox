@@ -91,12 +91,12 @@ jobs:
           git clone https://github.com/FunAudioLLM/CosyVoice ../CosyVoice && git -C ../CosyVoice checkout 074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc
           git -C ../CosyVoice submodule update --init third_party/Matcha-TTS
           pip install onnx onnxruntime s3tokenizer inflect pyyaml omegaconf conformer diffusers einops hyperpyyaml
-          VOX_COSYVOICE_SRC=../CosyVoice VOX_QWEN2_GGUF=qwen2.gguf python tests/test_cosyvoice_tiny.py build/vox
+          VOX_COSYVOICE_SRC=../CosyVoice VOX_QWEN2_GGUF=qwen2.gguf VOX_TEST_DEVICES="cpu;vulkan:0,strict" python tests/test_cosyvoice_tiny.py build/vox
       - name: Chatterbox vs the official chatterbox-tts (tiny random model; T3, VoiceEncoder, S3Gen, cloning, text)
         run: |
           pip install --no-deps chatterbox-tts==0.1.7
           pip install librosa resemble-perth conformer diffusers einops omegaconf s3tokenizer safetensors
-          python tests/test_chatterbox_tiny.py build/vox
+          VOX_TEST_DEVICES="cpu;vulkan:0,strict" python tests/test_chatterbox_tiny.py build/vox
       - name: vox.js in Chromium (WebGPU via SwiftShader) vs official f5_tts / vocos
         run: |
           pip install playwright

@@ -75,11 +75,13 @@ def main(cli):
     check(fl["encoder_blocks"] == 2 and fl["estimator_channels"] == 64 and fl["estimator_heads"] == 2 and fl["estimator_mid_blocks"] == 2
           and man["cosyvoice"]["hift"]["base_channels"] == 64 and man["chatterbox"]["t3"]["num_hidden_layers"] == 2,
           "converter: S3Gen and T3 sizes read from the weights (2 encoder blocks, estimator 64 ch × 2 heads, HiFT 64 ch, T3 2 layers)")
-    # 2. stages
-    for dt, tol in (("f32", "1e-4"), ("bf16", "3e-2"), ("q8", "3e-2")):
-        rc, out = run([cli, "verify", "--model", tm[dt], "--dump", os.path.join(work, "dump.safetensors"), "--device", "cpu", "--tol", tol])
-        check(rc == 0 and "PASS" in out, f"verify {dt} (tol {tol}): text, voice encoder, T3, flow, HiFT")
-        if rc != 0 or dt == "f32":
+    # 2. stages (VOX_TEST_DEVICES="cpu;vulkan:0,strict": the flow estimator on the GPU too)
+    devices = [d for d in os.environ.get("VOX_TEST_DEVICES", "cpu").split(";") if d]
+    for dev in devices:
+      for dt, tol in (("f32", "1e-4"), ("bf16", "3e-2"), ("q8", "3e-2")):
+        rc, out = run([cli, "verify", "--model", tm[dt], "--dump", os.path.join(work, "dump.safetensors"), "--device", dev, "--tol", tol])
+        check(rc == 0 and "PASS" in out, f"verify {dt} (tol {tol}) [{dev}]: text, voice encoder, T3, flow, HiFT")
+        if rc != 0 or (dt == "f32" and dev == devices[0]):
             print("\n".join("      " + l for l in out.splitlines() if "max|diff|" in l or "equal" in l))
 
     # 3. whole utterances, built-in voice, official tokens and noise injected
@@ -88,13 +90,13 @@ def main(cli):
     rc, out = run([cli, "voice", "speaker", "--model", tm["f32"], "--speaker", "default", "-o", vdef])
     check(rc == 0, "built-in voice 'default' (conds.pt)" + ("" if rc == 0 else " — " + out[-300:]))
 
-    def say(text, voice, extra, *more, model=None):
+    def say(text, voice, extra, *more, model=None, dev="cpu"):
         o = os.path.join(work, "o.wav")
-        rc, so = run([cli, "say", text, "--model", model or tm["f32"], "--voice", voice, "-o", o, "--float", "--device", "cpu",
+        rc, so = run([cli, "say", text, "--model", model or tm["f32"], "--voice", voice, "-o", o, "--float", "--device", dev,
                       "--extra", json.dumps(extra), *more])
         return rc, so, (read_wav_f32(o) if rc == 0 else None)
 
-    for name in cases:
+    for dev, name in [(d, n) for d in devices for n in cases]:
         p = os.path.join(work, f"e2e_{name}.safetensors")
         d = load_file(p)
         from safetensors import safe_open
@@ -104,12 +106,20 @@ def main(cli):
         save_file({"0.tokens": d["t3_tokens"], "0.flow_noise": d["flow_noise"], "0.rand_ini": d["rand_ini"], "0.sine_noise": d["sine_noise"]}, inj)
         opts = {k: float(meta[k]) for k in ("exaggeration", "cfg_weight", "temperature", "repetition_penalty", "min_p", "top_p")}
         opts["noise_file"] = inj
-        rc, so, got = say(meta["text"], vdef, opts)
+        rc, so, got = say(meta["text"], vdef, opts, dev=dev)
         exp = d["audio"]
         ok = got is not None and len(got) == len(exp)
         err = float(np.abs(got - exp).max()) if ok else 9.9
-        check(ok and err < 1e-3, f"{name}: engine == ChatterboxTTS.generate on the same tokens and noise ({len(exp)} samples, max |diff| {err:.1e}; "
+        check(ok and err < 1e-3, f"{name} [{dev}]: engine == ChatterboxTTS.generate on the same tokens and noise ({len(exp)} samples, max |diff| {err:.1e}; "
               f"exaggeration {opts['exaggeration']}, cfg {opts['cfg_weight']})" + ("" if rc == 0 else " — " + so[-300:]))
+
+    for dev in devices[1:]:
+        rc, so = run([cli, "bench", "--model", tm["f32"], "--voice", vdef, "--text", "Short one.", "--runs", "1", "--device", dev,
+                      "--extra", '{"max_new_tokens": 30}'])
+        st = next((json.loads(l) for l in so.splitlines() if l.startswith("{")), {}) if rc == 0 else {}
+        bk = st.get("stats", {}).get("backend", {})
+        check(bk.get("flow_device") == "vulkan" and bk.get("t3_device") == "vulkan",
+              f"[{dev}] the flow estimator and T3 run on the GPU (stats: flow_device={bk.get('flow_device')}, t3_device={bk.get('t3_device')}, gemm={bk.get('gemm')})")
 
     # 4. cloning
     prompt = os.path.join(work, "prompt.wav")

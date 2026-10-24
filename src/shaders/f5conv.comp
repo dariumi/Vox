@@ -3,7 +3,8 @@
 //   Y[s][t][o] (op)= epi( bias[o] + sum_{k<K, c<cig} W[o][k*cig + c] * X[s][t + k - pad][g*cig + c] ),  g = o / cog
 // F5-TTS ConvPositionEmbedding (K=31, groups=16), Vocos embed (K=7, groups=1) and Vocos depthwise conv (K=7, groups=C).
 // Tile 64 (time) x 64 (output channels of one group), 4x4 outputs per thread. W is f32, K-major inside a group.
-// flags: 1 = + bias; 2 = Mish; 4 = Y += v (else Y = v).
+// flags: 1 = + bias; 2 = Mish; 4 = Y += v (else Y = v); 8 = causal: pad = K - 1 on the left only (CosyVoice2 / Chatterbox
+//        flow estimator, CausalConv1d).
 layout(local_size_x = 16, local_size_y = 16) in;
 layout(std430, set = 0, binding = 0) readonly buffer WB { float w[]; };
 layout(std430, set = 0, binding = 2) readonly buffer BB { float bias[]; };
@@ -24,7 +25,7 @@ void main() {
     const uint cig = pc.CIN / pc.G, cog = pc.COUT / pc.G, otiles = (cog + 63u) / 64u;
     const uint g = gl_WorkGroupID.y / otiles, ot = gl_WorkGroupID.y - g * otiles;
     const uint t0 = gl_WorkGroupID.x * 64u, ol0 = ot * 64u, s = gl_WorkGroupID.z;
-    const uint KC = pc.K * cig, pad = pc.K / 2u;
+    const uint KC = pc.K * cig, pad = (pc.flags & 8u) != 0u ? pc.K - 1u : pc.K / 2u;
     float acc[4][4];
     for (uint i = 0u; i < 4u; ++i) for (uint j = 0u; j < 4u; ++j) acc[i][j] = 0.0;
 

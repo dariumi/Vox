@@ -48,6 +48,10 @@ public:
     // VoiceEncoder: 16 kHz audio → 256-d speaker embedding (trim at 20 dB, 40-band mels, LSTM over 160-frame partials)
     std::vector<float> voice_embedding(const float *pcm16, size_t n) const;
     bool has_voice_encoder() const;
+    // T3 on the GPU: the transformer of Qwen3-TTS's GPU path with both CFG passes' KV caches in video memory, the speech
+    // head on the GPU. A piece longer than 3072 positions runs on the CPU. false → the CPU.
+    bool enable_gpu();
+    bool gpu() const;
 
     double ms_t3 = 0;
     mutable double ms_gen = 0;

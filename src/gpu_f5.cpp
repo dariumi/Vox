@@ -6,6 +6,7 @@
 // prediction [B][N][mel]. The constant part of the DiT input (reference mel + text embedding of both CFG branches) is
 // uploaded once per sampling run (gpu_f5_begin). Math mirrors f5.cpp operation by operation; tests compare the two.
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -94,15 +95,15 @@ void groups_for(uint64_t n, uint32_t &gx, uint32_t &gy) {
     gx = uint32_t(std::min<uint64_t>(groups, 65535));
     gy = uint32_t((groups + 65534) / 65535);
 }
-// Y[T][rows] (+)= W X (+ bias); flags: 2 = GELU (erf) after the bias, 8 = accumulate into Y
-void gemm(int mat, VkBuffer X, VkBuffer Y, uint32_t T, uint32_t flags) {
+// Y[T][rows] (+)= W X (+ bias); flags: 2 = GELU (erf) after the bias, 8 = accumulate into Y.
+// big: the register-blocked 128×128 GEMM (gemmb.comp) where it applies, else the 64×64 convgemm tile.
+int g_big = -1;              // gemmb for many-row layers: -1 not decided yet, 0 no, 1 yes (gpu_gemm_choice)
+bool g_big_timed = false;
+void rec_gemm(int mat, VkBuffer X, VkBuffer Y, uint32_t T, uint32_t flags, bool big) {
     const GpuMat &gm = g.mats[size_t(mat)];
     if (gm.b) flags |= 1u;
     const VkBuffer b[6] = {gm.w, gm.s ? gm.s : kNone, gm.b ? gm.b : kNone, X, Y, kNone};
-    // The register-blocked 128×128 GEMM (gemmb.comp) only with VOX_F5_GEMM=new: on real NVIDIA cards (RTX 5050 / 3050) it was
-    // 5–14× slower than the 64×64 convgemm tile (0.14.1–0.17.0), so convgemm is the default again until it is measured faster.
-    static const bool big_ok = [] { const char *e = std::getenv("VOX_F5_GEMM"); return e && std::strcmp(e, "new") == 0; }();
-    if (big_ok && T >= 64 && gm.cols % 8 == 0 && int(gm.type) <= 3 && !((flags & 4u) && gm.s)) {
+    if (big && T >= 64 && gm.cols % 8 == 0 && int(gm.type) <= 3 && !((flags & 4u) && gm.s)) {
         const uint32_t pc[5] = {T, uint32_t(gm.rows), uint32_t(gm.cols), flags, uint32_t(gm.rows)};
         disp(P_GEMMB + int(gm.type), b, pc, 5, (T + 127) / 128, uint32_t((gm.rows + 127) / 128));
         return;
@@ -110,6 +111,7 @@ void gemm(int mat, VkBuffer X, VkBuffer Y, uint32_t T, uint32_t flags) {
     const uint32_t pc[8] = {T, uint32_t(gm.rows), uint32_t(gm.cols), 1u, 1u, 0u, flags, uint32_t(gm.rows)};
     disp(P_GEMM + int(gm.type), b, pc, 8, (T + 63) / 64, uint32_t((gm.rows + 63) / 64));
 }
+void gemm(int mat, VkBuffer X, VkBuffer Y, uint32_t T, uint32_t flags) { rec_gemm(mat, X, Y, T, flags, g_big == 1); }
 void conv(const GConv &c, VkBuffer X, VkBuffer Y, uint32_t N, uint32_t S, uint32_t flags) {
     if (c.bias) flags |= 1u;
     const VkBuffer b[6] = {c.w.b, kNone, c.b.b, X, Y, kNone};
@@ -141,7 +143,57 @@ void upload_into(Buf &dst, const float *src, size_t n, Buf &stage) {
 }
 Buf g_stage;
 
+// gemmb was 5–14× slower than convgemm on RTX 5050 / 3050 in 0.14.1–0.17.0; after its loops were unrolled (0.17.1) it was
+// 12–14 % faster on the RTX 5050 and 30–35 % slower on the RTX 3050. So neither wins everywhere: time both on this device,
+// on the layers of the model being loaded (mats, T rows), once per process. VOX_F5_GEMM=old / new skips the timing.
+void choose_gemm(const std::vector<int> &mats, uint32_t T) {
+    if (g_big >= 0 || mats.empty()) return;
+    const char *e = std::getenv("VOX_F5_GEMM");
+    if (e && std::strcmp(e, "old") == 0) { g_big = 0; return; }
+    if (e && std::strcmp(e, "new") == 0) { g_big = 1; return; }
+    VkPhysicalDeviceProperties pr{};
+    vkGetPhysicalDeviceProperties(g.phys, &pr);
+    // llvmpipe & co: not worth the time (VOX_F5_GEMM=auto times them anyway)
+    if (pr.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU && !(e && std::strcmp(e, "auto") == 0)) { g_big = 0; return; }
+    int64_t maxr = 0, maxc = 0;
+    for (int m : mats) { maxr = std::max(maxr, g.mats[size_t(m)].rows); maxc = std::max(maxc, g.mats[size_t(m)].cols); }
+    Buf X, Y;
+    try {
+        ensure_dev(X, VkDeviceSize(T) * VkDeviceSize(maxc) * 4);
+        ensure_dev(Y, VkDeviceSize(T) * VkDeviceSize(maxr) * 4);
+        const std::vector<float> zero(size_t(T) * size_t(maxc), 0.f);
+        upload_into(X, zero.data(), zero.size(), g_stage);
+        auto run = [&](bool big, int reps) {
+            VKC(vkResetDescriptorPool(g.dev, g.dyn, 0));
+            begin_cmd();
+            for (int r = 0; r < reps; ++r)
+                for (int m : mats) rec_gemm(m, X.b, Y.b, T, 0u, big);
+            VKC(vkEndCommandBuffer(g.cmd));
+            const auto t0 = std::chrono::steady_clock::now();
+            submit_wait(g.cmd);
+            return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        };
+        run(false, 1); run(true, 1);   // warm-up (pipeline creation, clocks)
+        double a = 1e30, b = 1e30;
+        for (int i = 0; i < 3; ++i) { a = std::min(a, run(false, 2)); b = std::min(b, run(true, 2)); }
+        g_big = b < a ? 1 : 0;
+        g_big_timed = true;
+        if (std::getenv("VOX_VERBOSE"))
+            std::fprintf(stderr, "vox: GPU GEMM timing on %s: convgemm %.2f ms, gemmb %.2f ms → %s\n", g.name.c_str(), a, b, g_big ? "gemmb" : "convgemm");
+    } catch (const std::exception &ex) {
+        g_big = 0;
+        std::fprintf(stderr, "vox: GPU GEMM timing failed (%s); using convgemm\n", ex.what());
+    }
+    free_buf(X);
+    free_buf(Y);
+}
+
 }  // namespace
+
+std::string gpu_gemm_choice() {
+    if (g_big < 0) return "";
+    return std::string(g_big ? "gemmb" : "convgemm") + (g_big_timed ? " (timed)" : "");
+}
 
 int gpu_f5_create(const GpuF5Desc &d) {
     std::lock_guard<std::mutex> lk(g.mu);
@@ -167,6 +219,10 @@ int gpu_f5_create(const GpuF5Desc &d) {
                 G.v_ln.push_back(pair_buf(b.ln_w, b.ln_b, size_t(d.vocos_dim)));
                 G.v_gamma.push_back(const_buf(b.gamma, size_t(d.vocos_dim)));
             }
+        }
+        if (!d.blocks.empty()) {
+            const auto &b0 = d.blocks[0];
+            choose_gemm({b0.q, b0.o, b0.ff1, b0.ff2}, 512u);
         }
         g_f5.push_back(std::move(G));
         return int(g_f5.size()) - 1;
@@ -312,6 +368,180 @@ void gpu_f5_end(int id) {
     if (!g.ok || id < 0 || size_t(id) >= g_f5.size()) return;
     GF5 &G = g_f5[size_t(id)];
     G.B = G.N = 0;   // buffers are kept (grow-only) for the next chunk
+}
+
+// ================================================================ CosyVoice2 / Chatterbox flow estimator
+// cosyvoice.cpp's estimator operation by operation: CausalResnetBlock1D = causal conv k3 → LayerNorm → Mish (+ time bias)
+// → causal conv → LayerNorm → Mish, + 1×1 res conv; BasicTransformerBlock = LayerNorm → q, k, v → full attention →
+// out (+ residual) → LayerNorm → GELU feed-forward (+ residual). The two CFG passes are sequences 0 and 1 of every buffer.
+namespace {
+struct GCRes { GConv c1, c2, res; Buf n1, n2; };
+struct GCX { Buf n1, n3; int q, k, v, o, ff1, ff2, ff; };
+struct GCosy {
+    GpuCosyDesc d;
+    GCRes down_res, up_res;
+    std::vector<GCRes> mid_res;
+    std::vector<GCX> down_x, up_x;
+    std::vector<std::vector<GCX>> mid_x;
+    GConv down_conv, up_out, final_conv, final_proj;
+    Buf fn;
+    int T = 0, ffmax = 0, inner = 0;
+    Buf in, a, b, h, skip, cat, xn, q, k, v, at, ff, xb, tbb, outb;
+};
+std::vector<GCosy> g_cosy;
+
+GCRes up_res_block(const GpuCosyDesc::Res &r, int C) {
+    GCRes g;
+    g.c1 = up_conv(r.c1); g.c2 = up_conv(r.c2); g.res = up_conv(r.res);
+    if (!r.n1w || !r.n2w) throw std::runtime_error("resnet norms missing");
+    g.n1 = pair_buf(r.n1w, r.n1b, size_t(C));
+    g.n2 = pair_buf(r.n2w, r.n2b, size_t(C));
+    return g;
+}
+GCX up_x_block(const GpuCosyDesc::X &x, int C) {
+    for (int id : {x.q, x.k, x.v, x.o, x.ff1, x.ff2})
+        if (id < 0) throw std::runtime_error("transformer block weight is not on the GPU");
+    GCX g;
+    g.n1 = pair_buf(x.n1w, x.n1b, size_t(C));
+    g.n3 = pair_buf(x.n3w, x.n3b, size_t(C));
+    g.q = x.q; g.k = x.k; g.v = x.v; g.o = x.o; g.ff1 = x.ff1; g.ff2 = x.ff2; g.ff = x.ff_dim;
+    return g;
+}
+}  // namespace
+
+int gpu_cosy_create(const GpuCosyDesc &d) {
+    std::lock_guard<std::mutex> lk(g.mu);
+    if (!g.ok) return -1;
+    try {
+        if (d.head_dim > 64 || d.head_dim <= 0 || d.head_dim % 2) throw std::runtime_error("head_dim > 64 is not supported by the GPU attention");
+        GCosy G;
+        G.d = d;
+        G.inner = d.heads * d.head_dim;
+        G.down_res = up_res_block(d.down_res, d.C);
+        G.up_res = up_res_block(d.up_res, d.C);
+        for (const auto &r : d.mid_res) G.mid_res.push_back(up_res_block(r, d.C));
+        auto xs = [&](const std::vector<GpuCosyDesc::X> &v) {
+            std::vector<GCX> o;
+            for (const auto &x : v) { o.push_back(up_x_block(x, d.C)); G.ffmax = std::max(G.ffmax, x.ff_dim); }
+            return o;
+        };
+        G.down_x = xs(d.down_x);
+        G.up_x = xs(d.up_x);
+        for (const auto &m : d.mid_x) G.mid_x.push_back(xs(m));
+        G.down_conv = up_conv(d.down_conv); G.up_out = up_conv(d.up_out);
+        G.final_conv = up_conv(d.final_conv); G.final_proj = up_conv(d.final_proj);
+        G.fn = pair_buf(d.fn_w, d.fn_b, size_t(d.C));
+        if (!G.down_x.empty()) {
+            const GCX &x = G.down_x[0];
+            choose_gemm({x.q, x.o, x.ff1, x.ff2}, 512u);
+        }
+        g_cosy.push_back(std::move(G));
+        return int(g_cosy.size()) - 1;
+    } catch (const std::exception &e) {
+        g.stats.last_error = std::string("flow on the GPU: ") + e.what();
+        std::fprintf(stderr, "vox: flow estimator on the GPU unavailable (%s); it runs on the CPU\n", e.what());
+        return -1;
+    }
+}
+
+bool gpu_cosy_begin(int id, int T, const float *in0) {
+    std::lock_guard<std::mutex> lk(g.mu);
+    if (!g.ok || id < 0 || size_t(id) >= g_cosy.size() || T <= 0) return false;
+    try {
+        GCosy &G = g_cosy[size_t(id)];
+        const GpuCosyDesc &d = G.d;
+        const VkDeviceSize R = 2 * VkDeviceSize(T), C = VkDeviceSize(d.C), M = VkDeviceSize(d.M);
+        ensure_dev(G.in, R * 4 * M * 4);
+        for (Buf *b : {&G.a, &G.b, &G.h, &G.skip, &G.xn}) ensure_dev(*b, R * C * 4);
+        ensure_dev(G.cat, R * 2 * C * 4);
+        for (Buf *b : {&G.q, &G.k, &G.v, &G.at}) ensure_dev(*b, R * VkDeviceSize(G.inner) * 4);
+        ensure_dev(G.ff, R * VkDeviceSize(std::max(G.ffmax, 1)) * 4);
+        ensure_host(G.xb, VkDeviceSize(T) * M * 4);
+        ensure_host(G.tbb, VkDeviceSize(2 + d.mid_res.size()) * C * 4);
+        ensure_host(G.outb, R * M * 4);
+        upload_into(G.in, in0, size_t(R * 4 * M), g_stage);
+        G.T = T;
+        return true;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "vox: flow GPU buffers: %s\n", e.what());
+        return false;
+    }
+}
+
+bool gpu_cosy_step(int id, const float *x, const float *tb, float *out) {
+    std::lock_guard<std::mutex> lk(g.mu);
+    if (!g.ok || id < 0 || size_t(id) >= g_cosy.size() || g_cosy[size_t(id)].T <= 0) return false;
+    try {
+        GCosy &G = g_cosy[size_t(id)];
+        const GpuCosyDesc &d = G.d;
+        const uint32_t T = uint32_t(G.T), R = 2 * T, C = uint32_t(d.C), M = uint32_t(d.M), H = uint32_t(d.heads), HD = uint32_t(d.head_dim);
+        const uint32_t INNER = uint32_t(G.inner);
+        const size_t nres = 2 + d.mid_res.size();
+        std::memcpy(G.xb.map, x, size_t(T) * M * 4);
+        std::memcpy(G.tbb.map, tb, nres * C * 4);
+        const float scale = 1.0f / std::sqrt(float(HD));
+        VKC(vkResetDescriptorPool(g.dev, g.dyn, 0));
+        begin_cmd();
+        prof_stage("flow.est");
+        auto block = [&](const GConv &cv, const Buf &ln, VkBuffer X, VkBuffer Y) {   // CausalBlock1D
+            conv(cv, X, Y, T, 2, 8u);
+            layernorm(ln.b, 0, C, 0, Y, Y, C, R, 1e-5f);
+            ew(4, kNone, 0, kNone, Y, uint64_t(R) * C, C);
+        };
+        auto resnet = [&](const GCRes &r, size_t j, VkBuffer X, VkBuffer O) {
+            block(r.c1, r.n1, X, G.h.b);
+            ew(3, G.tbb.b, uint32_t(j * C), kNone, G.h.b, uint64_t(R) * C, C);
+            block(r.c2, r.n2, G.h.b, O);
+            conv(r.res, X, O, T, 2, 4u);   // 1×1, + into the block output
+        };
+        auto xblock = [&](const GCX &L, VkBuffer A) {
+            layernorm(L.n1.b, 0, C, 0, A, G.xn.b, C, R, 1e-5f);
+            gemm(L.q, G.xn.b, G.q.b, R, 0u);
+            gemm(L.k, G.xn.b, G.k.b, R, 0u);
+            gemm(L.v, G.xn.b, G.v.b, R, 0u);
+            {
+                const VkBuffer b[6] = {G.q.b, G.k.b, G.v.b, kNone, G.at.b, kNone};
+                const uint32_t pc[4] = {T, HD, INNER, fbits(scale)};
+                disp3(P_F5ATTN, b, pc, 4, (T + 31) / 32, H, 2);
+            }
+            gemm(L.o, G.at.b, A, R, 8u);
+            layernorm(L.n3.b, 0, C, 0, A, G.xn.b, C, R, 1e-5f);
+            gemm(L.ff1, G.xn.b, G.ff.b, R, 2u);
+            gemm(L.ff2, G.ff.b, A, R, 8u);
+        };
+        ew(2, kNone, 4 * M, G.xb.b, G.in.b, uint64_t(2) * T * M, M, T);   // x into columns 0..M-1 of both passes
+        resnet(G.down_res, 0, G.in.b, G.a.b);
+        for (const auto &L : G.down_x) xblock(L, G.a.b);
+        ew(5, kNone, C, G.a.b, G.skip.b, uint64_t(R) * C, C, 0);           // skip = a
+        conv(G.down_conv, G.a.b, G.b.b, T, 2, 8u);
+        VkBuffer cur = G.b.b, oth = G.a.b;
+        for (size_t i = 0; i < G.mid_res.size(); ++i) {
+            resnet(G.mid_res[i], 1 + i, cur, oth);
+            for (const auto &L : G.mid_x[i]) xblock(L, oth);
+            std::swap(cur, oth);
+        }
+        ew(5, kNone, 2 * C, cur, G.cat.b, uint64_t(R) * C, C, 0);          // cat = [x | skip]
+        ew(5, kNone, 2 * C, G.skip.b, G.cat.b, uint64_t(R) * C, C, C);
+        resnet(G.up_res, nres - 1, G.cat.b, oth);
+        for (const auto &L : G.up_x) xblock(L, oth);
+        conv(G.up_out, oth, cur, T, 2, 8u);
+        block(G.final_conv, G.fn, cur, oth);
+        conv(G.final_proj, oth, G.outb.b, T, 2, 0u);
+        host_barrier();
+        VKC(vkEndCommandBuffer(g.cmd));
+        submit_wait(g.cmd);
+        std::memcpy(out, G.outb.map, size_t(R) * M * 4);
+        return true;
+    } catch (const std::exception &e) {
+        std::fprintf(stderr, "vox: flow estimator step on the GPU failed: %s\n", e.what());
+        return false;
+    }
+}
+
+void gpu_cosy_end(int id) {
+    std::lock_guard<std::mutex> lk(g.mu);
+    if (!g.ok || id < 0 || size_t(id) >= g_cosy.size()) return;
+    g_cosy[size_t(id)].T = 0;
 }
 
 }  // namespace vox

@@ -11,6 +11,7 @@
 #include <cstring>
 #include <numeric>
 
+#include "gpu.hpp"
 #include "nn.hpp"
 #include "sampling.hpp"
 
@@ -293,6 +294,7 @@ struct CosyVoiceModel::Impl {
     Conv down_conv, up_out;
     CBlock final_block;
     Conv final_proj;
+    int gpu = -1;   // gpu_cosy_create id of the estimator
     // HiFT
     std::vector<Conv> f0_conv;
     Linear f0_cls, src_lin;
@@ -480,6 +482,71 @@ CosyVoiceModel::CosyVoiceModel(std::shared_ptr<TmodFile> f) : p_(new Impl), file
 
 CosyVoiceModel::~CosyVoiceModel() = default;
 
+bool CosyVoiceModel::gpu_flow() const { return p_->gpu >= 0; }
+bool CosyVoiceModel::gpu_llm() const { return p_->lm.gpu_id >= 0; }
+
+CosyVoiceModel::LmState::~LmState() {
+    if (kv.gpu_seq >= 0) gpu_seq_free(kv.gpu_seq);
+}
+
+bool CosyVoiceModel::enable_gpu_llm() {
+    Impl &P = *p_;
+    if (!cfg_.has_llm) return false;
+    if (P.lm.gpu_id >= 0) return true;
+    if (!gpu_active()) return false;
+    P.lm.gpu_id = gpu_xfmr_create(P.lm, "llm");
+    if (P.lm.gpu_id < 0) return false;
+    P.dec.gpu = gpu_upload(P.dec);   // the decoder head: one GEMV per token on the GPU too (its bias is added on the CPU)
+    return true;
+}
+
+bool CosyVoiceModel::enable_gpu() {
+    Impl &P = *p_;
+    if (P.gpu >= 0) return true;
+    if (!gpu_active()) return false;
+    const CosyCfg &c = cfg_;
+    auto up = [](const Linear &L) {
+        Mat m = L.w;
+        m.bias = L.b.empty() ? nullptr : L.b.data();
+        m.gpu = -1;
+        return gpu_upload(m);
+    };
+    auto cv = [](const Conv &x) {
+        GpuF5Conv g;
+        g.w = x.w.data(); g.b = x.b.empty() ? nullptr : x.b.data(); g.cin = x.cin; g.cout = x.cout; g.K = x.K; g.groups = 1;
+        return g;
+    };
+    auto res = [&](const CResnet &r) {
+        GpuCosyDesc::Res o;
+        o.c1 = cv(r.b1.conv); o.c2 = cv(r.b2.conv); o.res = cv(r.res);
+        o.n1w = r.b1.lnw.data(); o.n1b = r.b1.lnb.data(); o.n2w = r.b2.lnw.data(); o.n2b = r.b2.lnb.data();
+        return o;
+    };
+    auto xb = [&](const std::vector<XBlock> &v) {
+        std::vector<GpuCosyDesc::X> o;
+        for (const XBlock &x : v) {
+            GpuCosyDesc::X g;
+            g.n1w = x.n1w.data(); g.n1b = x.n1b.data(); g.n3w = x.n3w.data(); g.n3b = x.n3b.data();
+            g.q = up(x.q); g.k = up(x.k); g.v = up(x.v); g.o = up(x.o); g.ff1 = up(x.ff1); g.ff2 = up(x.ff2);
+            g.ff_dim = int(x.ff1.out);
+            o.push_back(g);
+        }
+        return o;
+    };
+    GpuCosyDesc d;
+    d.M = c.mel_dim; d.C = c.est_ch; d.heads = c.est_heads;
+    d.head_dim = P.down_x.empty() ? c.est_head_dim : int(P.down_x[0].q.out) / c.est_heads;
+    d.down_res = res(P.down_res); d.up_res = res(P.up_res);
+    for (const auto &r : P.mid_res) d.mid_res.push_back(res(r));
+    d.down_x = xb(P.down_x); d.up_x = xb(P.up_x);
+    for (const auto &m : P.mid_x) d.mid_x.push_back(xb(m));
+    d.down_conv = cv(P.down_conv); d.up_out = cv(P.up_out);
+    d.final_conv = cv(P.final_block.conv); d.final_proj = cv(P.final_proj);
+    d.fn_w = P.final_block.lnw.data(); d.fn_b = P.final_block.lnb.data();
+    P.gpu = gpu_cosy_create(d);
+    return P.gpu >= 0;
+}
+
 int CosyVoiceModel::text_vocab() const { return int(p_->embed.rows); }
 
 // ---------------------------------------------------------------- LLM
@@ -492,6 +559,10 @@ std::unique_ptr<CosyVoiceModel::LmState> CosyVoiceModel::lm_begin(const std::vec
     st->kv.init(cfg_.llm_layers);
     st->text_len = int64_t(text.size());
     const size_t n = 1 + prompt_text.size() + text.size() + 1 + prompt_tokens.size();
+    if (P.lm.gpu_id >= 0) {   // room for the longest generation lm_generate allows; longer → this piece on the CPU
+        const int64_t cap = int64_t(n) + int64_t(double(text.size()) * double(cfg_.max_ratio)) + 2;
+        if (cap <= 3072) st->kv.gpu_seq = gpu_seq_create(P.lm.gpu_id, cap);
+    }
     std::vector<float> x(n * size_t(H));
     size_t r = 0;
     mat_gather(P.llm_emb, 0, &x[r++ * H]);
@@ -704,9 +775,8 @@ void CosyVoiceModel::flow(const std::vector<int32_t> &prompt_tokens, const std::
         for (auto &t : ts) t = 1.0f - std::cos((t * 0.5f) * float(kPi));
     const int C = c.est_ch;
     const int temb_in = int(P.t1.in);
-    // one call = the conditional (sequence 0) and the unconditional (sequence 1: mu, spks, cond zero) estimator passes
-    auto estimator = [&](const std::vector<float> &xx, float t, std::vector<float> &out) {
-        // time embedding: SinusoidalPosEmb(320) (scale 1000) → linear → SiLU → linear; Mish of it feeds every resnet
+    // time embedding: SinusoidalPosEmb(320) (scale 1000) → linear → SiLU → linear; Mish of it feeds every resnet
+    auto time_embed = [&](float t) {
         std::vector<float> te(static_cast<size_t>(temb_in)), th(size_t(P.t1.out)), temb(size_t(P.t2.out));
         const int half = temb_in / 2;
         const float ef = float(std::log(10000.0) / double(half - 1));
@@ -720,6 +790,34 @@ void CosyVoiceModel::flow(const std::vector<int32_t> &prompt_tokens, const std::
         for (auto &v : th) v = silu(v);
         P.t2.forward(th.data(), 1, temb.data());
         for (auto &v : temb) v = mish(v);
+        return temb;
+    };
+    // GPU: the constant part of the input once, then per step x and the resnets' time biases up, both passes' output down
+    bool on_gpu = false;
+    if (P.gpu >= 0) {
+        std::vector<float> in0(size_t(2) * size_t(T2) * size_t(4 * M), 0.f);
+        for (int tt = 0; tt < T2; ++tt) {
+            float *r = &in0[size_t(tt) * size_t(4 * M)];
+            std::memcpy(r + M, &mu[size_t(tt) * M], size_t(M) * 4);
+            std::memcpy(r + 2 * M, spk.data(), size_t(M) * 4);
+            std::memcpy(r + 3 * M, &cond[size_t(tt) * M], size_t(M) * 4);
+        }
+        on_gpu = gpu_cosy_begin(P.gpu, T2, in0.data());
+    }
+    std::vector<const CResnet *> resnets{&P.down_res};
+    for (const auto &r : P.mid_res) resnets.push_back(&r);
+    resnets.push_back(&P.up_res);
+    // one call = the conditional (sequence 0) and the unconditional (sequence 1: mu, spks, cond zero) estimator passes
+    auto estimator = [&](const std::vector<float> &xx, float t, std::vector<float> &out) {
+        const std::vector<float> temb = time_embed(t);
+        if (on_gpu) {
+            std::vector<float> tb(resnets.size() * size_t(C));
+            for (size_t j = 0; j < resnets.size(); ++j) resnets[j]->mlp.forward(temb.data(), 1, &tb[j * size_t(C)]);
+            out.resize(size_t(2) * xx.size());
+            if (gpu_cosy_step(P.gpu, xx.data(), tb.data(), out.data())) return;
+            on_gpu = false;
+            std::fprintf(stderr, "vox: the flow continues on the CPU\n");
+        }
         const int B = 2;
         // input: [x | mu | spks | cond]
         std::vector<float> in(size_t(B) * size_t(T2) * size_t(4 * M), 0.f);
@@ -771,6 +869,7 @@ void CosyVoiceModel::flow(const std::vector<int32_t> &prompt_tokens, const std::
             if (step < c.n_timesteps) dt = ts[size_t(step + 1)] - t;
         }
     }
+    if (P.gpu >= 0) gpu_cosy_end(P.gpu);
     mel.assign(z.begin() + long(size_t(mel1) * M), z.end());
     if (tr) tr->mel = mel;
     ms_flow += ms_since(t0);

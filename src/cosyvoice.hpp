@@ -66,9 +66,10 @@ public:
 
     // ---- LLM ----
     struct LmState {
-        KVCache kv;
+        KVCache kv;             // kv.gpu_seq >= 0: the KV cache is in video memory (enable_gpu_llm)
         std::vector<float> h;   // normed hidden state of the last position
         int64_t text_len = 0;
+        ~LmState();
     };
     // lm_input = [sos, embed(prompt_text + text), task_id, speech_embedding(prompt_tokens)]; returns the state after the prompt
     std::unique_ptr<LmState> lm_begin(const std::vector<int32_t> &prompt_text, const std::vector<int32_t> &text,
@@ -106,6 +107,15 @@ public:
     std::vector<float> whisper_mel(const float *pcm16, size_t n, int &frames) const;      // [128][frames]
     std::vector<int32_t> speech_tokens(const std::vector<float> &wmel, int frames) const; // S3TokenizerV2
     bool can_clone() const { return cfg_.has_campplus && cfg_.has_s3; }
+
+    // The flow estimator on the GPU (gpu_active() first): its weights go to video memory and every Euler step is one
+    // submission. false (reason on stderr) → it stays on the CPU. The encoder and HiFT stay on the CPU.
+    bool enable_gpu();
+    bool gpu_flow() const;
+    // The Qwen2 LM on the GPU (the transformer of Qwen3-TTS's GPU path, KV cache in video memory, ≤ 3072 positions;
+    // a longer piece runs on the CPU). false → the CPU.
+    bool enable_gpu_llm();
+    bool gpu_llm() const;
 
     uint64_t weight_bytes() const { return weight_bytes_; }
     mutable double ms_llm = 0, ms_flow = 0, ms_hift = 0;
