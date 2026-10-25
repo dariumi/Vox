@@ -91,6 +91,9 @@ class Server:
             if self.engine.speakers and all(p in self.engine.speakers for p in parts):   # "af_heart" or a mix "af_heart,am_adam"
                 with self._lock:
                     if name not in self._voices:
+                        mixes = [k for k, v in self._voices.items() if v[0] == 0]
+                        if len(mixes) >= 64:   # speaker mixes are request-controlled: keep the cache bounded
+                            del self._voices[mixes[0]]
                         self._voices[name] = (0, self.engine.speaker_voice(",".join(parts)))
                     return self._voices[name][1]
             raise KeyError(name)

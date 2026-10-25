@@ -236,6 +236,7 @@ std::vector<float> ChatterboxT3::cond_embeds(const std::vector<float> &spk, cons
     if (!prompt.empty()) {
         // prompt speech tokens: speech_emb + speech_pos_emb (positions 0…), then the perceiver (cross-, then self-attention, shared block)
         const int n = int(prompt.size());
+        if (n > P.speech_pos.rows) fail(VOX_ERR_ARG, "Chatterbox: the prompt has more speech tokens than the model has positions");
         std::vector<float> h(size_t(n) * H), tmp(static_cast<size_t>(H));
         for (int i = 0; i < n; ++i) {
             if (prompt[size_t(i)] < 0 || prompt[size_t(i)] >= P.speech_emb.rows) fail(VOX_ERR_ARG, "Chatterbox: prompt token out of range");

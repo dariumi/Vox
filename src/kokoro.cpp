@@ -398,6 +398,9 @@ KokoroModel::KokoroModel(std::shared_ptr<TmodFile> f) : p_(new Impl), file_(std:
         if (kv.first.rfind("voice.", 0) == 0) {
             if (kv.second.dtype != DType::F32 || kv.second.shape.size() != 2 || kv.second.shape[1] != 2 * cfg_.style_dim)
                 fail(VOX_ERR_FORMAT, "Kokoro: bad voice pack " + kv.first);
+            if (kv.second.shape[0] <= 0 || kv.second.nbytes < size_t(kv.second.shape[0]) * size_t(kv.second.shape[1]) * sizeof(float) ||
+                (P.pack_rows != 0 && P.pack_rows != int(kv.second.shape[0])))
+                fail(VOX_ERR_FORMAT, "Kokoro: voice pack " + kv.first + " has a size that does not match its shape");
             P.packs[kv.first.substr(6)] = reinterpret_cast<const float *>(kv.second.data);
             P.pack_rows = int(kv.second.shape[0]);
             voices_.push_back(kv.first.substr(6));

@@ -134,7 +134,7 @@ public:
         s.seed = o.seed;
         const json &op = o.options;
         if (op.contains("speed") && op["speed"].is_number()) s.speed = op["speed"].get<float>();
-        if (s.speed <= 0.f) fail(VOX_ERR_ARG, "Kokoro: speed must be positive");
+        if (!(s.speed > 0.f && s.speed <= 4.f)) fail(VOX_ERR_ARG, "Kokoro: speed must be in (0, 4]");
         if (op.contains("phonemes") && op["phonemes"].is_boolean()) s.phonemes = op["phonemes"].get<bool>();
         if (op.contains("lang") && op["lang"].is_string()) {
             const std::string l = op["lang"].get<std::string>();

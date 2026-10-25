@@ -21,6 +21,15 @@ void check_name(const std::string &n, const char *what) {
             fail(VOX_ERR_ARG, std::string(what) + " name '" + n + "' must not contain [ ] : , = or line breaks");
 }
 
+// Options from a profile file are sampling parameters only. The reference hooks that read or write files
+// (dump_file, noise_file) must not be reachable from a profile that came from someone else.
+json profile_options(const json &j, const std::string &what) {
+    if (!j.is_object()) fail(VOX_ERR_ARG, what + ": options must be an object");
+    json o = j;
+    for (const char *k : {"dump_file", "noise_file"}) o.erase(k);
+    return o;
+}
+
 json style_json(const StyleDef &s) {
     json j = {{"ref", s.ref}, {"instruct", s.instruct}, {"options", s.options}};
     if (!s.description.empty()) j["description"] = s.description;
@@ -121,8 +130,7 @@ void Profile::apply_json(const json &j) {
             v.description = vj.value("description", "");
             v.language = vj.value("language", "auto");
             v.default_style = vj.value("default_style", "default");
-            v.options = vj.value("options", json::object());
-            if (!v.options.is_object()) fail(VOX_ERR_ARG, "voice '" + it.key() + "': options must be an object");
+            v.options = profile_options(vj.value("options", json::object()), "voice '" + it.key() + "'");
             if (vj.contains("speakers") && vj["speakers"].is_object())
                 for (auto s = vj["speakers"].begin(); s != vj["speakers"].end(); ++s)
                     if (s.value().is_string() && !s.value().get<std::string>().empty()) v.speakers[s.key()] = s.value().get<std::string>();
@@ -135,8 +143,7 @@ void Profile::apply_json(const json &j) {
                     st.ref = sj.value("ref", "");
                     st.instruct = sj.value("instruct", "");
                     st.description = sj.value("description", "");
-                    st.options = sj.value("options", json::object());
-                    if (!st.options.is_object()) fail(VOX_ERR_ARG, "style '" + s.key() + "': options must be an object");
+                    st.options = profile_options(sj.value("options", json::object()), "style '" + s.key() + "'");
                     v.styles[s.key()] = st;
                 }
             if (v.default_style.empty()) v.default_style = "default";

@@ -105,6 +105,10 @@ def main(cli):
     check(ok and set(an.get("styles", {})) == {"default", "happy", "whisper"} and an["styles"]["whisper"]["options"].get("speed") == 0.9
           and bo.get("speakers") == {"kokoro": "am_adam"} and an["options"].get("temperature") == 0.8 and len(j["recordings"]) == 2
           and any(c["voice"] == "boris" for c in j["cache"]), "CLI new / add / add --from / set / rm / patch / show")
+    run([cli, "profile", "patch", P, json.dumps({"voices": {"anna": {"options": {"dump_file": "/x/d", "noise_file": "/x/n", "speed": 1.1}}}})])
+    rc, out = run([cli, "profile", "show", P, "--json"])
+    ao = json.loads(out[out.index("{"):])["voices"]["anna"]["options"]
+    check("dump_file" not in ao and "noise_file" not in ao and ao.get("speed") == 1.1, "profile options drop the file hooks (dump_file, noise_file) and keep the rest")
     rc, out = run([cli, "profile", "prepare", P, "--model", tm])
     o = run([cli, "profile", "show", P, "--json"])[1]
     j = json.loads(o[o.index("{"):])
