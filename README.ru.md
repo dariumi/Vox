@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.19.2-2a78d6" alt="версия 0.19.2">
+  <img src="https://img.shields.io/badge/version-0.19.3-2a78d6" alt="версия 0.19.3">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
