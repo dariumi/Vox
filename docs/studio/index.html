@@ -519,7 +519,7 @@ document.getElementById("exText").textContent = EXAMPLE;
 // ---------------------------------------------------------------- helpers
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-const STUDIO_VERSION = "0.19.4";   // tools/build_site.py writes the version in
+const STUDIO_VERSION = "0.19.5";   // tools/build_site.py writes the version in
 const store = { get(k) { try { return localStorage.getItem("voxstudio." + k); } catch (e) { return null; } },
                 set(k, v) { try { if (v == null) localStorage.removeItem("voxstudio." + k); else localStorage.setItem("voxstudio." + k, v); } catch (e) { /* private mode */ } } };
 let toastTimer = 0;

@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pypi.org/project/vox-tts/"><img src="https://img.shields.io/pypi/v/vox-tts?color=2a78d6" alt="PyPI"></a>
-  <img src="https://img.shields.io/badge/version-0.19.4-2a78d6" alt="версия 0.19.4">
+  <img src="https://img.shields.io/badge/version-0.19.5-2a78d6" alt="версия 0.19.5">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -93,13 +93,14 @@ flowchart LR
 
 ## Быстрый старт
 
-Из PyPI ([`vox-tts`](https://pypi.org/project/vox-tts/), CPU-сборка для Linux x86_64 / aarch64 и macOS arm64):
+Из PyPI ([`vox-tts`](https://pypi.org/project/vox-tts/); колёса для Linux x86_64 / aarch64, Windows x64 и macOS arm64):
 
     pip install vox-tts
     python -m vox serve               # CLI Python-пакета; API — `import vox`
 
-В колёсах нет Vulkan-бэкенда. Для GPU и остальных платформ — сборка из исходников (pip соберёт сам, если колеса нет;
-`pip install --no-binary vox-tts vox-tts` включает её принудительно; нужны CMake, компилятор C++17 и заголовки Vulkan):
+В колёсах для Linux и Windows есть Vulkan-бэкенд. Он открывает загрузчик Vulkan во время работы, поэтому то же колесо работает и на машине без
+драйвера GPU (только CPU); колесо для macOS — только CPU. Для другой платформы или сборки под свой процессор — из исходников (pip соберёт сам, если колеса нет;
+`pip install --no-binary vox-tts vox-tts` включает её принудительно; нужны CMake и компилятор C++17, для GPU-бэкенда ещё заголовки Vulkan):
 
     cmake -S . -B build -DVOX_NATIVE=ON && cmake --build build -j
     pip install .                     # Python-модуль (nanobind, scikit-build-core, numpy)

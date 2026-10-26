@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.19.5
+
+Колёса PyPI: Windows и Vulkan.
+
+- **Vulkan-загрузчик открывается во время работы** (volk, `third_party/volk`, MIT): бинарь больше не зависит от `libvulkan` при линковке, поэтому одно
+  колесо работает и с GPU, и на машине без драйвера (тогда доступен только CPU). В `volk.c` Windows-загрузка `vulkan-1.dll` — только из System32.
+  Для сборки нужны лишь заголовки Vulkan.
+- **Колёса для Windows x64** (MSVC) и **Vulkan в колёсах для Linux x86_64 / aarch64 и Windows**. macOS — по-прежнему только CPU.
+- Правки сборки под MSVC: `_USE_MATH_DEFINES`, `NOMINMAX`, ядро `cvt_row` без векторных расширений GCC, флаги GCC только не для MSVC.
+- `release.yml`: заголовки Vulkan берутся по коммиту (тег v1.4.304).
+
 ## 0.19.4
 
 Пакет на PyPI.

@@ -4,7 +4,7 @@ build-backend = "scikit_build_core.build"
 
 [project]
 name = "vox-tts"            # рабочее имя пакета; импортируется как `import vox`
-version = "0.19.4"
+version = "0.19.5"
 description = "vox: native text-to-speech inference engine (Qwen3-TTS, F5-TTS, Kokoro, CosyVoice2, Chatterbox; C++, CLI, Python, Vulkan, WebGPU)"
 readme = "README.md"
 license = {text = "Apache-2.0"}
