@@ -71,7 +71,8 @@ static PFN_vkVoidFunction nullProcAddrStub(void* context, const char* name)
 VkResult volkInitialize(void)
 {
 #if defined(_WIN32)
-	HMODULE module = LoadLibraryA("vulkan-1.dll");
+	/* vox: the loader is only taken from the Windows system directory, never from the working directory or PATH */
+	HMODULE module = LoadLibraryExA("vulkan-1.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
 	if (!module)
 		return VK_ERROR_INITIALIZATION_FAILED;
 

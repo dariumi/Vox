@@ -375,7 +375,9 @@ VOX_INLINE void cvt_row(const Mat &W, int64_t rr, float *dst) {
     const uint8_t *row = W.data + rr * W.cols * bpe;
     const float *sc = W.scale ? W.scale + rr * (W.cols / 32) : nullptr;
     int64_t k = 0;
+#ifdef VOX_VECTOR_EXT
     for (; k + 8 <= W.cols; k += 8) { const v8f v = WL<T>::load8(row, k, sc); std::memcpy(dst + k, &v, 32); }
+#endif
     for (; k < W.cols; ++k) dst[k] = WL<T>::at(row, k, sc);
 }
 template <WType T>

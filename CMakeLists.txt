@@ -60,6 +60,9 @@ endif()
 find_package(Threads REQUIRED)
 target_link_libraries(vox_core PUBLIC Threads::Threads)
 target_include_directories(vox_core PUBLIC include)
+if(MSVC)
+  target_compile_definitions(vox_core PUBLIC _USE_MATH_DEFINES NOMINMAX)   # M_PI, std::min / std::max
+endif()
 target_compile_definitions(vox_core PUBLIC VOX_BUILD VOX_VERSION_STRING="${PROJECT_VERSION}")
 
 # Публичная разделяемая библиотека с C ABI.

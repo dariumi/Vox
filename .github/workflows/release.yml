@@ -34,7 +34,7 @@ jobs:
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28   # gcc 12: the sources need __builtin_bit_cast and the f16c cpu check
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
           # only the Khronos headers are needed: the Vulkan loader is opened at run time, so the wheel also imports without a driver
-          CIBW_BEFORE_ALL: git clone --depth 1 --branch v1.4.304 https://github.com/KhronosGroup/Vulkan-Headers.git third_party/vulkan-headers
+          CIBW_BEFORE_ALL: git init third_party/vulkan-headers && git -C third_party/vulkan-headers fetch --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git d4a196d8c84e032d27f999adcea3075517c1c97f && git -C third_party/vulkan-headers checkout FETCH_HEAD   # v1.4.304, pinned by commit
           CIBW_ENVIRONMENT_MACOS: CMAKE_ARGS="-DVOX_VULKAN=OFF"   # no Vulkan on macOS
           CIBW_SKIP: "*-musllinux_* *-win32 *_i686 pp*"
           CIBW_TEST_COMMAND: 'python -c "import vox; print(vox.__version__)"'

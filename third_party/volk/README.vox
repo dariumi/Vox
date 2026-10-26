@@ -1,0 +1,3 @@
+volk (https://github.com/zeux/volk), tag vulkan-sdk-1.4.304.0, MIT (LICENSE.md).
+Local change in volk.c: on Windows the Vulkan loader is opened with LOAD_LIBRARY_SEARCH_SYSTEM32 (LoadLibraryExA) instead of LoadLibraryA,
+so vulkan-1.dll cannot come from the working directory or PATH.
