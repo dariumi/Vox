@@ -27,6 +27,8 @@ extern "C" {
 
 #ifdef _WIN32
 __declspec(dllimport) HMODULE __stdcall LoadLibraryA(LPCSTR);
+__declspec(dllimport) HMODULE __stdcall LoadLibraryExA(LPCSTR, void*, unsigned long);
+#define LOAD_LIBRARY_SEARCH_SYSTEM32 0x00000800
 __declspec(dllimport) FARPROC __stdcall GetProcAddress(HMODULE, LPCSTR);
 __declspec(dllimport) int __stdcall FreeLibrary(HMODULE);
 #endif
