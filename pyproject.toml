@@ -5,11 +5,24 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "vox-tts"            # рабочее имя пакета; импортируется как `import vox`
 version = "0.19.3"
-description = "vox: native Qwen3-TTS inference engine (C ABI, CLI, Python, Vulkan)"
+description = "vox: native text-to-speech inference engine (Qwen3-TTS, F5-TTS, Kokoro, CosyVoice2, Chatterbox; C++, CLI, Python, Vulkan, WebGPU)"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.9"
+authors = [{ name = "Daria" }]
+keywords = ["tts", "text-to-speech", "speech-synthesis", "inference", "vulkan"]
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
 dependencies = ["numpy>=1.22"]
+
+[project.urls]
+Homepage = "https://vox.arkonova.network/"
+Source = "https://github.com/dariumi/Vox"
+Changelog = "https://github.com/dariumi/Vox/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 # эталоны и сверка с оригинальным пайплайном (для работы движка не нужны)
@@ -17,6 +30,7 @@ tools = ["qwen-tts==0.1.1", "transformers==4.57.3", "torch", "librosa", "soundfi
 test = ["tokenizers", "regex"]
 
 [tool.scikit-build]
+sdist.exclude = ["docs", "site", "webgpu", "examples", ".github"]
 cmake.version = ">=3.18"
 wheel.packages = ["python/vox"]
 cmake.define = { VOX_PYTHON = "ON", VOX_TESTS = "OFF" }
