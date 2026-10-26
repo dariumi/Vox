@@ -7,15 +7,18 @@ on:
     types: [published]
   workflow_dispatch:   # build only; nothing is uploaded
 
+permissions:
+  contents: read
+
 jobs:
   sdist:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with: { python-version: "3.12" }
       - run: pip install build twine && python -m build --sdist && twine check dist/*
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: { name: dist-sdist, path: dist/*.tar.gz }
 
   wheels:
@@ -26,15 +29,15 @@ jobs:
       matrix:
         os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
     steps:
-      - uses: actions/checkout@v4
-      - uses: pypa/cibuildwheel@v2.23.3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: pypa/cibuildwheel@faf86a6ed7efa889faf6996aa23820831055001a # v2.23.3
         env:
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28   # gcc 12: the sources need __builtin_bit_cast and the f16c cpu check
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
           CIBW_SKIP: "*-musllinux_* *-win32 *_i686 pp*"
           CIBW_TEST_COMMAND: "python -c \"import vox; print(vox.__version__)\""
           MACOSX_DEPLOYMENT_TARGET: "13.0"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: { name: "dist-wheels-${{ matrix.os }}", path: wheelhouse/*.whl }
 
   publish:
@@ -45,6 +48,6 @@ jobs:
     permissions:
       id-token: write   # Trusted Publishing: no token is stored anywhere
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with: { pattern: "dist-*", path: dist, merge-multiple: true }
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
