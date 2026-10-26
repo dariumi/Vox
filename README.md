@@ -9,7 +9,8 @@
 
 <p align="center">
   <a href="https://github.com/dariumi/Vox/actions/workflows/ci.yml"><img src="https://github.com/dariumi/Vox/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/version-0.19.3-2a78d6" alt="version 0.19.3">
+  <a href="https://pypi.org/project/vox-tts/"><img src="https://img.shields.io/pypi/v/vox-tts?color=2a78d6" alt="PyPI"></a>
+  <img src="https://img.shields.io/badge/version-0.19.4-2a78d6" alt="version 0.19.4">
   <img src="https://img.shields.io/badge/C%2B%2B-17-2a78d6" alt="C++17">
   <img src="https://img.shields.io/badge/GPU-Vulkan%20%C2%B7%20WebGPU-1baf7a" alt="Vulkan, WebGPU">
   <img src="https://img.shields.io/badge/license-Apache--2.0-52514e" alt="Apache-2.0">
@@ -92,6 +93,14 @@ Planned: XTTS, Chatterbox Multilingual / Turbo. Each family describes itself (`v
 of chunking, crossfades and the commit policy.
 
 ## Quick start
+
+From PyPI ([`vox-tts`](https://pypi.org/project/vox-tts/), CPU build for Linux x86_64 / aarch64 and macOS arm64):
+
+    pip install vox-tts
+    python -m vox serve               # CLI of the Python package; `import vox` for the API
+
+The wheels have no Vulkan backend. For GPU, or any other platform, build from source (pip builds it when there is no wheel,
+and `pip install --no-binary vox-tts vox-tts` forces it; it needs CMake, a C++17 compiler and the Vulkan headers):
 
     cmake -S . -B build -DVOX_NATIVE=ON && cmake --build build -j
     pip install .                     # Python module (nanobind, scikit-build-core, numpy)
