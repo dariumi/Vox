@@ -1,7 +1,6 @@
 name: Release to PyPI
 
-# Builds the sdist and the wheels (CPU build: the Vulkan backend is optional and is left out when the Vulkan headers are not
-# there; build from source for it) and uploads them to PyPI through Trusted Publishing when a GitHub release is published.
+# Builds the sdist and the wheels (Linux, macOS, Windows; Vulkan on Linux and Windows, found at run time) and uploads them to PyPI through Trusted Publishing when a GitHub release is published.
 on:
   release:
     types: [published]
@@ -27,15 +26,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14]
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-14, windows-latest]
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: pypa/cibuildwheel@faf86a6ed7efa889faf6996aa23820831055001a # v2.23.3
         env:
           CIBW_MANYLINUX_X86_64_IMAGE: manylinux_2_28   # gcc 12: the sources need __builtin_bit_cast and the f16c cpu check
           CIBW_MANYLINUX_AARCH64_IMAGE: manylinux_2_28
+          # only the Khronos headers are needed: the Vulkan loader is opened at run time, so the wheel also imports without a driver
+          CIBW_BEFORE_ALL: git clone --depth 1 --branch v1.4.304 https://github.com/KhronosGroup/Vulkan-Headers.git third_party/vulkan-headers
+          CIBW_ENVIRONMENT_MACOS: CMAKE_ARGS="-DVOX_VULKAN=OFF"   # no Vulkan on macOS
           CIBW_SKIP: "*-musllinux_* *-win32 *_i686 pp*"
-          CIBW_TEST_COMMAND: "python -c \"import vox; print(vox.__version__)\""
+          CIBW_TEST_COMMAND: 'python -c "import vox; print(vox.__version__)"'
           MACOSX_DEPLOYMENT_TARGET: "13.0"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with: { name: "dist-wheels-${{ matrix.os }}", path: wheelhouse/*.whl }

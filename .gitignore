@@ -38,3 +38,4 @@ __pycache__/
 examples/rust/target/
 examples/node/node_modules/
 examples/go/vox-go
+third_party/vulkan-headers/

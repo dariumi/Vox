@@ -37,13 +37,21 @@ add_library(vox_core STATIC
   src/backend_f5.cpp src/backend_kokoro.cpp src/kokoro.cpp src/nn.cpp src/cosyvoice.cpp src/cosyvoice_front.cpp src/backend_cosyvoice.cpp src/hf_tokenizer.cpp src/chatterbox.cpp src/backend_chatterbox.cpp src/kokoro_g2p.cpp src/kokoro_g2p_en.cpp
   src/backend_null.cpp
   src/engine.cpp)
+# Only the Vulkan headers are needed: the loader is opened at run time. The release workflow puts the Khronos headers into
+# third_party/vulkan-headers; a normal build uses the system or SDK ones.
 if(VOX_VULKAN)
-  find_package(Vulkan)
+  find_path(VOX_VULKAN_INCLUDE vulkan/vulkan.h HINTS ${CMAKE_SOURCE_DIR}/third_party/vulkan-headers/include ENV VULKAN_SDK PATH_SUFFIXES include)
 endif()
-if(VOX_VULKAN AND Vulkan_FOUND)
+if(VOX_VULKAN AND VOX_VULKAN_INCLUDE)
   target_sources(vox_core PRIVATE src/gpu_vulkan.cpp src/gpu_codec.cpp src/gpu_f5.cpp)
   set_source_files_properties(src/gpu_vulkan.cpp src/gpu_codec.cpp src/gpu_f5.cpp PROPERTIES COMPILE_OPTIONS "-Wno-missing-field-initializers")
-  target_link_libraries(vox_core PUBLIC Vulkan::Vulkan)
+  # The loader is opened at run time (volk), so a build with the Vulkan backend still starts on a machine without a Vulkan driver.
+  enable_language(C)
+  add_library(vox_volk STATIC third_party/volk/volk.c)
+  target_include_directories(vox_volk PUBLIC third_party/volk ${VOX_VULKAN_INCLUDE})
+  set_target_properties(vox_volk PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  target_link_libraries(vox_volk PUBLIC ${CMAKE_DL_LIBS})
+  target_link_libraries(vox_core PUBLIC vox_volk)
   message(STATUS "vox: Vulkan backend enabled")
 else()
   target_sources(vox_core PRIVATE src/gpu_stub.cpp)

@@ -1,6 +1,6 @@
 // Vulkan-бэкенд: matmul на GPU. Веса — в device-local буферах (загружаются один раз), активации — через
 // host-visible буферы. Один рабочий блок = строка весов × до 4 строк входа (src/shaders/matmul.comp).
-#include <vulkan/vulkan.h>
+#include "volk.h"   // vulkan.h without the link-time dependency on the loader
 
 #include <algorithm>
 #include <cstdio>
@@ -147,18 +147,26 @@ void Ctx::shutdown() {
     dev = VK_NULL_HANDLE; inst = VK_NULL_HANDLE; ok = false;
 }
 
+// Opens the Vulkan loader once; false when there is none (the engine then has no GPU devices).
+bool load_vulkan() {
+    static const bool ok = volkInitialize() == VK_SUCCESS;
+    return ok;
+}
+
 void init_impl(const std::string &spec) {
     int want_index = -1;
     auto colon = spec.find(':');
     if (colon != std::string::npos) want_index = std::stoi(spec.substr(colon + 1));
     if (const char *e = std::getenv("VOX_VK_DEVICE")) want_index = std::atoi(e);
 
+    if (!load_vulkan()) throw std::runtime_error("the Vulkan loader (libvulkan / vulkan-1.dll) is not installed");
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "vox";
     app.apiVersion = VK_API_VERSION_1_1;
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
     VKC(vkCreateInstance(&ici, nullptr, &g.inst));
+    volkLoadInstance(g.inst);
 
     uint32_t n = 0;
     VKC(vkEnumeratePhysicalDevices(g.inst, &n, nullptr));
@@ -388,12 +396,14 @@ void heap_info(VkPhysicalDevice d, bool budget_ext, uint64_t &total, uint64_t &f
 
 std::vector<GpuDeviceInfo> gpu_enumerate() {
     std::vector<GpuDeviceInfo> out;
+    if (!load_vulkan()) return out;
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "vox"; app.apiVersion = VK_API_VERSION_1_1;
     VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ici.pApplicationInfo = &app;
     VkInstance inst;
     if (vkCreateInstance(&ici, nullptr, &inst) != VK_SUCCESS) return out;
+    volkLoadInstance(inst);
     uint32_t n = 0;
     vkEnumeratePhysicalDevices(inst, &n, nullptr);
     std::vector<VkPhysicalDevice> devs(n);

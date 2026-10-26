@@ -1,6 +1,6 @@
 #pragma once
 // Internals of the Vulkan backend shared by gpu_vulkan.cpp (matmul / transformer) and gpu_codec.cpp (codec decoder).
-#include <vulkan/vulkan.h>
+#include "volk.h"   // vulkan.h without the link-time dependency on the loader
 
 #include <cstring>
 #include <mutex>
